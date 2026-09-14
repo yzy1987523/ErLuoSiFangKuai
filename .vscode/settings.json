@@ -1,0 +1,9 @@
+{
+    "files.readonlyInclude": {
+        "EnvLua/Preset/**": true,
+        "EnvLua/Core/**": true,
+        "config.json": true,
+        "EnvLua.old/**": true,
+        ".vscode/**": true
+    }
+}
