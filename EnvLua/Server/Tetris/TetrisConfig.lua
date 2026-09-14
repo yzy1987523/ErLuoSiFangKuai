@@ -105,6 +105,8 @@ TetrisConfig.Render = {
     BlockActorPresetKey = "46_ActorPreset_1085768057",
     -- 备用方块模型（圆角方块积木）
     BlockModelID = "2205202",
+    -- 边框（左/右/下三侧外框）资源：与方块上区同模型，用作盘面外边缘
+    BorderAssetRefKey = "44_CreativeAsset_3400003",
 
     BlockScale = 1.0,        -- 方块模型缩放，按模型实际尺寸调整
 

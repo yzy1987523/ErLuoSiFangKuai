@@ -16,6 +16,7 @@ function TetrisRenderer:new()
     o.cells = {}    -- cells[row][col] = 实例/Actor 对象
     o.actors = {}   -- actors[row][col] = 底层 Actor（若可解析），用于可靠隐藏
     o.shown = {}    -- shown[row][col] = bool，当前显隐状态（脏检查用）
+    o.border = {}   -- border[] = 边框格子对象（左/右/下三侧静态装饰，常驻可见）
     o.built = false
     o.mode = nil    -- "instance" | "actor"
     o.ref = nil
@@ -343,7 +344,71 @@ function TetrisRenderer:Build()
     if TetrisConfig.Debug.PrintBoardBounds then
         self:PrintBounds()
     end
+    self:BuildBorder()
     return okCount > 0
+end
+
+-- ---------------- 生成盘面外边框 ----------------
+-- 用 AssetRef[BorderAssetRefKey]（44_CreativeAsset_3400003，与方块同模型）在盘面的
+-- 左（虚拟列 0）、右（虚拟列 Cols+1）、下（虚拟行 Rows+1）三侧各生成一排 1 格厚的外边框，
+-- 常驻可见（不参与方块显隐）。顶部开放，供方块下落进入。
+-- 三侧集合互不重叠，共 Rows + Rows + Cols 块。
+function TetrisRenderer:BuildBorder()
+    if not self.origin then
+        print("[Tetris][WARN] 边框生成失败：盘面原点未初始化")
+        return
+    end
+    local cols, rows = TetrisConfig.Board.Cols, TetrisConfig.Board.Rows
+    local r = TetrisConfig.Render
+    local step = r.CellSize + r.CellGap
+    local s = r.BlockScale
+    local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
+    local ref = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.BorderAssetRefKey] or nil
+    if not ref then
+        print("[Tetris][WARN] 边框资源 AssetRef[\"" .. tostring(TetrisConfig.Render.BorderAssetRefKey) .. "\"] 为空，跳过边框生成")
+        return
+    end
+
+    local o = self.origin
+
+    -- 创建单个边框格子：优先 Actor 模式（与场景方块一致、无实例池上限），失败回退动态实例
+    local function makeBorder(x, z)
+        local loc = Game:ConstructFVectorByLuaTable({ X = x, Y = o.Y, Z = z })
+        local ok, obj = pcall(function()
+            return CreativeGameAPI.CreateActor(ref, loc, self.rot, scale, nil)
+        end)
+        if ok and obj then
+            pcall(function() obj:SetActorHiddenInGame(false) end)
+            self.border[#self.border + 1] = obj
+            return
+        end
+        local ok2, obj2 = pcall(function()
+            return InstanceAPI.CreateInstance(ref, loc, self.rot, scale)
+        end)
+        if ok2 and obj2 then
+            pcall(function()
+                if InstanceAPI.ToggleInstanceVisible then InstanceAPI.ToggleInstanceVisible(obj2, true) end
+            end)
+            self.border[#self.border + 1] = obj2
+        else
+            print("[Tetris][WARN] 边框格子创建失败 @(" .. tostring(x) .. "," .. tostring(z) .. ")")
+        end
+    end
+
+    -- 左、右两侧：每行一块
+    for row = 1, rows do
+        local z = o.Z - (row - 1) * step
+        makeBorder(o.X + (0 - 1) * step, z)          -- 左（虚拟列 0）
+        makeBorder(o.X + (cols + 1 - 1) * step, z)   -- 右（虚拟列 Cols+1）
+    end
+    -- 下侧：每列一块（虚拟行 Rows+1）
+    for col = 1, cols do
+        local x = o.X + (col - 1) * step
+        makeBorder(x, o.Z - (rows + 1 - 1) * step)
+    end
+
+    print("[Tetris] 边框格子创建完成: " .. #self.border .. "/" .. (rows + rows + cols)
+          .. "（左/右/下三侧，常驻可见）")
 end
 
 -- 调试：逐行统计 已创建 / 当前显示 / 期望显示 的格子数。
