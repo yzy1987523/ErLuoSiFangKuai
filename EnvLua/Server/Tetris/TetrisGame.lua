@@ -97,6 +97,7 @@ function TetrisGame:OnTick()
     board:tick()                    -- 数据层下落一格或锁定
     self.renderer:Update(board)     -- 渲染层只跟随数据
     self:CheckPieceSpawned()        -- 产出新方块则上屏
+    self:ReportTSpin()              -- 上报 T-Spin（若有）
     if board:isOver() then
         self:OnGameOver()
     end
@@ -155,6 +156,16 @@ function TetrisGame:CheckPieceSpawned()
     self:SendScreenMessage(msg)
 end
 
+-- 把最近一次锁定产生的 T-Spin 上屏（消费式：上报后置回 "none" 避免重复提示）
+function TetrisGame:ReportTSpin()
+    if not self.board then return end
+    local t = self.board.lastTSpin
+    if t and t ~= "none" then
+        self:SendScreenMessage("T-Spin " .. (t == "full" and "满" or "Mini"))
+        self.board.lastTSpin = "none"
+    end
+end
+
 function TetrisGame:OnGameOver()
     local msg = "游戏结束 分数=" .. tostring(self.board.score)
         .. " 消行=" .. tostring(self.board.lines)
@@ -203,6 +214,7 @@ function TetrisGame:safeApply(fn)
     end
     self.renderer:Update(self.board)
     self:CheckPieceSpawned()
+    self:ReportTSpin()
     if self.board:isOver() then
         self:OnGameOver()
     end

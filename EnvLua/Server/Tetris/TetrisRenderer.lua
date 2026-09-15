@@ -435,13 +435,18 @@ function TetrisRenderer:DumpCells(want)
 end
 
 -- ---------------- 刷新 ----------------
--- 全量下发：不依赖脏检查。每帧对每个格子调用一次，
--- 直接把数据层的期望显隐状态时时刻刻落到渲染层。
--- 好处：1) 自愈"实例初始未就绪导致首帧隐藏失败"的问题；
---      2) 掉落过程中格子显隐严格跟随数据层，不会因陈旧的 shown 状态而错位。
+-- 增量下发（脏检查）：绝大多数帧只对“状态变化的格子”下发显隐，流量从 200/帧 降到个位数/帧，
+-- 消除“每帧全量逐格显隐”带来的延迟。SetCell 内：解析稳定窗口（ActorResolveFrames 帧）内仍
+-- 强制每帧重发以自愈“实例初始未就绪导致首帧隐藏失败”；稳定后仅在 visible 与上次记录不一致时下发。
 function TetrisRenderer:SetCell(row, col, visible)
     local obj = self.cells[row] and self.cells[row][col]
     if not obj then return end
+    -- 增量/脏检查：状态未变化则跳过，绝大多数帧只有下落的几格 + 上/下一行真正下发显隐。
+    -- 但解析稳定窗口内（ActorResolveFrames 帧）强制每帧重发：自愈“实例初始未就绪导致首帧隐藏失败”，
+    -- 一旦底层 Actor 在窗口内某帧就绪，隐藏/显示指令才能在那帧真正落地。稳定后 Actor 已就绪，
+    -- 早退安全（之前的显隐已持久生效），不会漏发。
+    local force = (self.frame <= TetrisConfig.Render.ActorResolveFrames)
+    if not force and self.shown[row][col] == visible then return end
     self:ApplyVisible(row, col, visible)
     self.shown[row][col] = visible
 end
@@ -481,7 +486,8 @@ function TetrisRenderer:Update(board)
         want[cell.row][cell.col] = true
     end
 
-    -- 每帧全量下发，不依赖脏检查（详见 SetCell 注释）
+    -- 双层遍历每帧跑一遍（仅做 shown 状态比较，成本极低）；真正的显隐指令由 SetCell 脏检查决定，
+    -- 只下发“状态变化的格子”（解析稳定窗口前 ActorResolveFrames 帧除外，详见 SetCell 注释）。
     for r = 1, rows do
         for c = 1, cols do
             self:SetCell(r, c, want[r][c])

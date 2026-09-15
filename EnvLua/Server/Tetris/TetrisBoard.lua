@@ -22,10 +22,13 @@ local function rotateMatrixCW(m)
     return out
 end
 
--- 预生成每种方块的 4 个旋转态
-local function buildRotationStates(shape)
-    local states = { shape }
-    local cur = shape
+-- 预生成每种方块的 4 个旋转态（SRS）。
+-- JLSTZ 走朴素 3x3 矩阵旋转（等价于 SRS）；I 用配置里的显式 4 态（朴素旋转会使其在踢墙表中错位）。
+local function buildRotationStates(id, def)
+    local srs = TetrisConfig.SRSRotationStates and TetrisConfig.SRSRotationStates[id]
+    if srs then return srs end
+    local states = { def.shape }
+    local cur = def.shape
     for _ = 1, 3 do
         cur = rotateMatrixCW(cur)
         states[#states + 1] = cur
@@ -35,7 +38,7 @@ end
 
 local rotationStates = {}
 for id, def in pairs(TetrisConfig.Pieces) do
-    rotationStates[id] = buildRotationStates(def.shape)
+    rotationStates[id] = buildRotationStates(id, def)
 end
 
 -- ---------------- 构造 / 重置 ----------------
@@ -74,6 +77,9 @@ function TetrisBoard:reset()
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
     self.lastSpawned = nil
+    self.lastWasRotation = false  -- 最近一次有效操作是否为旋转（T-Spin 判定用）
+    self.lastKickIndex = nil      -- 旋转成功命中的踢墙偏移序号（1 起；>=4 触发 mini->full 升级）
+    self.lastTSpin = "none"       -- 最近一次锁定产生的 T-Spin 结果："none"|"mini"|"full"
 
     self:spawn()
     return self
@@ -129,6 +135,9 @@ function TetrisBoard:spawn(typeOverride)
     if not self:canPlace(self.active, x, y, 1) then
         self.isGameOver = true
     end
+    -- 新方块入场：清除上一块的旋转/T-Spin 标记
+    self.lastWasRotation = false
+    self.lastKickIndex = nil
     return not self.isGameOver
 end
 
@@ -154,18 +163,57 @@ function TetrisBoard:canPlace(piece, x, y, rot)
     return true
 end
 
+-- ---------------- T-Spin 判定（3 角规则） ----------------
+-- 3x3 包围盒四角（1-indexed 盒内行列）按 rot 划分“前角/后角”。
+-- rot：1=出生(尖朝上) 2=R(尖朝右) 3=2(尖朝下) 4=L(尖朝左)
+local TSPIN_CORNERS = {
+    [1] = { front = { {1,1}, {1,3} }, back = { {3,1}, {3,3} } },
+    [2] = { front = { {1,3}, {3,3} }, back = { {1,1}, {3,1} } },
+    [3] = { front = { {3,1}, {3,3} }, back = { {1,1}, {1,3} } },
+    [4] = { front = { {1,1}, {3,1} }, back = { {1,3}, {3,3} } },
+}
+
+-- 网格坐标 (gx,gy) 是否被占据：左右墙/地板(越界)算占据；天花板(顶部之上)算空；盘内看 grid。
+local function cornerOccupied(self, gx, gy)
+    if gx < 1 or gx > self.cols or gy > self.rows then return true end
+    if gy < 1 then return false end
+    return self.grid[gy][gx] ~= 0
+end
+
+-- 返回 "none" | "mini" | "full"
+function TetrisBoard:detectTSpin(p, wasRotation, kickIndex)
+    if p.type ~= pieceType.T or not wasRotation then return "none" end
+    local corners = { {1,1}, {1,3}, {3,1}, {3,3} }
+    local filled = 0
+    for _, cc in ipairs(corners) do
+        if cornerOccupied(self, p.x + cc[2] - 1, p.y + cc[1] - 1) then
+            filled = filled + 1
+        end
+    end
+    if filled < 3 then return "none" end
+    local c = TSPIN_CORNERS[p.rot]
+    local frontFilled = cornerOccupied(self, p.x + c.front[1][2] - 1, p.y + c.front[1][1] - 1)
+                     and cornerOccupied(self, p.x + c.front[2][2] - 1, p.y + c.front[2][1] - 1)
+    if frontFilled then return "full" end
+    -- mini：若命中第 4/5 个踢墙偏移（TST/fin 踢），按标准规则升级为 full
+    if kickIndex and kickIndex >= 4 then return "full" end
+    return "mini"
+end
+
 -- ---------------- 操作 ----------------
 function TetrisBoard:move(dx)
     if self.isGameOver or not self.active then return false end
     local p = self.active
     if self:canPlace(p, p.x + dx, p.y, p.rot) then
         p.x = p.x + dx
+        self.lastWasRotation = false   -- 平移会取消 T-Spin 资格
         return true
     end
     return false
 end
 
--- 旋转：dir = 1 顺时针，-1 逆时针；带简易踢墙（依次尝试横向偏移）
+-- 旋转：dir = 1 顺时针，-1 逆时针；使用 SRS 标准踢墙表（按方块分组：I 专属，其余用 JLSTZ 表）。
+-- 成功时记录 lastWasRotation / lastKickIndex，供 lockPiece 里的 T-Spin 判定使用。
 function TetrisBoard:rotate(dir)
     if self.isGameOver or not self.active then return false end
     local p = self.active
@@ -173,11 +221,17 @@ function TetrisBoard:rotate(dir)
     local newRot = ((p.rot - 1 + dir) % n) + 1
     if newRot == p.rot then return false end
 
-    local kicks = { 0, -1, 1, -2, 2 }
-    for _, kx in ipairs(kicks) do
-        if self:canPlace(p, p.x + kx, p.y, newRot) then
-            p.x = p.x + kx
+    local group = (p.type == pieceType.I) and TetrisConfig.SRSKicks.I or TetrisConfig.SRSKicks.JLSTZ
+    local kicks = (group[p.rot] and group[p.rot][newRot]) or { {0, 0} }
+    for i, k in ipairs(kicks) do
+        local nx = p.x + k[1]
+        local ny = p.y + k[2]
+        if self:canPlace(p, nx, ny, newRot) then
+            p.x = nx
+            p.y = ny
             p.rot = newRot
+            self.lastWasRotation = true
+            self.lastKickIndex = i
             return true
         end
     end
@@ -190,6 +244,7 @@ function TetrisBoard:softDrop()
     local p = self.active
     if self:canPlace(p, p.x, p.y + 1, p.rot) then
         p.y = p.y + 1
+        self.lastWasRotation = false   -- 下落会取消 T-Spin 资格
         self.score = self.score + TetrisConfig.Score.SoftDropPerCell
         return true
     end
@@ -235,6 +290,8 @@ function TetrisBoard:hold()
     end
     -- 必须放在最后：spawn() 内部会把 canHold 重置为 true
     self.canHold = false
+    self.lastWasRotation = false
+    self.lastKickIndex = nil
     return true
 end
 
@@ -242,6 +299,9 @@ end
 function TetrisBoard:lockPiece()
     if not self.active then return end
     local p = self.active
+    -- 落定瞬间判定 T-Spin（在写入 grid 之前，依据当前占用情况）
+    local tspin = self:detectTSpin(p, self.lastWasRotation, self.lastKickIndex)
+
     local m = rotationStates[p.type][p.rot]
     local n = #m
 
@@ -258,14 +318,15 @@ function TetrisBoard:lockPiece()
     end
     self.active = nil
 
-    local cleared = self:clearLines()
+    local cleared = self:clearLines(tspin)
+    self.lastTSpin = (tspin ~= "none") and tspin or "none"
     self:applyGarbage()
     self:spawn()
     return cleared
 end
 
--- 消除满行，返回消除行数
-function TetrisBoard:clearLines()
+-- 消除满行，返回消除行数。tspin 为 "none"/"mini"/"full"：T-Spin 时计分用 T-Spin 表而非普通消行表。
+function TetrisBoard:clearLines(tspin)
     local cleared = 0
     local writeRow = self.rows
 
@@ -297,7 +358,17 @@ function TetrisBoard:clearLines()
     end
 
     if cleared > 0 then
-        local base = TetrisConfig.Score.LineClear[cleared] or 0
+        -- T-Spin 与普通消行二选一计分：T-Spin 分值已内含消行收益，避免重复累加
+        local base
+        if tspin and tspin ~= "none" then
+            if tspin == "full" then
+                base = TetrisConfig.Score.TSpin.Full[cleared] or 0
+            else
+                base = TetrisConfig.Score.TSpin.Mini[cleared] or 0
+            end
+        else
+            base = TetrisConfig.Score.LineClear[cleared] or 0
+        end
         self.score = self.score + base * self.level
         self.combo = self.combo + 1
         if self.combo > 0 then
