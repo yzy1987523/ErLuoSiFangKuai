@@ -67,21 +67,7 @@ function TetrisRenderer:ResolveOrigin()
         end
     end
 
-    print(string.format("[Tetris] 盘面锚点来源=%s 左上角=(%.2f, %.2f, %.2f)",
-        src, base.X, base.Y, base.Z))
     return base
-end
-
-function TetrisRenderer:PrintBounds()
-    local r = TetrisConfig.Render
-    local cols, rows = TetrisConfig.Board.Cols, TetrisConfig.Board.Rows
-    local tl = self:cellLocation(1, 1)
-    local br = self:cellLocation(rows, cols)
-    local w = (cols - 1) * (r.CellSize + r.CellGap)
-    local h = (rows - 1) * (r.CellSize + r.CellGap)
-    print(string.format(
-        "[Tetris] 盘面范围 X[%.2f ~ %.2f] Y=%.2f Z[%.2f ~ %.2f]  宽%.2fm 高%.2fm",
-        tl.X, br.X, tl.Y, br.Z, tl.Z, w, h))
 end
 
 -- 纵向盘面：X 轴 = 列（左右），Z 轴 = 行（顶行 Z 最大，向下递减），Y = 深度固定。
@@ -160,7 +146,6 @@ function TetrisRenderer:ProbeCreator(candidates, loc, scale)
             end
         end)
         if ok and obj then
-            print("[Tetris] 创建方式探测成功 -> " .. a.label)
             return a.mode, a.ref, obj
         end
     end
@@ -264,7 +249,6 @@ function TetrisRenderer:Build()
     local keyBottom = TetrisConfig.Render.BlockAssetRefKeyBottom
     local candTop = collectRefCandidates(keyTop)
     local candBottom = collectRefCandidates(keyBottom)
-    print(string.format("[Tetris] 资源引用候选: 上区=%d 下区=%d", #candTop, #candBottom))
 
     local loc0 = Game:ConstructFVectorByLuaTable(self:cellLocation(1, 1))
     local mode, refTop, firstObj
@@ -292,7 +276,6 @@ function TetrisRenderer:Build()
             print("[Tetris][ERROR] 强制 Actor 模式首格创建失败: " .. tostring(obj))
             return false
         end
-        print("[Tetris] 强制 Actor 模式（CreateActor，绕过动态实例池上限）")
     else
         -- 探测创建方式：用上区首格探一次即可（上下两区同为动态实例，mode 通用）
         mode, refTop, firstObj = self:ProbeCreator(candTop, loc0, scale)
@@ -338,12 +321,6 @@ function TetrisRenderer:Build()
     end
 
     self.built = true
-    print("[Tetris] 方块格子创建完成: " .. okCount .. "/" .. (rows * cols)
-          .. "  模式=" .. tostring(self.mode)
-          .. "（显隐交由稳定期刷新处理）")
-    if TetrisConfig.Debug.PrintBoardBounds then
-        self:PrintBounds()
-    end
     self:BuildBorder()
     return okCount > 0
 end
@@ -407,31 +384,6 @@ function TetrisRenderer:BuildBorder()
         makeBorder(x, o.Z - (rows + 1 - 1) * step)
     end
 
-    print("[Tetris] 边框格子创建完成: " .. #self.border .. "/" .. (rows + rows + cols)
-          .. "（左/右/下三侧，常驻可见）")
-end
-
--- 调试：逐行统计 已创建 / 当前显示 / 期望显示 的格子数。
--- 用于区分两类问题：
---   1) created < 10（整行缺格）-> 创建阶段就失败了（资源/距离/数量上限），与显隐无关；
---   2) created=10 但 shown=0 而 want>0 -> 生成了却被错误隐藏。
-function TetrisRenderer:DumpCells(want)
-    local rows = TetrisConfig.Board.Rows
-    local cols = TetrisConfig.Board.Cols
-    print("[Tetris][DUMP] 逐行格子状态  created / shown / want")
-    for r = 1, rows do
-        local created, shown, w = 0, 0, 0
-        for c = 1, cols do
-            if self.cells[r] and self.cells[r][c] then created = created + 1 end
-            if self.shown[r] and self.shown[r][c] then shown = shown + 1 end
-            if want and want[r] and want[r][c] then w = w + 1 end
-        end
-        print(string.format("  row %2d: created=%2d shown=%2d want=%2d%s",
-            r, created, shown, w,
-            created < cols and "  <-- 本行有格子未创建!" or ""))
-    end
-    print(string.format("[Tetris][DUMP] 模式=%s 解析Actor=%d/%d 已建=%s frame=%d",
-        tostring(self.mode), self.actorCount, rows * cols, tostring(self.built), self.frame))
 end
 
 -- ---------------- 刷新 ----------------
@@ -449,20 +401,6 @@ function TetrisRenderer:SetCell(row, col, visible)
     if not force and self.shown[row][col] == visible then return end
     self:ApplyVisible(row, col, visible)
     self.shown[row][col] = visible
-end
-
--- 把期望显隐矩阵打印成字符画，便于和屏幕实际画面对照
-function TetrisRenderer:PrintGrid(want)
-    local rows = TetrisConfig.Board.Rows
-    local cols = TetrisConfig.Board.Cols
-    print("[Tetris] 期望显隐（# 应显示 / . 应隐藏），第1行=盘面顶部")
-    for r = 1, rows do
-        local line = ""
-        for c = 1, cols do
-            line = line .. (want[r][c] and "#" or ".")
-        end
-        print("  " .. string.format("%2d|", r) .. line)
-    end
 end
 
 -- 按数据层刷新整块盘面：已固定格子 + 当前下落方块
@@ -494,19 +432,6 @@ function TetrisRenderer:Update(board)
         end
     end
 
-    -- 解析窗口结束后汇报底层 Actor 解析情况
-    if self.frame == TetrisConfig.Render.ActorResolveFrames + 1 then
-        print("[Tetris] Actor解析完成, 底层Actor解析=" .. tostring(self.actorCount)
-              .. "/" .. (rows * cols))
-    end
-
-    if TetrisConfig.Debug.PrintGrid then
-        self:PrintGrid(want)
-    end
-    if TetrisConfig.Debug.DumpCellStatus
-        and (self.frame % 30 == 0 or self.frame == TetrisConfig.Render.ActorResolveFrames + 1) then
-        self:DumpCells(want)
-    end
 end
 
 function TetrisRenderer:Clear()

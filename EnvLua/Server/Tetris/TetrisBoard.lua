@@ -507,16 +507,4 @@ function TetrisBoard:getHoldType()
     return self.holdType
 end
 
--- 调试用：把盘面打印成字符串
-function TetrisBoard:dump()
-    local s = ""
-    for r = 1, self.rows do
-        for c = 1, self.cols do
-            s = s .. (self.grid[r][c] == 0 and "." or tostring(self.grid[r][c]))
-        end
-        s = s .. "\n"
-    end
-    return s
-end
-
 return TetrisBoard

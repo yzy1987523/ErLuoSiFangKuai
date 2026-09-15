@@ -88,8 +88,7 @@ function TetrisNativeUI:Hide()
     local cfg = TetrisConfig.NativeUI
     if not (cfg and cfg.Enabled) then return end
     self.hidden = true
-    local n = self:ApplyAll(false)
-    print("[Tetris] 隐藏原生 UI 控件数=" .. tostring(n))
+    self:ApplyAll(false)
 
     -- 角色生成/切场景后原生 UI 可能被重建，开局多刷几次（与渲染层 Settle 同理）
     for i = 1, (cfg.RetryFrames or 0) do
@@ -103,8 +102,7 @@ end
 function TetrisNativeUI:Restore()
     if not self.hidden then return end
     self.hidden = false
-    local n = self:ApplyAll(true)
-    print("[Tetris] 还原原生 UI 控件数=" .. tostring(n))
+    self:ApplyAll(true)
 end
 
 -- ---------------- 新玩家补发 ----------------

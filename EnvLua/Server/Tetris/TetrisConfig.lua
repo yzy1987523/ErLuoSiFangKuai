@@ -247,17 +247,7 @@ TetrisConfig.UI = {
     BtnSkill = ci("1_CreativeInstance_23643902211339624"),
 }
 
--- 技能按钮：本期占位（技能系统属 P4），点击仅记录日志
+-- 技能按钮：本期占位（技能系统属 P4），点击暂不处理
 TetrisConfig.SkillEnabled = false
-
--- ===================== 调试 =====================
-TetrisConfig.Debug = {
-    PrintBoardBounds = true,  -- Build 完成后打印盘面世界坐标范围
-    PrintGrid = false,        -- 每次刷新打印期望显隐的字符画（排查行列映射用，较刷屏）
-    DumpCellStatus = true,    -- 逐行打印 已创建/当前显示/期望显示，定位“生成了但被隐藏”或“没生成”
-    ShowPieceInfo = true,     -- 每次生成新下落方块时，把信息上屏
-    ShowPieceInfoPopup = false, -- false = 聊天框(SendQuickMenuMessage)；true = 屏幕弹窗(SendBattlePopupMessage)
-    ShowGameOverInfo = true,  -- 结束时上屏结算
-}
 
 return TetrisConfig
