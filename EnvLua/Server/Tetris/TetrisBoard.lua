@@ -74,6 +74,9 @@ function TetrisBoard:reset()
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
     self.lastSpawned = nil
+    -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
+    self.pendingClearedRows = nil     -- 本次 lockPiece 被消除的行号列表
+    self.pendingGarbageMoved = nil    -- 本次是否发生过垃圾行上移（会导致普通位移公式失效）
 
     self:spawn()
     return self
@@ -165,19 +168,37 @@ function TetrisBoard:move(dx)
     return false
 end
 
--- 旋转：dir = 1 顺时针，-1 逆时针；带简易踢墙（依次尝试横向偏移）
+-- 取 SRS 踢墙偏移表（数据层与渲染层共享 TetrisConfig.Rotation）。
+-- 返回形如 { {x,y}, ... } 的列表，y 向上为正（棋盘向下为正，应用时 newY = y - ky）。
+function TetrisBoard:getKicks(type, fromRot, toRot)
+    local f = (fromRot - 1) % 4
+    local t = (toRot - 1) % 4
+    local R = TetrisConfig.Rotation
+    if type == TetrisConfig.PieceType.I then
+        return (R.I[f] and R.I[f][t]) or { { 0, 0 } }
+    elseif type == TetrisConfig.PieceType.O then
+        return { { 0, 0 } }   -- O 旋转不变形，仅原地（枢轴即 4×4 框中心）
+    else
+        return (R.JLSTZ[f] and R.JLSTZ[f][t]) or { { 0, 0 } }
+    end
+end
+
+-- 旋转：dir = 1 顺时针，-1 逆时针；带 SRS 踢墙（依次尝试偏移表，含纵向）。
 function TetrisBoard:rotate(dir)
     if self.isGameOver or not self.active then return false end
     local p = self.active
     local n = #rotationStates[p.type]
-    local newRot = ((p.rot - 1 + dir) % n) + 1
-    if newRot == p.rot then return false end
+    local from = p.rot
+    local to = ((p.rot - 1 + dir) % n) + 1
+    if to == p.rot then return false end
 
-    local kicks = { 0, -1, 1, -2, 2 }
-    for _, kx in ipairs(kicks) do
-        if self:canPlace(p, p.x + kx, p.y, newRot) then
-            p.x = p.x + kx
-            p.rot = newRot
+    local kicks = self:getKicks(p.type, from, to)
+    for _, k in ipairs(kicks) do
+        -- SRS 偏移 (kx, ky)，ky 向上为正；棋盘 y 向下为正 → newY = p.y - ky
+        if self:canPlace(p, p.x + k[1], p.y - k[2], to) then
+            p.x = p.x + k[1]
+            p.y = p.y - k[2]
+            p.rot = to
             return true
         end
     end
@@ -269,6 +290,7 @@ function TetrisBoard:clearLines()
     local cleared = 0
     local writeRow = self.rows
 
+    local clearedRows = {}
     for r = self.rows, 1, -1 do
         local full = true
         for c = 1, self.cols do
@@ -279,6 +301,7 @@ function TetrisBoard:clearLines()
         end
         if full then
             cleared = cleared + 1
+            clearedRows[#clearedRows + 1] = r
         else
             if writeRow ~= r then
                 -- 把当前行下移到 writeRow
@@ -289,6 +312,8 @@ function TetrisBoard:clearLines()
             writeRow = writeRow - 1
         end
     end
+    -- 记录本次被消除的行，供渲染层做 parent-shift（方块整体下落动画）
+    self.pendingClearedRows = (#clearedRows > 0) and clearedRows or nil
     -- 顶部剩余行清空
     for r = writeRow, 1, -1 do
         for c = 1, self.cols do
@@ -315,6 +340,20 @@ function TetrisBoard:clearLines()
     return cleared
 end
 
+-- 渲染层消费：取走本次被消除的行号（取后清空，避免重复处理）
+function TetrisBoard:consumeClearedRows()
+    local r = self.pendingClearedRows
+    self.pendingClearedRows = nil
+    return r
+end
+
+-- 渲染层消费：本次是否发生过垃圾行上移（取后清空）
+function TetrisBoard:consumedGarbageMoved()
+    local g = self.pendingGarbageMoved
+    self.pendingGarbageMoved = nil
+    return g
+end
+
 -- ---------------- 垃圾行（对战） ----------------
 function TetrisBoard:addGarbage(count)
     self.pendingGarbage = self.pendingGarbage + count
@@ -325,6 +364,7 @@ function TetrisBoard:applyGarbage()
     local count = self.pendingGarbage
     if count <= 0 then return 0 end
     self.pendingGarbage = 0
+    self.pendingGarbageMoved = true   -- 垃圾行上移会改变方块位置，渲染层应退化为逐格重排
 
     for _ = 1, count do
         -- 整体上移一行，顶行被挤出（若顶行非空则游戏结束）
@@ -371,6 +411,11 @@ end
 function TetrisBoard:getCell(row, col)
     if row < 1 or row > self.rows or col < 1 or col > self.cols then return 0 end
     return self.grid[row][col]
+end
+
+-- 当前下落方块整体状态 {type, rot, x, y}（或 nil），供渲染层整体方块使用
+function TetrisBoard:getActive()
+    return self.active
 end
 
 -- 当前下落方块占用的格子列表 {{row, col, colorType}, ...}，供渲染层叠加显示

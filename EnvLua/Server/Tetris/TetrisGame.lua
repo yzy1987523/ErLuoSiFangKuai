@@ -41,9 +41,25 @@ function TetrisGame:Start()
     self.nativeUI:Hide()     -- 隐藏全部原生 UI，只留自建 CustomUI
     self:RegisterInput()
     self:ScheduleSettle()   -- 先让实例 spawn 完成并把显隐刷到位
-    self:ScheduleTick()
+
+    -- 开局预览：把 7 种方块摆在面前排成一排，暂停下落 N 秒供肉眼核对形状，再正式开始。
+    -- 仅整体模式(wholePieceAttach)有效；回退模式不进预览，直接开始。
+    local cfg = TetrisConfig.Render
+    if cfg.PreviewBeforeStart and self.renderer and self.renderer.wholePieceAttach then
+        local secs = cfg.PreviewSeconds or 10
+        self.renderer:ShowcasePieces(secs)
+        self.owner:AddTimerOnce(secs, function()
+            if not self.running then return end
+            self.renderer:EndShowcase()
+            self:ScheduleTick()
+            self:CheckPieceSpawned()
+            print("[Tetris] 预览结束，开始下落")
+        end)
+    else
+        self:ScheduleTick()
+        self:CheckPieceSpawned()
+    end
     print("[Tetris] Start")
-    self:CheckPieceSpawned()   -- 提示开局第一个方块
 end
 
 function TetrisGame:Stop()
@@ -94,6 +110,7 @@ function TetrisGame:OnTick()
         self:OnGameOver()
         return
     end
+    self.renderer:PrewarmNext(board)  -- 下落前预热下一个方块：根 spawn + 子块附着，上场即完整
     board:tick()                    -- 数据层下落一格或锁定
     self.renderer:Update(board)     -- 渲染层只跟随数据
     self:CheckPieceSpawned()        -- 产出新方块则上屏
