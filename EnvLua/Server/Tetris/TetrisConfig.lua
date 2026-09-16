@@ -9,6 +9,32 @@ TetrisConfig.Board = {
     -- 网格坐标约定：row 1 = 最顶行，row Rows = 最底行；col 1 = 最左列
 }
 
+-- ===================== 初始预填版面（开局即存在的方块） =====================
+-- 让开局盘面直接带有方块，可在编辑器/配置里自由布置；预填成满行时「开局即可消除」。
+-- 时机：Board:reset() 末尾、方块 spawn() 之前写入 grid；是否立即消除由 AutoClearOnStart 控制。
+TetrisConfig.InitialLayout = {
+    -- 总开关：false = 完全不预填（等同原版）；true = 按下面数据预填。
+    Enabled = true,
+    -- 开局自动消除初始满行（播放下落动画，且不计分/不污染 combo 等级）。
+    -- false = 保留预填满行，直到玩家第一次锁定方块（lockPiece 的 clearLines）才消除。
+    AutoClearOnStart = true,
+
+    -- 预填数据（两种写法可同时用，都会叠加写入 grid）：
+    --   Rows  ：数组，索引 1 = 顶行，#Rows = 底行，每行字符串 = Cols 个字符。
+    --   ByRow ：字典 {[row]=str}，按行号精确预填（1=顶，Rows=底），只写有内容的行即可。
+    -- 字符含义：'.' = 空，'1'~'7' = 方块颜色/类型（见 PieceType），'8' = 垃圾块。
+    -- 注意：预填块请避免占据顶部 1~4 行（方块从顶行 spawn），否则开局会因无法生成而直接结束。
+    Rows = nil,
+    ByRow = {
+        -- 取消下行注释 = 底行填满，开局立刻消除（演示「初始就能消除」）：
+        -- [20] = "1111111111",
+        -- 例：第 19 行局部填充（开头 1、末尾两格）：
+        -- [19] = "1.......11",
+        -- 多行同消（四连消）示例：
+        [20] = "1111111111", [19] = "111.111111", [18] = "1111111111", [17] = "1.11111111",
+    },
+}
+
 -- ===================== 方块（四格骨牌） =====================
 -- 7 种标准 Tetromino，spawn 形态用 0/1 矩阵表示（1 = 占位）。
 -- 旋转态由矩阵旋转自动生成，O 型旋转后形态不变。
@@ -185,6 +211,7 @@ TetrisConfig.Render = {
     --     1) PieceRootPresetKey   —— 隐形根(EmptyActor) 46_ActorPreset_1670711180，必须有；
     --     2) PieceChildPresetKey  —— 方块子 Actor（复用盘面方块预设 46_ActorPreset_2074770），必须有。
     UseWholePieceAttach = true,
+    PieceQueueSize = 7,        -- 方块队列预生成深度（轻量队列封装用；默认 7 覆盖全部形状）
     -- 方案2（已证不可用，关闭）：本引擎不复制运行时 AddComponent 子组件的 transform，客户端全叠原点。
     UseWholePieceV2 = false,
 
@@ -276,6 +303,7 @@ TetrisConfig.Debug = {
     ShowPieceInfo = true,     -- 每次生成新下落方块时，把信息上屏
     ShowPieceInfoPopup = false, -- false = 聊天框(SendQuickMenuMessage)；true = 屏幕弹窗(SendBattlePopupMessage)
     ShowGameOverInfo = true,  -- 结束时上屏结算
+    DropDbg = true,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
 }
 
 return TetrisConfig

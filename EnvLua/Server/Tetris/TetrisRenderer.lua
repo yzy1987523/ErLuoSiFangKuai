@@ -35,6 +35,9 @@ function TetrisRenderer:new()
     o.pool = {}          -- 对象池：空闲方块 Actor 列表（预建 rows*cols 个，停在停车场）
     o.occ = {}           -- occ[row][col] = 占用该格的独立方块 Actor；nil=空（替代原 200 固定槽）
     o.shiftRoot = nil    -- 消行 parent-shift 临时根（EmptyActor），移完拆父
+    o.pieceQueue = {}    -- 活动方块队列：预生成的方块实例（按类型），acquire/release 管理取还
+    o.shownPiece = nil   -- 当前显示中的活动方块实例（队列语义，替代直接用 self.pieces[wantType]）
+    o.piecesReady = false  -- 全部整体实例预热就绪（_everReady）后才渲染活动块，避免实例未建好导致方块错乱
     return o
 end
 
@@ -116,6 +119,28 @@ local function makeZeroRotator()
     end)
     if ok and rot then return rot end
     return nil
+end
+
+-- 构造整体方块根 Actor 的旋转：绕盘面垂直轴（世界 Y / UE Pitch，对应 MakeFromEuler 的 X 分量）
+-- 旋转 (rot-1)*90°，方向由 TetrisConfig.Render.PieceSpinSign 对齐数据层 rotateMatrixCW。
+-- 注：MakeFromEuler 的 Y 分量会被当成 Yaw（绕 Z 轴），故绕盘面垂直轴必须填 X 分量（Pitch）。
+-- 旋转后子块世界坐标 = 根位置 + R*原始偏移，应与 rotateOffset(rot) 矩阵一致（已验证等价数据层）。
+local function makePieceRotator(rot)
+    local sign = TetrisConfig.Render.PieceSpinSign or 1
+    -- 关键修复：UE FRotator::MakeFromEuler 把输入 (X,Y,Z) 映射成 (Roll, Pitch, Yaw)，
+    -- 即 X→绕Z轴(Roll)、Y→绕Y轴(Pitch)、Z→绕Z轴(Yaw)。盘面二维坐标用 (X,Z)，垂直轴是 Y，
+    -- 所以方块在盘面内旋转必须绕 Y 轴(Pitch) → 角度必须放在 Y 分量，不能用 X！
+    -- 另外 UE 绕 Y 的真实矩阵 (x'=x·cosθ−z·sinθ) 与 rotateOffset(ang: X'=dx·cos+dz·sin) 符号相反，
+    -- 故 deg 取负使其等价 rotateOffset(ang)。
+    local deg = -(rot - 1) * 90 * sign
+    local ok, r = pcall(function()
+        if type(FRotator) == "table" and FRotator.MakeFromEuler then
+            return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = deg, Z = 0 }))
+        end
+        return nil
+    end)
+    if ok and r then return r end
+    return makeZeroRotator()
 end
 
 -- 绕 Y 轴（盘面法向/深度轴）的俯仰旋转：tetromino 在 X-Z 竖直面内旋转即用 Pitch。
@@ -242,15 +267,37 @@ end
 -- 从对象池取出一个空闲方块 Actor；池耗尽（理论不会）时兜底新建一个。
 function TetrisRenderer:AcquireActor()
     local a = table.remove(self.pool)
-    if a then return a end
+    if a then
+        -- 重复占用检测：若 a 仍在占用集合，说明之前没 Release 就被再次取出 → occ 双重占用 → 一格漏显示。
+        if self._occUsed and self._occUsed[a] then
+            self._dupN = (self._dupN or 0) + 1
+            if self._dupN % 120 == 1 then
+                print(string.format("[Tetris][DUP] Actor 被重复占用（occ 管理冲突→漏单元）%s", tostring(a)))
+            end
+        end
+        self._occUsed = self._occUsed or {}
+        self._occUsed[a] = true
+        return a
+    end
     local s = TetrisConfig.Render.BlockScale
     local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
-    return self:CreateOne(Game:ConstructFVectorByLuaTable(self.hideLoc), scale, self.refTop)
+    local na = self:CreateOne(Game:ConstructFVectorByLuaTable(self.hideLoc), scale, self.refTop)
+    if na then
+        self._occUsed = self._occUsed or {}
+        self._occUsed[na] = true
+    else
+        self._noActorN = (self._noActorN or 0) + 1
+        if self._noActorN % 120 == 1 then
+            print("[Tetris][LEAKCELL] 对象池耗尽且新建失败：落定格无 Actor（漏单元）")
+        end
+    end
+    return na
 end
 
 -- 归还方块 Actor 到对象池（停回停车场，保持可见但脱离盘面）。
 function TetrisRenderer:ReleaseActor(a)
     if a then
+        if self._occUsed then self._occUsed[a] = nil end
         pcall(function() a:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
         self.pool[#self.pool + 1] = a
     end
@@ -528,16 +575,16 @@ function TetrisRenderer:BuildActivePiecesV3()
     end
     self.wholePieceAttach = (built > 0)
     print("[Tetris] 整体活动方块(方案3 附着子Actor)已构建: " .. built .. "/7（根+4子Actor，移动只传根→原子跟随）")
+    self:fillPieceQueue()  -- 把预建实例入队，供 acquire/release 管理取还
 end
 
 -- 方案3：只传送根 Actor（平移单变换，保留 V3 的 1/4 流量优势）；
--- 旋转/换型时把子 Actor 相对偏移烘焙成与数据层 rotateMatrixCW「完全一致」的方向（rotateOffset）。
--- 关键修复：根保持零旋转，不再用引擎 Pitch（MakeFromEuler 的 Y 分量是 Yaw/绕 Z 轴，与盘面绕 Y 轴旋转
--- 不是同一轴，且旋转方向约定与数据层矩阵 CW 不一致），否则旋转后子块世界坐标 ≠ cellLocation(数据格)，
--- 落地瞬间整块跳位。
--- 判定整体方块是否“完整”：所有子 Actor 已正确跟随根
+-- 旋转由根 Actor 绕盘面垂直轴（世界 Y / UE Pitch = MakeFromEuler 的 X 分量）旋转 (rot-1)*90° 实现，
+-- 子块作为根的子 Actor 随父旋转，保持整体刚体一致（旋转不再烘焙到子块相对偏移）。
+-- 旋转方向由 makePieceRotator 用 PieceSpinSign 对齐数据层 rotateMatrixCW（与 rotateOffset 矩阵等价）。
+-- 判定整体方块是否"完整"：所有子 Actor 已正确跟随根
 -- （世界位置 ≈ 根位置 + 旋转后的相对偏移，容差 5cm）。
--- 用于在下落前确认方块已完整，避免“根已就位、子块还停在停车场”的半成品帧。
+-- 用于在下落前确认方块已完整，避免"根已就位、子块还停在停车场"的半成品帧。
 function TetrisRenderer:isWholePieceReady(p, active)
     if not p or not p.root or not p.children or #p.children == 0 then return false end
     local ok = true
@@ -559,80 +606,291 @@ function TetrisRenderer:isWholePieceReady(p, active)
     return ok
 end
 
+-- 安全附着：pcall 捕获防每帧抛错中断重试循环（保持 V3 稳健），失败每帧 Log.Error 暴露真实错误（不吞错）。
+-- 根未 spawn 时 K2_AttachToActor 若静默失败则不抛错、下一帧重试；若抛错也被 pcall 兜住，仅报警不中断。
+function TetrisRenderer:attachChildToRoot(child, root)
+    if not child or not root then return false end
+    local ok, err = pcall(function() child:K2_AttachToActor(root, "", 1, 1, 1, false) end)
+    if not ok then
+        Log.Error("[Tetris][Attach] K2_AttachToActor 失败: " .. tostring(err))
+        return false
+    end
+    self._attachOkN = (self._attachOkN or 0) + 1
+    if self._attachOkN % 60 == 1 then  -- 限频，避免每帧幂等成功刷屏
+        local ok2, cl = pcall(function() return child:K2_GetActorLocation() end)
+        if ok2 and cl then
+            Log.Info(string.format("[Tetris][Attach] 成功 child=%s loc=(%.0f,%.0f,%.0f)",
+                tostring(child), cl.X, cl.Y, cl.Z))
+        else
+            Log.Info("[Tetris][Attach] 成功 child=" .. tostring(child))
+        end
+    end
+    return true
+end
+
+-- ---------------- 活动方块队列（轻量封装） ----------------
+-- 预生成的方块实例按类型入队；活动方块生成时 acquire 一个，锁定后 release 归还。
+-- 内部实例仍为 7 种预建(wholePieceAttach)；队列仅管理「取/还」，行为不变。
+function TetrisRenderer:fillPieceQueue()
+    self.pieceQueue = {}
+    for t = 1, 7 do
+        local p = self.pieces[t]
+        if p then
+            p.type = t
+            p.inUse = false
+            table.insert(self.pieceQueue, p)
+        end
+    end
+end
+
+-- 从队列取一个指定类型的方块实例（标记占用）。队列空/无同型时回退直接取预建实例。
+-- 取出的实例只在此标记占用；子块附着仅在 PrimeAllPieces 初始化时设置一次，piecesReady 闸门保证此处已就绪，
+-- placeWholePieceV3 只移动/旋转根，子块靠 UE 附着关系随根跟随，无需重附。
+function TetrisRenderer:acquirePiece(type)
+    if not type then return nil end
+    for i, p in ipairs(self.pieceQueue) do
+        if p.type == type and not p.inUse then
+            table.remove(self.pieceQueue, i)
+            p.inUse = true
+            print(string.format("[Tetris][Pool] acquire type=%d 实例=%s 队列命中(属7预建池,无新生成)", type, tostring(p)))
+            return p
+        end
+    end
+    print(string.format("[Tetris][WARN] acquire 队列无空闲 type=%d 回退 self.pieces（仍属7预建池,非新生成）", type))
+    local p = self.pieces[type]
+    if p then p.inUse = true end
+    return p
+end
+
+-- 归还方块实例到队列（先归位停车场），供后续活动方块复用。
+function TetrisRenderer:releasePiece(p)
+    if not p then return end
+    p.inUse = false
+    self:parkWholePieceV3(p)
+    table.insert(self.pieceQueue, p)
+    print(string.format("[Tetris][Pool] release type=%d inst=%s", p.type or -1, tostring(p)))
+end
+
 -- 无条件幂等重试：把整体方块的 4 个子 Actor 附着到根，并烘焙当前 rot 的相对偏移。
 -- 每帧调用都安全：K2_AttachToActor 幂等；根未 spawn 时附着静默失败，下一帧再来，直到成功。
--- 重烘焙消除“先传送根再附着导致相对偏移错乱（子块永久停在停车场）”的隐患。
+-- 重烘焙消除"先传送根再附着导致相对偏移错乱（子块永久停在停车场）"的隐患。
 function TetrisRenderer:EnsureWholePieceAttached(p, active)
     if not p or not p.root or not p.children then return end
-    local rot = active and active.rot or 1
     for i, child in ipairs(p.children) do
-        pcall(function() child:K2_AttachToActor(p.root, "", 1, 1, 1, false) end)
+        -- 每帧幂等重附：纠正因异步 spawn / 释放复用 / 任何原因变孤儿、停在停车场的子块。
+        -- 否则 _everReady 冻结后不再重附 → 该子块永远不跟随根 → 表现为「漏显示单元」。
+        self:attachChildToRoot(child, p.root)
+        -- 每帧均重设子块相对偏移（rot=1 原始值）：常量无抖动，但可纠正任何原因（复用/旋转/detach）
+        -- 变孤儿、停在停车场(hideLoc)的子块，立即归位到根，避免「漏显示/不显示」（取消隐藏后仍停在视线外）。
         local o = p.offsets[i]
         if o then
-            local dx, dz = self:rotateOffset(o.dx, o.dz, rot)
             pcall(function()
                 child:K2_SetActorRelativeLocation(
-                    Game:ConstructFVectorByLuaTable({ X = dx * 100, Y = 0, Z = dz * 100 }))
+                    Game:ConstructFVectorByLuaTable({ X = o.dx * 100, Y = 0, Z = o.dz * 100 }))
             end)
         end
     end
 end
 
--- 预热（下落前生成好 1 个方块）：在活动方块下落期间，把“下一个方块”的根 Actor spawn 完成、
+-- 预热（下落前生成好 1 个方块）：在活动方块下落期间，把"下一个方块"的根 Actor spawn 完成、
 -- 4 个子 Actor 附着并烘焙到 rot=1 偏移，使其真正成为活动方块时已是完整整体，消除首次出现的半成品帧。
 -- 无条件幂等：根未 spawn / 子块未跟随时静默失败，每帧重试，直至就绪；期间整体隐藏在停车场外。
 function TetrisRenderer:PrewarmPiece(type)
     if not self.wholePieceAttach or not type then return end
     local p = self.pieces[type]
-    if not p or not p.root then return end
+    if not p or not p.root or p._everReady then return end
+    -- 每帧幂等重试附着 + 摆 rot=1 原始偏移（仅未就绪时设置一次）。
+    -- 不隐藏、不 teleport：可见性完全由 RenderActivePiece 控制，避免预热与显示路径互相抢实例。
     self:EnsureWholePieceAttached(p, { rot = 1 })
-    pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
-    pcall(function() p.root:SetActorHiddenInGame(true) end)
-    for _, child in ipairs(p.children or {}) do
-        pcall(function() child:SetActorHiddenInGame(true) end)
+    -- 预热完成判据：子块已随根就位（attach 成功 + 相对偏移正确）→ 冻结 _everReady，
+    -- 之后旋转/移动只转根、不再触碰任何子块坐标。
+    if self:isWholePieceReady(p, { rot = 1 }) then
+        p._everReady = true
     end
 end
 
--- 预热下一个方块（读取数据层预览队列的首个类型）
-function TetrisRenderer:PrewarmNext(board)
-    if self.previewing then return end  -- 预览期由 LayoutShowcasePieces 统一附着，勿抢回停车场
-    if not self.wholePieceAttach or not TetrisConfig.Render.UseWholePiece then return end
-    local nq = board and board:getNextQueue()
-    if not nq or not nq[1] then return end
-    -- 关键：若下一个方块与当前活动方块同型（7-bag 边界处可能相邻同型），
-    -- 其根与活动方块是同一套，预热会把它传送到停车场并隐藏，导致活动方块消失。故跳过。
-    local act = board:getActive()
-    if act and act.type == nq[1] then return end
-    self:PrewarmPiece(nq[1])
+-- 启动前预热闸门：逐帧把所有 7 种整体实例附着并就绪（_everReady）。
+-- 全部就绪后才允许渲染活动方块，避免「实例未建好 / 子块未跟随」导致的方块错乱、半成品帧。
+-- 非整体模式（回退 V1）或已就绪则直接放行。
+function TetrisRenderer:PrimeAllPieces()
+    if self.piecesReady then return end
+    if not self.wholePieceAttach then
+        self.piecesReady = true
+        return
+    end
+    local allOk = true
+    for t = 1, 7 do
+        local p = self.pieces[t]
+        if not p or not p.root then allOk = false break end
+        self:PrewarmPiece(t)
+        if not p._everReady then allOk = false end
+    end
+    if allOk then
+        self.piecesReady = true
+        print("[Tetris] 全部整体方块预热就绪 7/7，开始渲染活动块")
+    end
 end
 
 function TetrisRenderer:placeWholePieceV3(p, active)
     if not p or not p.root then return end
     local center = self:pieceCenterWorld(active)
 
-    -- 无条件幂等重试：每帧重新附着 + 重烘焙相对偏移（确保相对偏移永远正确，与根位置无关）。
-    self:EnsureWholePieceAttached(p, active)
+    -- 子块附着仅在 PrimeAllPieces 初始化时设置一次（piecesReady 闸门保证此处已就绪）；
+    -- 之后只移动/旋转根，子块靠 UE 附着关系随根整体刚体跟随，无需每帧重附防御。
+    -- 先把根定位到 spawn 并绕盘面垂直轴旋转到当前 rot（子块随根旋转，保持整体刚体一致）。
+    pcall(function() p.root:K2_TeleportTo(cmVec(center), makePieceRotator(active.rot)) end)
 
-    -- 先把根定位到 spawn（若已附着，子块随根到 spawn；若未附着，上面重烘焙已把子块直接放到 spawn+偏移）。
-    pcall(function() p.root:K2_TeleportTo(cmVec(center), self.rot) end)
+    -- 旋转构造验证探针（一次性）：打印根旋转分量(P/Y/R) 与子块相对根实际偏移 vs 期望偏移，
+    -- 确认根旋转方向/轴是否对齐 rotateOffset。打印的是数值不是类型，可直接判断方向。
+    if active.rot > 1 and not (self._rotVerifyRot and self._rotVerifyRot[active.rot]) then
+        self._rotVerifyRot = self._rotVerifyRot or {}
+        self._rotVerifyRot[active.rot] = true
+        pcall(function()
+            local function dumpRot(r)
+                if not r then return "nil" end
+                local g = function(k) local ok, v = pcall(function() return r[k] end) return ok and tostring(v) or "?" end
+                return string.format("P=%s Y=%s R=%s", g("Pitch"), g("Yaw"), g("Roll"))
+            end
+            local function getRot(actor)
+                local ok, v = pcall(function() return actor:K2_GetActorRotation() end)
+                return ok and v or nil
+            end
+            local rl = p.root:K2_GetActorLocation()
+            local c1 = p.children[1]
+            local cl = c1 and c1:K2_GetActorLocation()
+            local o = p.offsets[1]
+            local dx, dz = self:rotateOffset(o.dx, o.dz, active.rot)
+            local cR = makePieceRotator(active.rot)
+            print(string.format(
+                "[Tetris][RotVerify] cR=%s rootNow=%s 子相对=(%.0f,%.0f) 期望相对=(%.0f,%.0f) 偏差=(%.1f,%.1f)",
+                dumpRot(cR), dumpRot(getRot(p.root)),
+                cl and (cl.X - rl.X) or -1, cl and (cl.Z - rl.Z) or -1,
+                dx * 100, dz * 100,
+                cl and ((cl.X - rl.X) - dx * 100) or -1, cl and ((cl.Z - rl.Z) - dz * 100) or -1))
+        end)
+    end
 
     -- 就绪判定：子块世界位置 ≈ 根 + 偏移 → 已完整跟随。
     -- 未就绪（根尚未 spawn / 子块未跟随）：整体隐藏，玩家看不到半成品，下一帧继续。
     if not self:isWholePieceReady(p, active) then
-        pcall(function() p.root:SetActorHiddenInGame(true) end)
-        for _, child in ipairs(p.children or {}) do
-            pcall(function() child:SetActorHiddenInGame(true) end)
+        -- 半成品/漏单元诊断：判定失败（整块将隐藏）。打印 4 子块各自偏差，定位哪块孤儿(d 大)或缺失(nil)。
+        self._v3FailN = (self._v3FailN or 0) + 1
+        if self._v3FailN % 120 == 1 then
+            pcall(function()
+                local rl = p.root:K2_GetActorLocation()
+                local parts = {}
+                for i, child in ipairs(p.children or {}) do
+                    if not child then
+                        parts[#parts + 1] = string.format("#%d nil", i)
+                    else
+                        local cl = child:K2_GetActorLocation()
+                        local o = p.offsets[i]
+                        if rl and cl and o then
+                            local dx, dz = self:rotateOffset(o.dx, o.dz, active.rot)
+                            local d = math.sqrt((cl.X - (rl.X + dx * 100)) ^ 2 + (cl.Z - (rl.Z + dz * 100)) ^ 2)
+                            parts[#parts + 1] = string.format("#%d d=%.0f", i, d)
+                        else
+                            parts[#parts + 1] = string.format("#%d ?", i)
+                        end
+                    end
+                end
+                print(string.format("[Tetris][FAIL] type=%d rot=%d 判定失败 子块: %s", p.type, active.rot, table.concat(parts, " ")))
+            end)
         end
-        return
+        -- 诊断：旋转态(rot>1)判定失败时，打印首个子块实际 vs 期望偏差，确认根旋转方向/轴是否对齐 rotateOffset。
+        -- 偏差≈0 → 隐藏另有原因；偏差大且 X/Z 同号反号 → 符号反；某轴异常大 → 轴分量(X 非 Pitch)错。
+        if active.rot > 1 and not (self._v3RotDiagDone and self._v3RotDiagDone[p.type]) then
+            self._v3RotDiagDone = self._v3RotDiagDone or {}
+            self._v3RotDiagDone[p.type] = true
+            pcall(function()
+                local c1 = p.children[1]
+                local rl = p.root:K2_GetActorLocation()
+                local cl = c1 and c1:K2_GetActorLocation()
+                if rl and cl then
+                    local dx, dz = self:rotateOffset(p.offsets[1].dx, p.offsets[1].dz, active.rot)
+                    print(string.format(
+                        "[Tetris][RotDiag] type=%d rot=%d root=(%.0f,%.0f,%.0f) 实=(%.0f,%.0f,%.0f) 子相对=(%.0f,%.0f) 期望相对=(%.0f,%.0f) 偏差=(%.1f,%.1f)",
+                        p.type, active.rot, rl.X, rl.Y, rl.Z, cl.X, cl.Y, cl.Z,
+                        cl.X - rl.X, cl.Z - rl.Z, dx * 100, dz * 100,
+                        cl.X - (rl.X + dx * 100), cl.Z - (rl.Z + dz * 100)))
+                end
+            end)
+        end
+        -- 位置偏差不再隐藏整块（piecesReady 闸门已保证附着就绪，子块随根跟随，不存在孤儿）；
+        -- 隐藏整块反而造成「下落方块未显示」的假象。放行到下方统一显示（实例缺失时 pcall 兜底，不崩）。
     end
 
-    -- 就绪：显示整体方块
-    pcall(function() p.root:SetActorHiddenInGame(false) end)
-    for _, child in ipairs(p.children or {}) do
-        pcall(function() child:SetActorHiddenInGame(false) end)
+    -- 就绪：整体方块（靠移动根到盘面显示，不调用显隐；子块跟随根）。
+    -- 活动整体始终为可见状态，靠 hideLoc 视线外/盘面位置控制是否入画。
+
+    -- 可见性诊断（限频）：定位"显示不出的块"到底是「仍隐藏」还是「子块孤儿停在视线外(hideLoc)」。
+    -- rootHid=true → 唤醒/取消隐藏失败（隐藏态）；某 child d 很大 → 该子块未跟随根（视线外孤儿，attach 未生效）。
+    self._visDiagN = (self._visDiagN or 0) + 1
+    if self._visDiagN % 120 == 1 then
+        pcall(function()
+            local rh = p.root:GetActorHiddenInGame()
+            local rl = p.root:K2_GetActorLocation()
+            local parts = {}
+            for i, child in ipairs(p.children or {}) do
+                local ch = child:GetActorHiddenInGame()
+                local cl = child:K2_GetActorLocation()
+                local d = (rl and cl) and math.sqrt((cl.X - rl.X) ^ 2 + (cl.Z - rl.Z) ^ 2) or -1
+                parts[#parts + 1] = string.format("#%d hid=%s d=%.0f", i, tostring(ch), d)
+            end
+            print(string.format("[Tetris][Vis] type=%d rootHid=%s root=(%.0f,%.0f,%.0f) %s",
+                p.type, tostring(rh), rl and rl.X or -1, rl and rl.Y or -1, rl and rl.Z or -1,
+                table.concat(parts, " ")))
+        end)
     end
+
+    p._everReady = true  -- 整体已随根正确就绪：冻结子块偏移，旋转/移动纯靠根 Actor 带动（不再每帧重设）
     p.lastRot = active.rot
     p.lastType = active.type
+
+    -- 结构体检（每型一次，无条件打印）：确认 children 数量=offsets、无重复引用。
+    -- 若 children<4 或存在 #i=#j 重复 → 即「漏显示单元」的结构性根因（构建/复用裁减或引用共享）。
+    if not (self._structDone and self._structDone[p.type]) then
+        self._structDone = self._structDone or {}
+        self._structDone[p.type] = true
+        pcall(function()
+            local nk = #(p.children or {})
+            local no = #(p.offsets or {})
+            local addrs = {}
+            for _, c in ipairs(p.children or {}) do addrs[#addrs + 1] = tostring(c) end
+            local dup = {}
+            for i = 1, nk do for j = i + 1, nk do if addrs[i] == addrs[j] then dup[#dup + 1] = string.format("#%d=#%d", i, j) end end end
+            print(string.format("[Tetris][STRUCT] type=%d children=%d offsets=%d 重复=%s",
+                p.type, nk, no, #dup > 0 and table.concat(dup, " ") or "无"))
+        end)
+    end
+
+    -- 漏单元诊断：显示已发生，逐子块体检；仅发现异常（孤儿/缺失/无效）才打印，正常无噪音。
+    -- 去掉「每型一次」限制：漏单元多为偶发（复用/旋转后才出现），须每次都查才能抓到。
+    pcall(function()
+        local rl = p.root:K2_GetActorLocation()
+        local bad = {}
+        for i, child in ipairs(p.children or {}) do
+            if not child then
+                bad[#bad + 1] = string.format("#%d nil", i)
+            else
+                local cl = child:K2_GetActorLocation()
+                local o = p.offsets[i]
+                if rl and cl and o then
+                    local dx, dz = self:rotateOffset(o.dx, o.dz, active.rot)
+                    local dist = math.sqrt((cl.X - (rl.X + dx * 100)) ^ 2 + (cl.Z - (rl.Z + dz * 100)) ^ 2)
+                    if dist > 50 then bad[#bad + 1] = string.format("#%d d=%.0f", i, dist) end
+                else
+                    bad[#bad + 1] = string.format("#%d 无效", i)
+                end
+            end
+        end
+        if #bad > 0 then
+            self._leakN = (self._leakN or 0) + 1
+            if self._leakN % 120 == 1 then
+                print(string.format("[Tetris][LEAK] type=%d rot=%d 异常子块: %s", p.type, active.rot, table.concat(bad, " ")))
+            end
+        end
+    end)
 
     -- 诊断（逐类型，每局每种仅一次）：确认子 Actor 跟随根、旋转正确（服务端视角）
     if TetrisConfig.Debug and not (self._v3DiagDone and self._v3DiagDone[p.type]) then
@@ -651,10 +909,18 @@ function TetrisRenderer:placeWholePieceV3(p, active)
     end
 end
 
--- 方案3：根 Actor 归位（子 Actor 随根回停车场）
+-- 调试用：停车场移到视线内，并按 type 横向分散 7 个块，便于肉眼区分、观察回收块是否隐藏/缺子块。
+-- 仅移动根；子块随根一起到可见位。正常下落不受影响（活动块由 place 摆到盘面）。
 function TetrisRenderer:parkWholePieceV3(p)
     if not p or not p.root then return end
-    pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
+    local r = TetrisConfig.Render
+    local step = r.CellSize + r.CellGap
+    local gap = step * 4                        -- 每种间隔 4 格，避免重叠
+    local o = self.origin or r.BoardOrigin
+    local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2
+    local zShow = o.Z + step * 8                -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
+    local x = midX + (p.type - 4) * gap
+    pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = o.Y, Z = zShow }), self.rot) end)
 end
 
 -- 方案1：用统一变换把 4 个子 Actor 定位到当前位置
@@ -715,6 +981,7 @@ end
 
 -- 显示/归位活动方块整体；按 wholePieceAttach / wholePieceV2 选择方案3 / 方案2 / 方案1。
 function TetrisRenderer:RenderActivePiece(board)
+    if not self.piecesReady then return end  -- 7 种整体实例未全部附着就绪（PrimeAllPieces），不渲染活动块，避免错乱/半成品
     if self.previewing then return end  -- 预览阶段由 ShowcasePieces 接管，不渲染活动方块
     if not TetrisConfig.Render.UseWholePiece or next(self.pieces) == nil then return end
     local active = board:getActive()
@@ -722,18 +989,37 @@ function TetrisRenderer:RenderActivePiece(board)
 
     if self.wholePieceAttach then
         if wantType == self.shownPieceType then
-            if active then
-                local p = self.pieces[wantType]
-                if p then self:placeWholePieceV3(p, active) end
+            if active and self.shownPiece then
+                self:placeWholePieceV3(self.shownPiece, active)
             end
             return
         end
-        if self.shownPieceType and self.pieces[self.shownPieceType] then
-            self:parkWholePieceV3(self.pieces[self.shownPieceType])
+        -- 类型变化：回收旧的、从队列取新的
+        if self.shownPiece then self:releasePiece(self.shownPiece) end
+        local p = nil
+        if wantType then p = self:acquirePiece(wantType) end
+        if p then
+            self:placeWholePieceV3(p, active)
+            -- 下落调试：仅在新方块开始下落（acquire 取新实例）时打印一次，所有子块实际坐标 vs 预期坐标。
+            if TetrisConfig.Debug and TetrisConfig.Debug.DropDbg then
+                pcall(function()
+                    local rl = p.root:K2_GetActorLocation()
+                    local lines = {}
+                    for i, child in ipairs(p.children or {}) do
+                        local cl = child:K2_GetActorLocation()
+                        local o = p.offsets[i]
+                        local dx, dz = self:rotateOffset(o.dx, o.dz, active.rot)
+                        local ex, ez = (rl.X + dx * 100), (rl.Z + dz * 100)
+                        local dev = (cl and rl and o) and math.sqrt((cl.X - ex) ^ 2 + (cl.Z - ez) ^ 2) or -1
+                        lines[#lines + 1] = string.format("#%d act=(%.0f,%.0f,%.0f) exp=(%.0f,%.0f,%.0f) dev=%.0f",
+                            i, cl.X, cl.Y, cl.Z, ex, rl.Y, ez, dev)
+                    end
+                    print(string.format("[Tetris][DropDbg] 新块开始下落 type=%d rot=%d root=(%.0f,%.0f,%.0f)\n  %s",
+                        p.type, active.rot, rl.X, rl.Y, rl.Z, table.concat(lines, "\n  ")))
+                end)
+            end
         end
-        if wantType and self.pieces[wantType] then
-            self:placeWholePieceV3(self.pieces[wantType], active)
-        end
+        self.shownPiece = p
         self.shownPieceType = wantType
         return
     end
@@ -776,14 +1062,41 @@ end
 -- 把 7 种方块（整体模式模板）摆在盘面前方正上方一排，供肉眼核对形状。
 -- 仅整体模式(wholePieceAttach)有效；其余模式直接回调（无预览）。
 function TetrisRenderer:ShowcasePieces(seconds)
+    -- 版本标记：确认新代码是否真的加载进运行实例。重启后若看不到本行，说明仍在跑旧实例。
+    print(string.format("[Tetris][VER] 新 renderer 已加载 v2026-09-15-rot (frame=%s)", tostring(self.frame)))
+    -- pcall 捕获测试：确认 pcall 能否捕获报错；并验证 Log 是否真未定义（之前 DiagRot 用 Log.Info 被吞的元凶）
+    do
+        local ok1, r1 = pcall(function() return 1 + 1 end)
+        print(string.format("[Tetris][PcallTest] 无错 ok=%s res=%s", tostring(ok1), tostring(r1)))
+        local ok2, err2 = pcall(function() return Log.Info("若看到此说明 Log 可用") end)
+        print(string.format("[Tetris][PcallTest] 有错(Log未定义?) ok=%s err=%s", tostring(ok2), tostring(err2)))
+    end
     if not self.wholePieceAttach or next(self.pieces) == nil then return end
     self.previewing = true
     self.shownPieceType = nil
     self._showcaseDiagDone = false
+    self._previewForceRot = false               -- 半程演示旋转由 Game 在 PreviewSeconds*0.5 调用 PreviewRotateDemo() 置位
+    self._previewRotDone = false
+    self._previewSeconds = seconds or 5
+    self._previewStartFrame = self.frame or 0    -- 预览起始帧（兜底：若 Game flag/os 均不可见，按帧数在预览中期旋转）
+    -- 记录预览起始时钟（os.clock 若被环境禁用则置 nil，回退依赖 Game 的 PreviewRotateDemo 路径）
+    local ok, clk = pcall(function() return os.clock() end)
+    self._previewStartClock = ok and clk or nil
     -- 立即尝试一次；若 7 个模板的根 Actor 尚未 spawn（CreateActor 异步），附着会失败，
     -- 由 Update 在预览期每帧调用 LayoutShowcasePieces 重试，直至全部附着成功。
     self:LayoutShowcasePieces()
     print(string.format("[Tetris] 开局预览：7 种方块已摆在面前，%.0f 秒后开始下落", seconds or 10))
+end
+
+-- 预览半程触发：让 7 个展示方块整体旋转 90° 一次（与下落同源 makePieceRotator + rotateOffset），供肉眼核对旋转跟随。
+function TetrisRenderer:PreviewRotateDemo()
+    print(string.format("[Tetris][DiagSelf] PreviewRotateDemo self=%s previewing=%s", tostring(self), tostring(self and self.previewing)))
+    if not self.previewing then return end
+    self._previewForceRot = true
+    print("[Tetris][PreviewRot] PreviewRotateDemo() 被调用（Game 定时器路径）→ 主动重摆以应用旋转")
+    -- 预览期 Game 不每帧驱动 renderer:Update，LayoutShowcasePieces 仅被 ShowcasePieces 立即调过一次（rot=1）；
+    -- 故此处必须主动重摆一次，把 _previewForceRot→midRot=2 的旋转 teleport 到根，否则旋转永不应用。
+    self:LayoutShowcasePieces()
 end
 
 -- 摆出/刷新 7 种预览方块。幂等、且对异步 spawn 安全：
@@ -797,20 +1110,68 @@ function TetrisRenderer:LayoutShowcasePieces()
     local o = self.origin or r.BoardOrigin
     local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2  -- 盘面横向中心
     local zShow = o.Z + step * 2               -- 盘面上方两行处（Z 越大越高）
+    if not self._diagLayoutSelfDone then
+        self._diagLayoutSelfDone = true
+        print(string.format("[Tetris][DiagSelf] Layout self=%s previewing=%s", tostring(self), tostring(self.previewing)))
+    end
+    -- 预览半程演示旋转：优先用真实时钟（os.clock）/ Game 置位；若两者均不可见（疑似跨实例引用），
+    -- 则用帧数兜底——预览开始约 60 帧（≈1 秒）后旋转并保持，确保一定发生，便于肉眼核对。
+    local midRot = 1
+    if self._previewForceRot then
+        midRot = 2
+    elseif self._previewStartClock then
+        local ok, now = pcall(function() return os.clock() end)
+        if ok and (now - self._previewStartClock) >= (self._previewSeconds or 5) * 0.5 then
+            midRot = 2
+        end
+    else
+        local elapsed = (self.frame or 0) - (self._previewStartFrame or 0)
+        if elapsed >= 60 then midRot = 2 end
+    end
+    -- 心跳诊断：确认 Layout 在 PreviewRotateDemo 之后是否仍在每帧跑、且 _previewForceRot 是否真被读到
+    if self.previewing and (self.frame % 20 == 0) then
+        print(string.format("[Tetris][DiagHB] frame=%s forceRot=%s midRot=%s rotDone=%s", self.frame, tostring(self._previewForceRot), midRot, tostring(self._previewRotDone)))
+    end
+    if midRot == 2 and not self._previewRotDone then
+        self._previewRotDone = true
+        local mr = makePieceRotator(midRot)
+        print(string.format("[Tetris][PreviewRot] 预览演示旋转 → rot=%d（子块应随根整体转，形状正确即旋转OK）", midRot))
+        -- 硬诊断：根是否真转、子块是否跟随根（相对根的位置应≈rot=1 原始偏移，且根旋转≠0）
+        local p1 = self.pieces[1]
+        if p1 and p1.root then
+            local ok, err = pcall(function()
+                local rr = (p1.root.K2_GetActorRotation and p1.root:K2_GetActorRotation()) or (p1.root.GetActorRotation and p1.root:GetActorRotation())
+                print(string.format("[Tetris][DiagRot] makePieceRotator=%s  rootRot=%s", tostring(mr), tostring(rr)))
+                local rl = p1.root:K2_GetActorLocation()
+                for i, c in ipairs(p1.children or {}) do
+                    local cl = c:K2_GetActorLocation()
+                    print(string.format("[Tetris][DiagRot] child%d relToRoot=(%.0f,%.0f,%.0f)", i, cl.X - rl.X, cl.Y - rl.Y, cl.Z - rl.Z))
+                end
+            end)
+            if not ok then print(string.format("[Tetris][DiagRot] 诊断内部报错被吞：%s", tostring(err))) end
+        end
+    end
+    if self._previewForceRot and not self._diagPfrDone then
+        self._diagPfrDone = true
+        print(string.format("[Tetris][DiagSelf] Layout 读到 _previewForceRot=true self=%s", tostring(self)))
+    end
     for t = 1, 7 do
         local p = self.pieces[t]
         if p and p.root then
             -- 每帧无条件重试附着（AttachToActor 幂等；根未 spawn 时静默失败，下帧再来）
             for i, child in ipairs(p.children or {}) do
-                pcall(function() child:K2_AttachToActor(p.root, "", 1, 1, 1, false) end)
+                self:attachChildToRoot(child, p.root)
                 local o2 = p.offsets[i]
                 if o2 then
+                    -- 子块相对偏移始终保持 rot=1 原始值；旋转完全由根 Actor 带动
+                    -- （与下落 placeWholePieceV3 一致：只转根、子块跟随，避免重复旋转导致子块飞散）
                     local relLoc = Game:ConstructFVectorByLuaTable({ X = o2.dx * 100, Y = 0, Z = o2.dz * 100 })
                     pcall(function() child:K2_SetActorRelativeLocation(relLoc) end)
                 end
             end
             local cx = midX + (t - 4) * gap     -- t=1..7 → 居中对称展开
-            pcall(function() p.root:K2_TeleportTo(cmVec({ X = cx, Y = o.Y, Z = zShow }), self.rot) end)
+            -- 根带旋转量传送：与下落 placeWholePieceV3 同源（makePieceRotator），确保预览旋转=下落旋转。
+            pcall(function() p.root:K2_TeleportTo(cmVec({ X = cx, Y = o.Y, Z = zShow }), makePieceRotator(midRot)) end)
         end
     end
     -- 诊断（预览开始后等待足够帧数让附着完成，仅打印一次）：
@@ -851,6 +1212,7 @@ function TetrisRenderer:EndShowcase()
         local p = self.pieces[t]
         if p then self:parkWholePieceV3(p) end
     end
+    self.shownPiece = nil
     self.shownPieceType = nil
     print("[Tetris] 预览结束")
 end
@@ -1116,18 +1478,21 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
         end
     end
 
-    -- 2) 计算每个最终格的来源旧行：newRow = oldRow + delta(oldRow)，delta = 该格上方被消行数。
-    --    delta>0 的方块走 parent-shift；delta==0（未动）保留原位；无对应旧 Actor 的=本次锁定的新增格。
+    -- 2) 计算每个最终格的来源旧行：clearLines 从底向上紧凑堆叠保留行，被消行上方的行整体下落填补。
+    --    映射：从底往上数保留行，第 m 个保留行落到新行号 rows-m+1（m = rows-r+1），oldRow = kept[m]。
+    --    delta = r - oldRow；delta>0 的方块走 parent-shift；delta==0（未动）保留原位；无对应旧 Actor 的=本次锁定的新增格。
     local groups = {}        -- groups[delta] = { {a, nr, c}, ... }
     local newlyLocked = {}   -- { {r, c} }
+    local kept = {}          -- kept[m] = 原行号（从底往上第 m 个保留行）
+    for oldR = rows, 1, -1 do
+        if not clearedSet[oldR] then kept[#kept + 1] = oldR end
+    end
     for r = 1, rows do
         for c = 1, cols do
             if board:getCell(r, c) ~= 0 then
-                local delta = 0
-                for cr, _ in pairs(clearedSet) do
-                    if cr < r then delta = delta + 1 end
-                end
-                local oldRow = r - delta
+                local m = rows - r + 1
+                local oldRow = kept[m]
+                local delta = r - oldRow
                 local a = oldOcc[oldRow] and oldOcc[oldRow][c]
                 if a then
                     if delta > 0 then
@@ -1149,7 +1514,7 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
             -- 根先归位到停车场，确保子 Actor 以 KeepWorld 挂上时相对偏移正确
             pcall(function() self.shiftRoot:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
             for _, it in ipairs(list) do
-                pcall(function() it.a:K2_AttachToActor(self.shiftRoot, "", 1, 1, 1, false) end)
+                self:attachChildToRoot(it.a, self.shiftRoot)
             end
             -- 移动根：下移 delta*step（Z 减小）
             pcall(function()
@@ -1214,6 +1579,10 @@ function TetrisRenderer:Update(board)
         self.poolReady = true
     end
 
+    -- 启动前预热：逐帧把所有 7 种整体实例附着并就绪；全部 _everReady 后才允许渲染活动块。
+    -- CreateActor 异步、首帧附着可能失败，故每帧幂等重试，直到实例真正建好（通常几帧内完成）。
+    self:PrimeAllPieces()
+
     local rows = TetrisConfig.Board.Rows
     local cols = TetrisConfig.Board.Cols
 
@@ -1234,10 +1603,6 @@ function TetrisRenderer:Update(board)
 
     -- 活动方块整体层（位移/旋转只传根）
     self:RenderActivePiece(board)
-
-    -- 下落前预热下一个方块（根 spawn + 子块附着 + 烘焙偏移），使其成为活动方块时已是完整整体，
-    -- 消除“新方块首次出现、根还没生成完、子块还没跟随”的缺格半成品帧。每帧无条件幂等重试。
-    self:PrewarmNext(board)
 
     if TetrisConfig.Debug.PrintGrid then
         local want = {}

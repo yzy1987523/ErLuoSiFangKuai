@@ -78,8 +78,43 @@ function TetrisBoard:reset()
     self.pendingClearedRows = nil     -- 本次 lockPiece 被消除的行号列表
     self.pendingGarbageMoved = nil    -- 本次是否发生过垃圾行上移（会导致普通位移公式失效）
 
+    self:applyInitialLayout()
     self:spawn()
     return self
+end
+
+-- ---------------- 初始预填版面 ----------------
+-- 从 TetrisConfig.InitialLayout 读取，写入 grid[row][col]。
+-- 时机：reset 末尾、spawn 之前；初始满行是否立即消除由 Game 层控制（AutoClearOnStart）。
+function TetrisBoard:applyInitialLayout()
+    local cfg = TetrisConfig.InitialLayout
+    if not cfg or not cfg.Enabled then return end
+
+    local function writeLine(r, line)
+        line = line or ""
+        for c = 1, math.min(self.cols, #line) do
+            local ch = line:sub(c, c)
+            if ch ~= "." and ch ~= " " then
+                local v = tonumber(ch)
+                if v and v >= 1 and v <= 8 then
+                    self.grid[r][c] = v
+                end
+            end
+        end
+    end
+
+    if cfg.Rows then
+        for r = 1, math.min(self.rows, #cfg.Rows) do
+            writeLine(r, cfg.Rows[r])
+        end
+    end
+    if cfg.ByRow then
+        for r, line in pairs(cfg.ByRow) do
+            if r >= 1 and r <= self.rows then
+                writeLine(r, line)
+            end
+        end
+    end
 end
 
 -- ---------------- 随机袋（7-bag） ----------------
@@ -285,8 +320,9 @@ function TetrisBoard:lockPiece()
     return cleared
 end
 
--- 消除满行，返回消除行数
-function TetrisBoard:clearLines()
+-- 消除满行，返回消除行数。
+-- countScore：默认 true（正常锁定消除，计分/连击/升级）；false 用于开局初始消除，仅清网格、不污染分数。
+function TetrisBoard:clearLines(countScore)
     local cleared = 0
     local writeRow = self.rows
 
@@ -322,20 +358,24 @@ function TetrisBoard:clearLines()
     end
 
     if cleared > 0 then
-        local base = TetrisConfig.Score.LineClear[cleared] or 0
-        self.score = self.score + base * self.level
-        self.combo = self.combo + 1
-        if self.combo > 0 then
-            self.score = self.score + TetrisConfig.Score.ComboBonus * self.combo * self.level
+        if countScore ~= false then
+            local base = TetrisConfig.Score.LineClear[cleared] or 0
+            self.score = self.score + base * self.level
+            self.combo = self.combo + 1
+            if self.combo > 0 then
+                self.score = self.score + TetrisConfig.Score.ComboBonus * self.combo * self.level
+            end
+            self.lines = self.lines + cleared
+            local newLevel = math.min(
+                math.floor(self.lines / TetrisConfig.Timing.LinesPerLevel) + 1,
+                TetrisConfig.Timing.MaxLevel
+            )
+            if newLevel > self.level then self.level = newLevel end
         end
-        self.lines = self.lines + cleared
-        local newLevel = math.min(
-            math.floor(self.lines / TetrisConfig.Timing.LinesPerLevel) + 1,
-            TetrisConfig.Timing.MaxLevel
-        )
-        if newLevel > self.level then self.level = newLevel end
     else
-        self.combo = -1
+        if countScore ~= false then
+            self.combo = -1
+        end
     end
     return cleared
 end

@@ -46,8 +46,12 @@ function TetrisGame:Start()
     -- 仅整体模式(wholePieceAttach)有效；回退模式不进预览，直接开始。
     local cfg = TetrisConfig.Render
     if cfg.PreviewBeforeStart and self.renderer and self.renderer.wholePieceAttach then
-        local secs = cfg.PreviewSeconds or 10
+        local secs = cfg.PreviewSeconds or 1
         self.renderer:ShowcasePieces(secs)
+        -- 预览过半时让 7 个方块演示一次旋转（90°），与下落同源，便于肉眼核对旋转是否正确。
+        self.owner:AddTimerOnce(secs * 0.5, function()
+            if self.renderer then self.renderer:PreviewRotateDemo() end
+        end)
         self.owner:AddTimerOnce(secs, function()
             if not self.running then return end
             self.renderer:EndShowcase()
@@ -59,7 +63,45 @@ function TetrisGame:Start()
         self:ScheduleTick()
         self:CheckPieceSpawned()
     end
+    -- 开局初始消除：稳定期后触发，渲染层自动播放下落动画（AutoClearOnStart 时）
+    if self:initialClearEnabled() then
+        local delay = (TetrisConfig.Render.SettleFrames * TetrisConfig.Render.SettleInterval) + 0.2
+        self.owner:AddTimerOnce(delay, function()
+            if not self.running then return end
+            self:ProcessInitialClears()
+        end)
+    end
     print("[Tetris] Start")
+end
+
+-- 是否启用开局初始消除（配置开关）
+function TetrisGame:initialClearEnabled()
+    local cfg = TetrisConfig.InitialLayout
+    return cfg and cfg.Enabled and cfg.AutoClearOnStart
+end
+
+-- 开局消除初始满行：数据层 clearLines(false) 仅清网格、不计分；渲染层下一帧自动播放 parent-shift 下落动画。
+function TetrisGame:ProcessInitialClears()
+    if self.board:isOver() then return end
+    local cleared = self.board:clearLines(false)
+    if cleared and cleared > 0 then
+        self:SendScreenMessage("开局预消 " .. tostring(cleared) .. " 行")
+        -- 刷若干帧让渲染层消费 pendingClearedRows 并播放动画（独立于重力 tick）
+        self:RefreshRenderer(10)
+    end
+end
+
+-- 连刷 N 帧渲染（用于动画播放期间没有重力 tick 的场景，如预览/初始消除阶段）
+function TetrisGame:RefreshRenderer(frames)
+    local r = TetrisConfig.Render
+    local iv = r.SettleInterval or 0.1
+    for i = 1, (frames or 6) do
+        self.owner:AddTimerOnce(i * iv + 0.05, function()
+            if self.renderer and self.board then
+                self.renderer:Update(self.board)
+            end
+        end)
+    end
 end
 
 function TetrisGame:Stop()
@@ -75,6 +117,10 @@ function TetrisGame:Restart()
     self.renderer:Update(self.board)
     if self.running then
         self:ScheduleTick()
+    end
+    -- 重开也播放初始消除动画（实例已就绪，直接刷帧）
+    if self:initialClearEnabled() then
+        self:ProcessInitialClears()
     end
 end
 
@@ -110,7 +156,6 @@ function TetrisGame:OnTick()
         self:OnGameOver()
         return
     end
-    self.renderer:PrewarmNext(board)  -- 下落前预热下一个方块：根 spawn + 子块附着，上场即完整
     board:tick()                    -- 数据层下落一格或锁定
     self.renderer:Update(board)     -- 渲染层只跟随数据
     self:CheckPieceSpawned()        -- 产出新方块则上屏
