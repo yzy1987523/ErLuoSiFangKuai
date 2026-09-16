@@ -71,6 +71,7 @@ function TetrisGame:Start()
             self:ProcessInitialClears()
         end)
     end
+    self:ScheduleCameraSetup()
     print("[Tetris] Start")
 end
 
@@ -104,10 +105,99 @@ function TetrisGame:RefreshRenderer(frames)
     end
 end
 
+-- 固定相机：玩家/出生点装置就绪后，把相机看向棋盘中心并锁定输入（装置可能晚于代码加载生成，故重试）
+function TetrisGame:ScheduleCameraSetup()
+    if not (self.renderer and self.renderer.GetBoardCenter) then return end
+    local tries = 0
+    local maxTries = 60
+    local function tick()
+        tries = tries + 1
+        if self:SetupFixedCamera() then return end
+        if tries < maxTries and self.running then
+            self.owner:AddTimerOnce(0.2, tick)
+        end
+    end
+    tick()
+end
+
+-- 把每个玩家的相机切到棋盘中心 Actor（SetViewTarget），并锁定旋转输入，实现固定看向棋盘。
+-- 棋盘中心由渲染层 ResolveOrigin 依据出生点装置(SpawnPointKey)前方 BoardForwardDistM 米算出。
+-- 返回 true = 已设置；false = 尚未就绪（出生点装置/玩家未注入），调用方应稍后重试。
+function TetrisGame:SetupFixedCamera()
+    if type(CameraAPI) ~= "table" then
+        print("[Tetris][WARN] CameraAPI 未注入，跳过固定相机")
+        return true
+    end
+    if not self.renderer then return false end
+    -- 出生点装置可能晚于 Build 注入：此处重新解析并原地重摆棋盘，确保棋盘落在出生点前方
+    if not self.renderer._spawnResolved then
+        self.renderer:ResolveOrigin()
+        self.renderer:ReanchorBorder()  -- 出生点装置注入/朝向确定后用最新 boardRight 重摆边框
+        self.renderer:ReanchorBoard()   -- 同步重摆已落定静态格：初始盘面曾用旧 boardRight 摆位，须跟随到新基准（修复初始盘面偏移）
+        if not self.renderer._spawnResolved then
+            return false  -- 出生点装置尚未注入，等待重试
+        end
+        if self.board then self.renderer:Update(self.board) end  -- 用新 origin 重摆所有格子
+    end
+    local center = self.renderer:GetBoardCenter()
+    if not center then return false end
+    local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+    if not (ok and arr and arr.Num and arr:Num() > 0) then return false end
+    local cam = TetrisConfig.Camera or {}
+    local back = cam.CamBackM or 3          -- 相机退后距离（米，SetCameraDistance）
+    local lockMove = cam.LockMovement ~= false
+    local lockRot = cam.LockRotation ~= false   -- 锁摄像机旋转（看向盘心，玩家不可自由转视角）
+    -- 方案：玩家自身第三人称相机，用 SetCameraOffset / SetCameraDistance 调机位。
+    -- 偏移向量（局部坐标，单位米）：X 前/后、Y 左/右、Z 上/下。全部来自 TetrisConfig.Camera：
+    --   OffsetXM / OffsetYM / OffsetZM（OffsetZM 兼容旧名 ZExtraM）。
+    local ox = cam.OffsetXM or 0
+    local oy = cam.OffsetYM or 0
+    local oz = cam.OffsetZM or cam.ZExtraM or 0
+    -- 偏移向量（局部坐标，米）：X 前/后、Y 左/右、Z 上/下。用 ConstructFVectorByLuaTable 构造（与 BattleBall 项目一致，已验证有效）。
+    -- 关键：BlendTime 必须 >0（传 0 会被引擎忽略，ret=true 但偏移不生效）；BattleBall 项目用 0.3。
+    local off = Game:ConstructFVectorByLuaTable({ X = ox, Y = oy, Z = oz })
+    for i = 0, arr:Num() - 1 do
+        local ps = arr:Get(i)
+        if ps then
+            -- 关键诊断：okOff 只是 pcall 是否抛异常；retOff 才是引擎是否接受该参数（被吞的报错在这里）
+            local okOff, retOff = pcall(function() return CameraAPI.SetCameraOffset(ps, off, 0.3) end)
+            local okDist, retDist = pcall(function() return CameraAPI.SetCameraDistance(ps, back, 0.3) end)
+            print(string.format("[Tetris][CAM] off=(%.1f,%.1f,%.1f) SetOffset:pcall=%s ret=%s | SetDist:pcall=%s ret=%s",
+                off.X, off.Y, off.Z, tostring(okOff), tostring(retOff), tostring(okDist), tostring(retDist)))
+            pcall(function() CameraAPI.LockCameraInput(ps, lockRot) end)    -- 锁视角旋转（true=锁定）
+            if lockMove then pcall(function() PlayerAPI.SetPlayerSpeedMul(ps, 0) end) end  -- 锁移动
+        end
+    end
+    return true
+end
+
 function TetrisGame:Stop()
     if not self.running then return end
     self.running = false
     self.nativeUI:Restore()  -- 回合结束还原原生 UI
+    -- 还原相机与玩家状态（解锁视角/移动、复位偏移与速度）
+    if type(CameraAPI) == "table" then
+        local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+        if ok and arr and arr:Num() and arr:Num() > 0 then
+            for i = 0, arr:Num() - 1 do
+                local ps = arr:Get(i)
+                if ps then
+                    pcall(function() CameraAPI.ResetViewTarget(ps, 0) end)
+                    pcall(function() CameraAPI.ResetCameraOffset(ps, 0) end)
+                    pcall(function() CameraAPI.ResetCameraDistance(ps, 0) end)
+                    pcall(function() CameraAPI.LockCameraInput(ps, false) end)
+                    if type(PlayerAPI) == "table" then
+                        pcall(function() PlayerAPI.SetPlayerSpeedMul(ps, 1) end)
+                    end
+                end
+            end
+        end
+    end
+    -- 销毁虚拟相机机位 Actor，避免残留堆积
+    if self._camRig then
+        pcall(function() if type(self._camRig.K2_DestroyActor) == "function" then self._camRig:K2_DestroyActor() end end)
+        self._camRig = nil
+    end
     print("[Tetris] Stop")
 end
 
@@ -178,7 +268,6 @@ function TetrisGame:GetPlayerState()
 end
 
 function TetrisGame:SendScreenMessage(content)
-    print("[Tetris] " .. tostring(content))
     local ps = self:GetPlayerState()
     if not ps then return end   -- 取不到玩家时只落控制台
     local ok, err = pcall(function()
@@ -220,7 +309,6 @@ end
 function TetrisGame:OnGameOver()
     local msg = "游戏结束 分数=" .. tostring(self.board.score)
         .. " 消行=" .. tostring(self.board.lines)
-    print("[Tetris] " .. msg)
     self.running = false
     if TetrisConfig.Debug.ShowGameOverInfo then
         self:SendScreenMessage(msg)

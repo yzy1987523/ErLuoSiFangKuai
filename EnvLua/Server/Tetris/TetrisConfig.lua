@@ -177,7 +177,8 @@ TetrisConfig.Render = {
     
     -- 备用方块模型（圆角方块积木）
     BlockModelID = "2205202",
-    -- 边框（左/右/下三侧外框）资源：与方块上区同模型，用作盘面外边缘
+    -- 边框（左/右/下三侧外框）资源：与方块同模型，用【动态实例】生成（InstanceAPI.CreateInstance），
+    -- 因此必须是 CreativeAsset（44_CreativeAsset_*），不能传 ActorPreset。
     BorderAssetRefKey = "44_CreativeAsset_3400003",
 
     BlockScale = 1.0,        -- 方块模型缩放，按模型实际尺寸调整
@@ -197,7 +198,8 @@ TetrisConfig.Render = {
     -- 位移/旋转只传送根（1 次调用），落地后根归位、棋盘单元方块接管显示，消行时单元方块消失。
     -- 棋盘静态层（已落定方块）仅在锁定/消行时全量同步，平时零流量，是消除逐格延迟的关键。
     UseWholePiece = true,
-    -- 旋转方向符号：若旋转方向相反（数据与引擎 Y 轴旋转方向未对齐），把它改成 -1。
+    -- 旋转方向符号：对齐数据层 rotateMatrixCW（默认 +1）。之前为修正“看背面导致镜像”误改成 -1，
+    -- 现已将渲染层绕竖直轴转 180° 看到正面，本符号必须恢复 +1 才能与数据层一致。
     PieceSpinSign = 1,
 
     -- 整体方块（统一运动）实现优先级：方案3(附着子Actor) > 方案2(组件,已证不可用) > 方案1(4 Actor)。
@@ -242,7 +244,7 @@ TetrisConfig.Render = {
 
     -- 是否把盘面锚定到本地玩家附近。开启后忽略 BoardOrigin，改用
     -- 玩家坐标 + AnchorOffset，避免在空旷的世界原点找不到盘面。
-    AnchorToPlayer = true,
+    AnchorToPlayer = false,  -- 已弃用：盘面仅以 SceneObjects.SpawnPointKey 定位，不再锚定玩家
     -- 相对玩家的偏移（米，世界轴向，与角色朝向无关）：
     -- X 正 = 东 / Y 正 = 北 / Z 正 = 上。棋盘是平行于 XZ 的竖直面。
     AnchorOffset = { X = 0.0, Y = 8.0, Z = 21.0 },  -- 抬高锚点：盘面总高 ≈(20-1)*1.02≈19.4m，须保证底行在地面之上（Z=12 时底行没入地下，约 7 行看不见）
@@ -294,6 +296,46 @@ TetrisConfig.UI = {
 
 -- 技能按钮：本期占位（技能系统属 P4），点击仅记录日志
 TetrisConfig.SkillEnabled = false
+
+-- ===================== 场景标记对象（编辑器预放置的 CreativeInstance Actor） =====================
+-- UUID 来自全局表 CreativeInstance（编辑器运行时注入），运行时按 key 动态取（不在加载期取，避免 nil）。
+--   盘面与固定相机均以 SpawnPointKey（出生点装置）为唯一基准；CameraMarkerKey / SpawnMarkerKey 已废弃不再使用。
+TetrisConfig.SceneObjects = {
+    -- 出生点装置：玩家在此生成；棋盘在其前方 BoardForwardDistM 米处生成（来自全局表 CreativeInstance）。
+    -- 盘面与固定相机均以该装置为唯一基准（CameraMarkerKey / SpawnMarkerKey 已废弃）。
+    SpawnPointKey   = "1_CreativeInstance_23643899843478899",    
+}
+
+-- 出生点装置前方生成棋盘的距离（米，可配置）：棋盘中心 = 装置位置 + 世界 +Y(北) * 该值。
+TetrisConfig.BoardForwardDistM = 18
+
+-- 盘面左右偏移（米，沿盘面右向量 right，正=向玩家右手侧移）：与 BoardForwardDistM 垂直，仅平移不改朝向/前后。
+TetrisConfig.BoardSideOffsetM = 10
+
+-- 盘面相对玩家朝向的额外旋转（度，从上方俯视）：仅微调“盘心落点”方位（绕出生装置公转），不改盘面自身轴向。
+-- 当前朝向源用角色 Actor 前向（pawn:GetActorForwardVector）；若盘面仍不正对，调此值：
+--   盘偏右 → 给负值（逆时针转回正前）；盘偏左 → 给正值。例如偏右约 90° 先试 -90。
+TetrisConfig.BoardYawOffsetDeg = 0
+
+-- 盘面“自身轴向”翻转 180°：仅翻转盘面本地系（right/法线/旋转轴），盘心位置不变（不绕出生装置公转）。
+-- 与 BoardYawOffsetDeg 的区别：后者会让盘面绕出生装置公转到背后；本开关让盘面留在原位、原地翻正。
+-- 用于玩家始终看“背面”导致左右/旋转全部镜像时，置 true 即可看到正面（配合 PieceSpinSign=+1 与正常按键方向）。
+TetrisConfig.BoardFlipAxis180 = true
+
+-- 盘面整体离地高度（米）：棋盘底行距“出生点装置所在水平面”的间隙，越大盘面越悬空越高。
+TetrisConfig.BoardHeightOffsetM = -5
+
+-- 固定相机（玩家自身第三人称相机）参数：
+TetrisConfig.Camera = {
+    PlayerToBoardM = 22,  -- 占位：玩家站位到盘面水平距离（teleport 方案用，SetCameraOffset 方案暂未用）
+    CamBackM = 3,         -- 相机在玩家身后的退后距离（米，SetCameraDistance）
+    OffsetXM = 0,         -- 新方案：盘已在玩家正前方，相机默认看向盘心；X 偏移通常设 0（前/后微调）
+    OffsetYM = 0,         -- Y 偏移通常设 0（左/右微调）
+    OffsetZM = 0,         -- Z 偏移：相机相对默认位的上下（米）；想俯视盘面上方设正值，想仰视设负值
+    ZExtraM = 0,          -- 兼容旧名（被 OffsetZM 优先读取）
+    LockMovement = true,  -- 是否锁定玩家移动（固定位置，仅供观战）
+    LockRotation = true,   -- 是否锁定摄像机旋转（玩家无法自由转视角，始终看向盘心）
+}
 
 -- ===================== 调试 =====================
 TetrisConfig.Debug = {

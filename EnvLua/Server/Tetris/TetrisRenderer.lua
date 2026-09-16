@@ -8,6 +8,23 @@
 -- 因此首格试遍候选组合，选中后再批量创建其余格子。
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 
+-- 兼容 atan2：部分 Lua 环境（Lua 5.3）已移除 math.atan2，仅保留两参 math.atan。
+local function atan2compat(y, x)
+    local ok, v = pcall(function() return math.atan2(y, x) end)
+    if ok then return v end
+    ok, v = pcall(function() return math.atan(y, x) end)
+    if ok then return v end
+    if x > 0 then return math.atan(y / x) end
+    if x < 0 then return math.atan(y / x) + (y >= 0 and math.pi or -math.pi) end
+    if y > 0 then return math.pi / 2 end
+    if y < 0 then return -math.pi / 2 end
+    return 0
+end
+
+-- 模块级：当前盘面偏航角(度)。ResolveOrigin 写入，makePieceRotator 读取，
+-- 用于让方块绕“盘面法线(forward)”旋转，而非固定的世界 Y 轴。
+local _boardYawDeg = 0
+
 local TetrisRenderer = {}
 TetrisRenderer.__index = TetrisRenderer
 
@@ -63,26 +80,124 @@ end
 
 function TetrisRenderer:ResolveOrigin()
     local r = TetrisConfig.Render
-    local base = r.BoardOrigin
-    local src = "BoardOrigin"
+    local so = TetrisConfig.SceneObjects
+    local step = r.CellSize + r.CellGap
+    -- 盘面实际尺寸（与 cellLocation/PrintBounds 一致，必须用格间距 step 而非裸 CellSize）
+    local w = (TetrisConfig.Board.Cols - 1) * step  -- 水平宽（顶行左→右间距）
+    local h = (TetrisConfig.Board.Rows - 1) * step  -- 垂直高（顶行→底行间距）
+    local lift = (type(TetrisConfig.BoardHeightOffsetM) == "number") and TetrisConfig.BoardHeightOffsetM or 1.3  -- 盘面底行离地间隙（米），整体悬空高度，可用 BoardHeightOffsetM 配置
+    -- 用基准位置 spawnLoc(米) + 水平前方 (fx,fy) 落定盘面：
+    --   盘面中心在基准前方 dist 米；右方向 right = forward × up = (fy,-fx,0)；
+    --   左上角 origin = 中心 - 右半宽 + 上半高（row 向下为 -Z）；
+    --   盘面朝向(绕世界Z的偏航)=atan2(fy,fx)+Y偏移，写入 self.rot 供整体方块/边框按盘面对齐。
+    local function settle(spawnLoc, fx, fy, fsrc)
+        local offDeg = (type(TetrisConfig.BoardYawOffsetDeg) == "number") and TetrisConfig.BoardYawOffsetDeg or 0
+        -- 盘面“自身轴向”翻转 180°：仅翻转本地系（right / 法线 / 旋转轴），盘心落点位置不变（不绕出生装置公转）。
+        -- 用法：玩家始终看到盘面“背面”导致左右/旋转全部镜像时，置 true 让盘面原地翻正看到正面。
+        local flipAxis = (type(TetrisConfig.BoardFlipAxis180) == "boolean") and TetrisConfig.BoardFlipAxis180 or false
+        local len = math.sqrt(fx * fx + fy * fy)
+        if len < 1e-6 then fx, fy = 0, 1 end
+        fx, fy = fx / len, fy / len
+        -- 盘心落点朝向：只受 BoardYawOffsetDeg（绕出生装置公转微调）影响，不受自身轴向翻转影响。
+        local posYaw = atan2compat(fy, fx) + offDeg * math.pi / 180
+        -- 盘面本地系朝向：在落点朝向上再叠加“自身轴向翻转 180°”（绕盘心竖直轴原地转），使玩家看到正面。
+        local frameYaw = posYaw + (flipAxis and math.pi or 0)
+        local frx, fry = math.cos(frameYaw), math.sin(frameYaw)
+        local right = { X = fry, Y = -frx, Z = 0 }
+        local ffx, ffy = math.cos(posYaw), math.sin(posYaw)
+        local dist = (type(TetrisConfig.BoardForwardDistM) == "number") and TetrisConfig.BoardForwardDistM or 8
+        -- 左右偏移（沿盘面右向量 right，米，正=向玩家右手侧移；与 forward 垂直，不影响前后/朝向，且随翻转自动正方向）
+        local side = (type(TetrisConfig.BoardSideOffsetM) == "number") and TetrisConfig.BoardSideOffsetM or 0
+        local center = { X = spawnLoc.X + ffx * dist + right.X * side,
+                         Y = spawnLoc.Y + ffy * dist + right.Y * side,
+                         Z = spawnLoc.Z + lift + h / 2 }
+        local origin = { X = center.X - right.X * (w / 2), Y = center.Y - right.Y * (w / 2), Z = center.Z + h / 2 }
+        self.origin = origin
+        self.boardCenter = center
+        self.boardRight = right
+        self.boardYaw = frameYaw * 180 / math.pi
+        _boardYawDeg = self.boardYaw   -- 供 makePieceRotator 绕盘面法线旋转
+        if type(FRotator) == "table" and FRotator.MakeFromEuler then
+            self.rot = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = self.boardYaw }))
+        end
+        print(string.format(
+            "[Tetris] 锚点=%s loc=(%.2f,%.2f,%.2f) 前方(%.2f,%.2f) offDeg=%.1f 前方%.1fm center=(%.2f,%.2f,%.2f) yaw=%.1f",
+            tostring(fsrc), spawnLoc.X, spawnLoc.Y, spawnLoc.Z, fx, fy, offDeg, dist, center.X, center.Y, center.Z, self.boardYaw))
+        return origin
+    end
 
-    if r.AnchorToPlayer then
-        local p = getLocalPawnLocationM()
-        if p then
-            base = {
-                X = p.X + r.AnchorOffset.X,
-                Y = p.Y + r.AnchorOffset.Y,
-                Z = p.Z + r.AnchorOffset.Z,
-            }
-            src = "玩家锚点"
-        else
-            print("[Tetris][WARN] 未取到玩家 pawn，锚定失败，回退使用 BoardOrigin")
+    -- 优先基准：场景中的出生点装置 SpawnPointKey（位置 + 朝向）。
+    -- 盘面生成在装置正面 BoardForwardDistM 米，盘面朝向 = 装置朝向 + Y角度偏移(BoardYawOffsetDeg)。
+    -- 装置朝向用实例旋转偏航推导 forward；实测该装置 +Yaw 指向其“背面”，故基准 yaw 补 180°
+    -- （否则盘面会落在装置背后），再叠加 BoardYawOffsetDeg 微调。
+    -- 装置未注入/未就绪时回退玩家基准，待装置就绪后 SetupFixedCamera 会重新 ResolveOrigin 重摆。
+    if type(so) == "table" and so.SpawnPointKey then
+        if type(CreativeInstance) == "table" then
+            local id = CreativeInstance[so.SpawnPointKey]
+            if id ~= nil and type(InstanceAPI) == "table" then
+                local ok, loc2 = pcall(function() return InstanceAPI.GetInstanceLocation(id) end)
+                if ok and loc2 and loc2.X then
+                    -- GetInstanceLocation 为 Domain API，单位米（区别于 Class API 的 K2_GetActorLocation 用厘米）
+                    -- 装置朝向：从实例旋转取偏航(地面装置 pitch≈0)推导 forward，基准 yaw +180° 修正装置正/背面。
+                    local fx, fy = 0, 1
+                    local okR, rot = pcall(function() return InstanceAPI.GetInstanceRotation(id) end)
+                    if okR and rot and rot.Yaw then
+                        local yr = math.rad((rot.Yaw or 0) + 180)
+                        if rot.Pitch then
+                            local pr = math.rad(rot.Pitch or 0)
+                            fx, fy = math.cos(pr) * math.cos(yr), math.cos(pr) * math.sin(yr)
+                        else
+                            fx, fy = math.cos(yr), math.sin(yr)
+                        end
+                    end
+                    self._spawnResolved = true
+                    return settle({ X = loc2.X, Y = loc2.Y, Z = loc2.Z }, fx, fy, "出生点装置")
+                end
+            end
+        end
+        print("[Tetris][WARN] 出生点装置尚未注入，回退玩家基准（稍后重试重摆）")
+    end
+
+    -- 回退基准：本地玩家坐标 + 朝向（出生点装置不可用时的兜底，盘面随玩家朝向旋转面对玩家）。
+    local okP, plist = pcall(function() return Game:GetAllPlayerPawns() end)
+    local pawn = (okP and plist and plist.Num and plist:Num() > 0) and plist:Get(0) or nil
+    if pawn then
+        local locCM = pawn:K2_GetActorLocation()
+        if locCM and locCM.X then
+            local loc = { X = locCM.X / 100, Y = locCM.Y / 100, Z = locCM.Z / 100 }
+            local ps = nil
+            local okArr, arr = pcall(function() return Game:GetAllPlayerStates() end)
+            if okArr and arr and arr.Num and arr:Num() > 0 then ps = arr:Get(0) end
+            -- 取两种前方用于对比：相机视线（屏幕正前）与角色前向
+            local fLookX, fLookY, fPawnX, fPawnY = 0, 1, 0, 1
+            if ps then
+                local okL, ld = pcall(function() return PlayerAPI.GetPlayerLookDirection(ps) end)
+                if okL and ld and ld.X and ld.Y then
+                    local len = math.sqrt(ld.X * ld.X + ld.Y * ld.Y)
+                    if len > 1e-4 then fLookX, fLookY = ld.X / len, ld.Y / len end
+                end
+            end
+            local okF, fwd = pcall(function() return pawn:GetActorForwardVector() end)
+            if okF and fwd and fwd.X and fwd.Y then
+                local len = math.sqrt(fwd.X * fwd.X + fwd.Y * fwd.Y)
+                if len > 1e-4 then fPawnX, fPawnY = fwd.X / len, fwd.Y / len end
+            end
+            -- 屏幕正前 = 相机视线（最贴近“屏幕中心方向”，盘心落屏幕正中）；无视线则用角色前向
+            local fx, fy, fsrc = fLookX, fLookY, "GetPlayerLookDirection"
+            if fx == 0 and fy == 1 and (fPawnX ~= 0 or fPawnY ~= 1) then
+                fx, fy, fsrc = fPawnX, fPawnY, "pawn:GetActorForwardVector"
+            end
+            return settle(loc, fx, fy, fsrc)
         end
     end
 
-    print(string.format("[Tetris] 盘面锚点来源=%s 左上角=(%.2f, %.2f, %.2f)",
-        src, base.X, base.Y, base.Z))
-    return base
+    print("[Tetris][ERROR] 无法生成盘面：出生点装置未注入且无本地玩家")
+    return nil
+end
+
+-- 返回棋盘中心世界坐标（米）。供固定相机作为 ViewTarget。
+function TetrisRenderer:GetBoardCenter()
+    return self.boardCenter
 end
 
 function TetrisRenderer:PrintBounds()
@@ -102,10 +217,14 @@ function TetrisRenderer:cellLocation(row, col)
     local r = TetrisConfig.Render
     local step = r.CellSize + r.CellGap
     local o = self.origin or r.BoardOrigin
+    -- 盘面右方向：玩家基准时为 forward×up（随朝向旋转），回退时为世界 +X（与原行为一致）
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local dx = (col - 1) * step   -- 向右（沿盘面 right）
+    local dz = (row - 1) * step   -- 向下（世界 -Z，盘面竖直）
     return {
-        X = o.X + (col - 1) * step,
-        Y = o.Y,
-        Z = o.Z - (row - 1) * step,
+        X = o.X + right.X * dx,
+        Y = o.Y + right.Y * dx,
+        Z = o.Z - dz,
     }
 end
 
@@ -121,21 +240,30 @@ local function makeZeroRotator()
     return nil
 end
 
--- 构造整体方块根 Actor 的旋转：绕盘面垂直轴（世界 Y / UE Pitch，对应 MakeFromEuler 的 X 分量）
--- 旋转 (rot-1)*90°，方向由 TetrisConfig.Render.PieceSpinSign 对齐数据层 rotateMatrixCW。
--- 注：MakeFromEuler 的 Y 分量会被当成 Yaw（绕 Z 轴），故绕盘面垂直轴必须填 X 分量（Pitch）。
--- 旋转后子块世界坐标 = 根位置 + R*原始偏移，应与 rotateOffset(rot) 矩阵一致（已验证等价数据层）。
+-- 构造整体方块根 Actor 的旋转：绕“盘面法线(forward)”旋转 (rot-1)*90°，
+-- 与数据层 rotateOffset 等价（yaw=90° 时退化成原 Pitch 逻辑，已验证一致）。
+-- 关键点：盘面法线 = forward = (cos yaw, sin yaw, 0)，随出生点装置朝向变化，并非恒为世界 Y。
+-- 旧实现固定绕世界 Y(Pitch)，在非 yaw=90° 朝向下会让方块翻出盘面（视为“旋转有问题”）。
+-- UE MakeFromEuler(X,Y,Z) = (Roll绕X, Pitch绕Y, Yaw绕Z)，旋转矩阵 = Rz(Yaw)*Ry(Pitch)*Rx(Roll)。
+-- 把“绕水平轴 n=(cosα,sinα,0) 旋转 θ”解析分解为 UE 欧拉角(pitch,yaw,roll)：
+--   sin(pitch) = sinθ·sinα
+--   yawE       = atan2((1-cosθ)·cosα·sinα,  cosθ + (1-cosθ)·cos²α)
+--   roll       = atan2(sinθ·cosα, cosθ)
+-- （yaw=0 → Roll(θ) 绕世界 X；yaw=90° → Pitch(θ) 绕世界 Y，均与旧行为/rotateOffset 一致）
 local function makePieceRotator(rot)
     local sign = TetrisConfig.Render.PieceSpinSign or 1
-    -- 关键修复：UE FRotator::MakeFromEuler 把输入 (X,Y,Z) 映射成 (Roll, Pitch, Yaw)，
-    -- 即 X→绕Z轴(Roll)、Y→绕Y轴(Pitch)、Z→绕Z轴(Yaw)。盘面二维坐标用 (X,Z)，垂直轴是 Y，
-    -- 所以方块在盘面内旋转必须绕 Y 轴(Pitch) → 角度必须放在 Y 分量，不能用 X！
-    -- 另外 UE 绕 Y 的真实矩阵 (x'=x·cosθ−z·sinθ) 与 rotateOffset(ang: X'=dx·cos+dz·sin) 符号相反，
-    -- 故 deg 取负使其等价 rotateOffset(ang)。
-    local deg = -(rot - 1) * 90 * sign
+    local alpha = math.rad(_boardYawDeg or 0)         -- 盘面偏航(弧度)
+    local th = math.rad(-(rot - 1) * 90 * sign)       -- 旋转角(弧度，符号对齐 rotateOffset)
+    local ca, sa = math.cos(alpha), math.sin(alpha)
+    local ct, st = math.cos(th), math.sin(th)
+    -- 解析分解（与 UE ZYX 欧拉矩阵匹配；yaw=0 / yaw=90° 两特例已手算验证）
+    local pitch = math.asin(st * sa)
+    local yawE = atan2compat((1 - ct) * ca * sa, ct + (1 - ct) * ca * ca)
+    local roll = atan2compat(st * ca, ct)
     local ok, r = pcall(function()
         if type(FRotator) == "table" and FRotator.MakeFromEuler then
-            return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = deg, Z = 0 }))
+            return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({
+                X = math.deg(roll), Y = math.deg(pitch), Z = math.deg(yawE) }))
         end
         return nil
     end)
@@ -272,7 +400,6 @@ function TetrisRenderer:AcquireActor()
         if self._occUsed and self._occUsed[a] then
             self._dupN = (self._dupN or 0) + 1
             if self._dupN % 120 == 1 then
-                print(string.format("[Tetris][DUP] Actor 被重复占用（occ 管理冲突→漏单元）%s", tostring(a)))
             end
         end
         self._occUsed = self._occUsed or {}
@@ -288,7 +415,6 @@ function TetrisRenderer:AcquireActor()
     else
         self._noActorN = (self._noActorN or 0) + 1
         if self._noActorN % 120 == 1 then
-            print("[Tetris][LEAKCELL] 对象池耗尽且新建失败：落定格无 Actor（漏单元）")
         end
     end
     return na
@@ -330,9 +456,12 @@ function TetrisRenderer:pieceCenterWorld(active)
     local step = TetrisConfig.Render.CellSize + TetrisConfig.Render.CellGap
     local pr, pc = self:piecePivot(active.type)
     local o = self.origin
+    -- 列方向必须沿盘面 right（随盘面朝向旋转）；直接用世界 X 会在盘面非世界轴时错位
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local dx = (active.x + pc - 2) * step
     return {
-        X = o.X + (active.x + pc - 2) * step,
-        Y = o.Y,
+        X = o.X + right.X * dx,
+        Y = o.Y + right.Y * dx,
         Z = o.Z - (active.y + pr - 2) * step,
     }
 end
@@ -528,6 +657,7 @@ function TetrisRenderer:BuildActivePiecesV3()
     local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
     local park = self.hideLoc
     local rot0 = self.rot
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
     local built = 0
 
     for t = 1, 7 do
@@ -557,7 +687,7 @@ function TetrisRenderer:BuildActivePiecesV3()
             local okAll = true
             for _, o in ipairs(offs) do
                 -- 子 Actor 先建在「根世界位置 + 偏移」处（暂不附着）
-                local cw = Game:ConstructFVectorByLuaTable({ X = park.X + o.dx, Y = park.Y, Z = park.Z + o.dz })
+                local cw = Game:ConstructFVectorByLuaTable({ X = park.X + right.X * o.dx, Y = park.Y + right.Y * o.dx, Z = park.Z + o.dz })
                 local child = CreativeGameAPI.CreateActor(childRef, cw, rot0, scale, nil)
                 if not child then okAll = false break end
                 children[#children + 1] = child
@@ -596,9 +726,11 @@ function TetrisRenderer:isWholePieceReady(p, active)
             local o = p.offsets[i]
             if not cl or not o then ok = false return end
             local dx, dz = self:rotateOffset(o.dx, o.dz, active.rot)
-            local exX = rl.X + dx * 100
+            local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+            local exX = rl.X + right.X * dx * 100
+            local exY = rl.Y + right.Y * dx * 100
             local exZ = rl.Z + dz * 100
-            if math.abs(cl.X - exX) > 5 or math.abs(cl.Z - exZ) > 5 then
+            if math.abs(cl.X - exX) > 5 or math.abs(cl.Y - exY) > 5 or math.abs(cl.Z - exZ) > 5 then
                 ok = false return
             end
         end
@@ -652,7 +784,6 @@ function TetrisRenderer:acquirePiece(type)
         if p.type == type and not p.inUse then
             table.remove(self.pieceQueue, i)
             p.inUse = true
-            print(string.format("[Tetris][Pool] acquire type=%d 实例=%s 队列命中(属7预建池,无新生成)", type, tostring(p)))
             return p
         end
     end
@@ -668,7 +799,6 @@ function TetrisRenderer:releasePiece(p)
     p.inUse = false
     self:parkWholePieceV3(p)
     table.insert(self.pieceQueue, p)
-    print(string.format("[Tetris][Pool] release type=%d inst=%s", p.type or -1, tostring(p)))
 end
 
 -- 无条件幂等重试：把整体方块的 4 个子 Actor 附着到根，并烘焙当前 rot 的相对偏移。
@@ -684,10 +814,13 @@ function TetrisRenderer:EnsureWholePieceAttached(p, active)
         -- 变孤儿、停在停车场(hideLoc)的子块，立即归位到根，避免「漏显示/不显示」（取消隐藏后仍停在视线外）。
         local o = p.offsets[i]
         if o then
+            -- 子块相对根偏移必须沿盘面 right（随 boardRight 旋转）；用世界 X 轴固定偏移会在盘面
+            -- 非世界轴(即 pawn 基准真实朝向)时错位，且无法跟随 ResolveOrigin 后续更新（时序问题）
+            local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
             pcall(function()
                 child:K2_SetActorRelativeLocation(
-                    Game:ConstructFVectorByLuaTable({ X = o.dx * 100, Y = 0, Z = o.dz * 100 }))
-            end)
+                    Game:ConstructFVectorByLuaTable({ X = right.X * o.dx * 100, Y = right.Y * o.dx * 100, Z = o.dz * 100 }))
+        end)
         end
     end
 end
@@ -761,12 +894,7 @@ function TetrisRenderer:placeWholePieceV3(p, active)
             local o = p.offsets[1]
             local dx, dz = self:rotateOffset(o.dx, o.dz, active.rot)
             local cR = makePieceRotator(active.rot)
-            print(string.format(
-                "[Tetris][RotVerify] cR=%s rootNow=%s 子相对=(%.0f,%.0f) 期望相对=(%.0f,%.0f) 偏差=(%.1f,%.1f)",
-                dumpRot(cR), dumpRot(getRot(p.root)),
-                cl and (cl.X - rl.X) or -1, cl and (cl.Z - rl.Z) or -1,
-                dx * 100, dz * 100,
-                cl and ((cl.X - rl.X) - dx * 100) or -1, cl and ((cl.Z - rl.Z) - dz * 100) or -1))
+
         end)
     end
 
@@ -794,7 +922,6 @@ function TetrisRenderer:placeWholePieceV3(p, active)
                         end
                     end
                 end
-                print(string.format("[Tetris][FAIL] type=%d rot=%d 判定失败 子块: %s", p.type, active.rot, table.concat(parts, " ")))
             end)
         end
         -- 诊断：旋转态(rot>1)判定失败时，打印首个子块实际 vs 期望偏差，确认根旋转方向/轴是否对齐 rotateOffset。
@@ -808,11 +935,7 @@ function TetrisRenderer:placeWholePieceV3(p, active)
                 local cl = c1 and c1:K2_GetActorLocation()
                 if rl and cl then
                     local dx, dz = self:rotateOffset(p.offsets[1].dx, p.offsets[1].dz, active.rot)
-                    print(string.format(
-                        "[Tetris][RotDiag] type=%d rot=%d root=(%.0f,%.0f,%.0f) 实=(%.0f,%.0f,%.0f) 子相对=(%.0f,%.0f) 期望相对=(%.0f,%.0f) 偏差=(%.1f,%.1f)",
-                        p.type, active.rot, rl.X, rl.Y, rl.Z, cl.X, cl.Y, cl.Z,
-                        cl.X - rl.X, cl.Z - rl.Z, dx * 100, dz * 100,
-                        cl.X - (rl.X + dx * 100), cl.Z - (rl.Z + dz * 100)))
+
                 end
             end)
         end
@@ -837,9 +960,6 @@ function TetrisRenderer:placeWholePieceV3(p, active)
                 local d = (rl and cl) and math.sqrt((cl.X - rl.X) ^ 2 + (cl.Z - rl.Z) ^ 2) or -1
                 parts[#parts + 1] = string.format("#%d hid=%s d=%.0f", i, tostring(ch), d)
             end
-            print(string.format("[Tetris][Vis] type=%d rootHid=%s root=(%.0f,%.0f,%.0f) %s",
-                p.type, tostring(rh), rl and rl.X or -1, rl and rl.Y or -1, rl and rl.Z or -1,
-                table.concat(parts, " ")))
         end)
     end
 
@@ -852,16 +972,7 @@ function TetrisRenderer:placeWholePieceV3(p, active)
     if not (self._structDone and self._structDone[p.type]) then
         self._structDone = self._structDone or {}
         self._structDone[p.type] = true
-        pcall(function()
-            local nk = #(p.children or {})
-            local no = #(p.offsets or {})
-            local addrs = {}
-            for _, c in ipairs(p.children or {}) do addrs[#addrs + 1] = tostring(c) end
-            local dup = {}
-            for i = 1, nk do for j = i + 1, nk do if addrs[i] == addrs[j] then dup[#dup + 1] = string.format("#%d=#%d", i, j) end end end
-            print(string.format("[Tetris][STRUCT] type=%d children=%d offsets=%d 重复=%s",
-                p.type, nk, no, #dup > 0 and table.concat(dup, " ") or "无"))
-        end)
+
     end
 
     -- 漏单元诊断：显示已发生，逐子块体检；仅发现异常（孤儿/缺失/无效）才打印，正常无噪音。
@@ -887,7 +998,6 @@ function TetrisRenderer:placeWholePieceV3(p, active)
         if #bad > 0 then
             self._leakN = (self._leakN or 0) + 1
             if self._leakN % 120 == 1 then
-                print(string.format("[Tetris][LEAK] type=%d rot=%d 异常子块: %s", p.type, active.rot, table.concat(bad, " ")))
             end
         end
     end)
@@ -901,9 +1011,7 @@ function TetrisRenderer:placeWholePieceV3(p, active)
             local wl = c1 and c1:K2_GetActorLocation()
             if wl then
                 local dx, dz = self:rotateOffset(p.offsets[1].dx, p.offsets[1].dz, active.rot)
-                print(string.format(
-                    "[Tetris][V3] type=%d 子#1 实world=(%.0f,%.0f,%.0f) 期望≈(%.0f,?,%.0f) rot=%d",
-                    p.type, wl.X, wl.Y, wl.Z, (center.X + dx) * 100, (center.Z + dz) * 100, active.rot))
+
             end
         end)
     end
@@ -927,9 +1035,11 @@ end
 function TetrisRenderer:placePieceChildren(p, active)
     if not p or not p.cells then return end
     local center = self:pieceCenterWorld(active)
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
     for i, off in ipairs(p.offsets) do
         local dx, dz = self:rotateOffset(off.dx, off.dz, active.rot)
-        local wloc = { X = center.X + dx, Y = center.Y, Z = center.Z + dz }
+        -- dx 为盘面右方向偏移（沿 right）；dz 为世界 Z 方向偏移
+        local wloc = { X = center.X + right.X * dx, Y = center.Y + right.Y * dx, Z = center.Z + dz }
         local cell = p.cells[i]
         if cell then
             pcall(function() cell:K2_TeleportTo(cmVec(wloc), self.rot) end)
@@ -1014,8 +1124,6 @@ function TetrisRenderer:RenderActivePiece(board)
                         lines[#lines + 1] = string.format("#%d act=(%.0f,%.0f,%.0f) exp=(%.0f,%.0f,%.0f) dev=%.0f",
                             i, cl.X, cl.Y, cl.Z, ex, rl.Y, ez, dev)
                     end
-                    print(string.format("[Tetris][DropDbg] 新块开始下落 type=%d rot=%d root=(%.0f,%.0f,%.0f)\n  %s",
-                        p.type, active.rot, rl.X, rl.Y, rl.Z, table.concat(lines, "\n  ")))
                 end)
             end
         end
@@ -1063,13 +1171,10 @@ end
 -- 仅整体模式(wholePieceAttach)有效；其余模式直接回调（无预览）。
 function TetrisRenderer:ShowcasePieces(seconds)
     -- 版本标记：确认新代码是否真的加载进运行实例。重启后若看不到本行，说明仍在跑旧实例。
-    print(string.format("[Tetris][VER] 新 renderer 已加载 v2026-09-15-rot (frame=%s)", tostring(self.frame)))
     -- pcall 捕获测试：确认 pcall 能否捕获报错；并验证 Log 是否真未定义（之前 DiagRot 用 Log.Info 被吞的元凶）
     do
         local ok1, r1 = pcall(function() return 1 + 1 end)
-        print(string.format("[Tetris][PcallTest] 无错 ok=%s res=%s", tostring(ok1), tostring(r1)))
         local ok2, err2 = pcall(function() return Log.Info("若看到此说明 Log 可用") end)
-        print(string.format("[Tetris][PcallTest] 有错(Log未定义?) ok=%s err=%s", tostring(ok2), tostring(err2)))
     end
     if not self.wholePieceAttach or next(self.pieces) == nil then return end
     self.previewing = true
@@ -1090,10 +1195,8 @@ end
 
 -- 预览半程触发：让 7 个展示方块整体旋转 90° 一次（与下落同源 makePieceRotator + rotateOffset），供肉眼核对旋转跟随。
 function TetrisRenderer:PreviewRotateDemo()
-    print(string.format("[Tetris][DiagSelf] PreviewRotateDemo self=%s previewing=%s", tostring(self), tostring(self and self.previewing)))
     if not self.previewing then return end
     self._previewForceRot = true
-    print("[Tetris][PreviewRot] PreviewRotateDemo() 被调用（Game 定时器路径）→ 主动重摆以应用旋转")
     -- 预览期 Game 不每帧驱动 renderer:Update，LayoutShowcasePieces 仅被 ShowcasePieces 立即调过一次（rot=1）；
     -- 故此处必须主动重摆一次，把 _previewForceRot→midRot=2 的旋转 teleport 到根，否则旋转永不应用。
     self:LayoutShowcasePieces()
@@ -1112,7 +1215,6 @@ function TetrisRenderer:LayoutShowcasePieces()
     local zShow = o.Z + step * 2               -- 盘面上方两行处（Z 越大越高）
     if not self._diagLayoutSelfDone then
         self._diagLayoutSelfDone = true
-        print(string.format("[Tetris][DiagSelf] Layout self=%s previewing=%s", tostring(self), tostring(self.previewing)))
     end
     -- 预览半程演示旋转：优先用真实时钟（os.clock）/ Game 置位；若两者均不可见（疑似跨实例引用），
     -- 则用帧数兜底——预览开始约 60 帧（≈1 秒）后旋转并保持，确保一定发生，便于肉眼核对。
@@ -1130,30 +1232,24 @@ function TetrisRenderer:LayoutShowcasePieces()
     end
     -- 心跳诊断：确认 Layout 在 PreviewRotateDemo 之后是否仍在每帧跑、且 _previewForceRot 是否真被读到
     if self.previewing and (self.frame % 20 == 0) then
-        print(string.format("[Tetris][DiagHB] frame=%s forceRot=%s midRot=%s rotDone=%s", self.frame, tostring(self._previewForceRot), midRot, tostring(self._previewRotDone)))
     end
     if midRot == 2 and not self._previewRotDone then
         self._previewRotDone = true
         local mr = makePieceRotator(midRot)
-        print(string.format("[Tetris][PreviewRot] 预览演示旋转 → rot=%d（子块应随根整体转，形状正确即旋转OK）", midRot))
         -- 硬诊断：根是否真转、子块是否跟随根（相对根的位置应≈rot=1 原始偏移，且根旋转≠0）
         local p1 = self.pieces[1]
         if p1 and p1.root then
             local ok, err = pcall(function()
                 local rr = (p1.root.K2_GetActorRotation and p1.root:K2_GetActorRotation()) or (p1.root.GetActorRotation and p1.root:GetActorRotation())
-                print(string.format("[Tetris][DiagRot] makePieceRotator=%s  rootRot=%s", tostring(mr), tostring(rr)))
                 local rl = p1.root:K2_GetActorLocation()
                 for i, c in ipairs(p1.children or {}) do
                     local cl = c:K2_GetActorLocation()
-                    print(string.format("[Tetris][DiagRot] child%d relToRoot=(%.0f,%.0f,%.0f)", i, cl.X - rl.X, cl.Y - rl.Y, cl.Z - rl.Z))
                 end
             end)
-            if not ok then print(string.format("[Tetris][DiagRot] 诊断内部报错被吞：%s", tostring(err))) end
         end
     end
     if self._previewForceRot and not self._diagPfrDone then
         self._diagPfrDone = true
-        print(string.format("[Tetris][DiagSelf] Layout 读到 _previewForceRot=true self=%s", tostring(self)))
     end
     for t = 1, 7 do
         local p = self.pieces[t]
@@ -1165,13 +1261,16 @@ function TetrisRenderer:LayoutShowcasePieces()
                 if o2 then
                     -- 子块相对偏移始终保持 rot=1 原始值；旋转完全由根 Actor 带动
                     -- （与下落 placeWholePieceV3 一致：只转根、子块跟随，避免重复旋转导致子块飞散）
-                    local relLoc = Game:ConstructFVectorByLuaTable({ X = o2.dx * 100, Y = 0, Z = o2.dz * 100 })
+                    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+                    -- 子块相对根偏移必须沿盘面 right（随 boardRight 旋转）；用世界 X 轴固定偏移会在盘面
+                    -- 非世界轴(即 pawn 基准真实朝向)时错位，且无法跟随 ResolveOrigin 后续更新（时序问题）
+                    local relLoc = Game:ConstructFVectorByLuaTable({ X = right.X * o2.dx * 100, Y = right.Y * o2.dx * 100, Z = o2.dz * 100 })
                     pcall(function() child:K2_SetActorRelativeLocation(relLoc) end)
                 end
             end
-            local cx = midX + (t - 4) * gap     -- t=1..7 → 居中对称展开
+            local cy = o.Y + (t - 4) * gap     -- t=1..7 → 沿 Y(纵深)居中对称展开（水平旋转90°：原为沿 X 左右，现改为前后）
             -- 根带旋转量传送：与下落 placeWholePieceV3 同源（makePieceRotator），确保预览旋转=下落旋转。
-            pcall(function() p.root:K2_TeleportTo(cmVec({ X = cx, Y = o.Y, Z = zShow }), makePieceRotator(midRot)) end)
+            pcall(function() p.root:K2_TeleportTo(cmVec({ X = midX, Y = cy, Z = zShow }), makePieceRotator(midRot)) end)
         end
     end
     -- 诊断（预览开始后等待足够帧数让附着完成，仅打印一次）：
@@ -1318,8 +1417,17 @@ end
 -- 常驻可见（不参与方块显隐）。顶部开放，供方块下落进入。
 -- 三侧集合互不重叠，共 Rows + Rows + Cols 块。
 function TetrisRenderer:BuildBorder()
+    -- 幂等：已成功创建则跳过（Update 会在失败时逐帧重试本函数）
+    if self.border and #self.border > 0 then return end
+    self.borderSpecs = {}
+    self.border = {}
     if not self.origin then
         print("[Tetris][WARN] 边框生成失败：盘面原点未初始化")
+        return
+    end
+    -- 动态实例创建依赖 InstanceAPI；未注入时延后重试（不打印错误刷屏）
+    if type(InstanceAPI) ~= "table" then
+        print("[Tetris][WARN] InstanceAPI 未注入，边框延后重试")
         return
     end
     local cols, rows = TetrisConfig.Board.Cols, TetrisConfig.Board.Rows
@@ -1327,52 +1435,154 @@ function TetrisRenderer:BuildBorder()
     local step = r.CellSize + r.CellGap
     local s = r.BlockScale
     local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
-    local ref = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.BorderAssetRefKey] or nil
-    if not ref then
-        print("[Tetris][WARN] 边框资源 AssetRef[\"" .. tostring(TetrisConfig.Render.BorderAssetRefKey) .. "\"] 为空，跳过边框生成")
+    -- 外框用动态实例（InstanceAPI.CreateInstance，需 CreativeAsset 预设键）。
+    -- 引用候选：AssetRef -> CreativeAsset -> 原始Key，逐一试（与 ProbeCreator 同策略）。
+    local cands = collectRefCandidates(TetrisConfig.Render.BorderAssetRefKey)
+    if #cands == 0 then
+        print("[Tetris][WARN] 边框资源 \"" .. tostring(TetrisConfig.Render.BorderAssetRefKey) .. "\" 无可用引用，跳过边框生成")
         return
     end
 
     local o = self.origin
+    -- 盘面右方向（随朝向旋转）：边框列偏移必须沿 right，否则盘面非世界轴时错位
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local comboFailed = false
 
-    -- 创建单个边框格子：优先 Actor 模式（与场景方块一致、无实例池上限），失败回退动态实例
-    local function makeBorder(x, z)
-        local loc = Game:ConstructFVectorByLuaTable({ X = x, Y = o.Y, Z = z })
-        local ok, obj = pcall(function()
-            return CreativeGameAPI.CreateActor(ref, loc, self.rot, scale, nil)
-        end)
-        if ok and obj then
-            pcall(function() obj:SetActorHiddenInGame(false) end)
-            self.border[#self.border + 1] = obj
-            return
+    -- 一次性探测：找出真正能创建实例的 (API, ref, rot) 组合（不同引擎/构建可用性不同）。
+    -- 逐组合尝试并打印结果，命中后缓存复用（探针创建的实例直接用作首个边框格，不浪费）。
+    local function resolveCombo(probeLoc)
+        if self._borderCombo then return self._borderCombo end
+        if comboFailed then return nil end
+        local log = {}
+        for _, api in ipairs({ "CreateInstance", "CreateGroupInstance" }) do
+            local fn = InstanceAPI[api]
+            if type(fn) == "function" then
+                for _, c in ipairs(cands) do
+                    local rots = { self.rot, nil }   -- 下标遍历，确保 nil 也被试到
+                    for ri = 1, 2 do
+                        local rot = rots[ri]
+                        local ok, obj = pcall(function() return fn(c.val, probeLoc, rot, scale) end)
+                        log[#log + 1] = string.format("%s/%s/%s->%s",
+                            api, c.name, ri == 1 and "rot" or "nil", tostring(obj))
+                        if ok and obj then
+                            if not self._borderProbeLogged then
+                                self._borderProbeLogged = true
+                                print("[Tetris][BorderProbe] 命中 -> " .. log[#log]
+                                      .. " ; 全部: " .. table.concat(log, " | "))
+                            end
+                            self._borderCombo = { api = api, ref = c.val, rot = rot, refName = c.name }
+                            self._borderProbeObj = obj   -- 探针实例复用为首个边框格
+                            return self._borderCombo
+                        end
+                    end
+                end
+            else
+                log[#log + 1] = api .. "=未实现"
+            end
         end
-        local ok2, obj2 = pcall(function()
-            return InstanceAPI.CreateInstance(ref, loc, self.rot, scale)
-        end)
-        if ok2 and obj2 then
-            pcall(function()
-                if InstanceAPI.ToggleInstanceVisible then InstanceAPI.ToggleInstanceVisible(obj2, true) end
-            end)
-            self.border[#self.border + 1] = obj2
+        comboFailed = true
+        if not self._borderProbeLogged then
+            self._borderProbeLogged = true
+            print("[Tetris][BorderProbe] 全部失败: " .. table.concat(log, " | "))
+        end
+        return nil
+    end
+
+    -- 创建单个边框格子（实例化）：dx=沿盘面右方向偏移（米，可为负）；dz=向下偏移（米，世界 -Z）
+    local function makeBorder(dx, dz)
+        local loc = Game:ConstructFVectorByLuaTable({
+            X = o.X + right.X * dx,
+            Y = o.Y + right.Y * dx,
+            Z = o.Z - dz,
+        })
+        local combo = resolveCombo(loc)
+        if not combo then return end
+        local obj
+        if self._borderProbeObj then
+            obj = self._borderProbeObj           -- 复用作第一个格子
+            self._borderProbeObj = nil
         else
-            print("[Tetris][WARN] 边框格子创建失败 @(" .. tostring(x) .. "," .. tostring(z) .. ")")
+            local ok, o2 = pcall(function() return InstanceAPI[combo.api](combo.ref, loc, combo.rot, scale) end)
+            obj = ok and o2 or nil
+        end
+        if obj then
+            pcall(function()
+                if InstanceAPI.ToggleInstanceVisible then InstanceAPI.ToggleInstanceVisible(obj, true) end
+            end)
+            self.border[#self.border + 1] = obj
+            self.borderSpecs[#self.borderSpecs + 1] = { dx = dx, dz = dz }
+        else
+            print("[Tetris][WARN] 边框格子创建失败 @(dx=" .. tostring(dx) .. ",dz=" .. tostring(dz) .. ")")
         end
     end
 
     -- 左、右两侧：每行一块
     for row = 1, rows do
-        local z = o.Z - (row - 1) * step
-        makeBorder(o.X + (0 - 1) * step, z)          -- 左（虚拟列 0）
-        makeBorder(o.X + (cols + 1 - 1) * step, z)   -- 右（虚拟列 Cols+1）
+        local dz = (row - 1) * step
+        makeBorder((0 - 1) * step, dz)          -- 左（虚拟列 0）
+        makeBorder((cols + 1 - 1) * step, dz)   -- 右（虚拟列 Cols+1）
     end
     -- 下侧：每列一块（虚拟行 Rows+1）
     for col = 1, cols do
-        local x = o.X + (col - 1) * step
-        makeBorder(x, o.Z - (rows + 1 - 1) * step)
+        makeBorder((col - 1) * step, (rows + 1 - 1) * step)
     end
 
     print("[Tetris] 边框格子创建完成: " .. #self.border .. "/" .. (rows + rows + cols)
-          .. "（左/右/下三侧，常驻可见）")
+          .. "（左/右/下三侧，常驻可见，实例化）")
+end
+
+-- 边框随 boardRight 重定位：Build 时 boardRight 可能尚未确定（出生点装置未注入，走回退默认），
+-- 出生点装置注入后 SetupFixedCamera 会重新 ResolveOrigin 更新 boardRight，并调本函数用最新
+-- boardRight/origin 重摆所有边框格，使其与 InitialLayout 静态格子保持同一基准（修复时序错位）。
+function TetrisRenderer:ReanchorBorder()
+    if not self.border or not self.borderSpecs then return end
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local o = self.origin
+    if not o then return end
+    -- self.rot 可能为 nil（makeZeroRotator 失败）：K2_TeleportTo 的 DestRotation 不能为 nil，否则静默失败。
+    local rot = self.rot or makeZeroRotator()
+    for i, a in ipairs(self.border) do
+        local s = self.borderSpecs[i]
+        if a and s then
+            local loc = Game:ConstructFVectorByLuaTable({ X = o.X + right.X * s.dx, Y = o.Y + right.Y * s.dx, Z = o.Z - s.dz })
+            if type(a) == "number" then
+                -- 动态实例（CreateInstance 返回实例句柄）：必须用 InstanceAPI 移动，不能 K2_TeleportTo
+                pcall(function() InstanceAPI.SetInstanceLocation(a, loc) end)
+                if rot then pcall(function() InstanceAPI.SetInstanceRotation(a, rot) end) end
+            else
+                pcall(function() a:K2_TeleportTo(loc, rot) end)
+            end
+        end
+    end
+    -- 一次性诊断：确认边框确实被重摆、摆到了哪（排查“外框看不到”）。
+    if not self._borderAnchorLogged and #self.border > 0 and self.borderSpecs[1] then
+        self._borderAnchorLogged = true
+        local s1 = self.borderSpecs[1]
+        print(string.format(
+            "[Tetris] 边框重摆: n=%d 首格=(%.2f,%.2f,%.2f) origin=(%.2f,%.2f,%.2f) right=(%.2f,%.2f)",
+            #self.border, o.X + right.X * s1.dx, o.Y + right.Y * s1.dx, o.Z - s1.dz, o.X, o.Y, o.Z, right.X, right.Y))
+    end
+end
+
+-- 静态层随 boardRight 重摆：Build 时盘面前景基准（出生点装置/玩家）可能尚未就绪，
+-- 已落定静态格在那时的旧 boardRight 下被 placeActor 烘焙好位置；之后 Update 的签名脏检查
+-- 只重排“变化”的格子、不重新传送“已存在”的格子，导致静态格停留在旧基准。
+-- 出生点装置注入后 SetupFixedCamera 重新 ResolveOrigin 更新 boardRight，此处用最新
+-- origin/boardRight 把全部已落定格子重传一次，使其与边框、下落块保持同一基准（修复时序错位）。
+function TetrisRenderer:ReanchorBoard()
+    if not self.occ then return end
+    local rows = TetrisConfig.Board.Rows
+    local cols = TetrisConfig.Board.Cols
+    for r = 1, rows do
+        if self.occ[r] then
+            for c = 1, cols do
+                local a = self.occ[r][c]
+                if a then
+                    self:placeActor(a, r, c)  -- cellLocation 读实时 origin/boardRight
+                end
+            end
+        end
+    end
 end
 
 -- 调试：逐行统计 已创建 / 当前显示 / 期望显示 的格子数。
@@ -1582,6 +1792,37 @@ function TetrisRenderer:Update(board)
     -- 启动前预热：逐帧把所有 7 种整体实例附着并就绪；全部 _everReady 后才允许渲染活动块。
     -- CreateActor 异步、首帧附着可能失败，故每帧幂等重试，直到实例真正建好（通常几帧内完成）。
     self:PrimeAllPieces()
+
+    -- 边框延迟创建：Build 时 InstanceAPI 可能未注入或实例创建暂时失败，重试直到成功（上限若干帧）。
+    -- 每 5 帧才真正尝试一次（探测开销较大）；成功后强制重摆若干帧，确保对齐当前基准。
+    if (not self.border or #self.border == 0) and (self._borderRetry or 0) < 30 then
+        self._borderRetry = (self._borderRetry or 0) + 1
+        if ((self._borderRetry - 1) % 5) == 0 then
+            self:BuildBorder()
+        end
+        if self.border and #self.border > 0 then
+            self._basisAnchorFrames = 40
+        end
+    end
+
+    -- 基准一致性自愈：ResolveOrigin 可能在 Build 之后才拿到出生点装置（origin/boardRight 变化），
+    -- 而边框/静态格的 Actor 由异步 CreateActor 生成——单次 teleport 若早于 spawn 会被静默丢弃，
+    -- 导致边框停留在旧基准（朝向翻转后会跑出视野，表现为“外框看不到”）。故检测到基准变化后，
+    -- 在随后若干帧内逐帧幂等重摆边框与已落定静态格，覆盖异步 spawn 窗口并始终对齐当前基准。
+    if self.origin and self.boardRight then
+        local basisSig = string.format("%.3f,%.3f,%.3f|%.3f,%.3f,%.3f",
+            self.origin.X, self.origin.Y, self.origin.Z,
+            self.boardRight.X, self.boardRight.Y, self.boardRight.Z)
+        if basisSig ~= self._basisSig then
+            self._basisSig = basisSig
+            self._basisAnchorFrames = 40   -- 覆盖异步 spawn 所需帧数
+        end
+        if (self._basisAnchorFrames or 0) > 0 then
+            self._basisAnchorFrames = self._basisAnchorFrames - 1
+            self:ReanchorBorder()
+            self:ReanchorBoard()
+        end
+    end
 
     local rows = TetrisConfig.Board.Rows
     local cols = TetrisConfig.Board.Cols
