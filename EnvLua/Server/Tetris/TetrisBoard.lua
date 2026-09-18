@@ -77,6 +77,7 @@ function TetrisBoard:reset()
     -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
     self.pendingClearedRows = nil     -- 本次 lockPiece 被消除的行号列表
     self.pendingGarbageMoved = nil    -- 本次是否发生过垃圾行上移（会导致普通位移公式失效）
+    self.clearing = false              -- 消行动画期间置 true：挂起出块与重力，等动画结束后 finishClear()
 
     self:applyInitialLayout()
     self:spawn()
@@ -321,7 +322,13 @@ function TetrisBoard:lockPiece()
 
     local cleared = self:clearLines()
     self:applyGarbage()
-    self:spawn()
+    if cleared > 0 then
+        -- 消行：动画(渲染层 ClearDelay 秒)未结束前不出块。active 保持 nil、clearing 置位，
+        -- 由 Game 层在动画结束后调用 finishClear() 重新出块，避免新块在消除未完成时就出现/下落。
+        self.clearing = true
+    else
+        self:spawn()
+    end
     return cleared
 end
 
@@ -445,6 +452,7 @@ end
 -- 每个重力周期调用一次：能下落则下落一格，否则锁定
 function TetrisBoard:tick()
     if self.isGameOver then return false end
+    if self.clearing then return false end  -- 消行动画期间暂停重力与出块，等 finishClear()
     if not self.active then
         self:spawn()
         return false
@@ -456,6 +464,14 @@ function TetrisBoard:tick()
     end
     self:lockPiece()
     return false
+end
+
+-- 消行动画结束后由 Game 层调用：解除挂起并出下一个方块（见 lockPiece 的 clearing 逻辑）。
+function TetrisBoard:finishClear()
+    if not self.clearing then return false end
+    self.clearing = false
+    self:spawn()
+    return true
 end
 
 -- ---------------- 供渲染层读取 ----------------

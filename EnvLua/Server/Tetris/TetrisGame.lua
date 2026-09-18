@@ -248,9 +248,32 @@ function TetrisGame:OnTick()
     end
     board:tick()                    -- 数据层下落一格或锁定
     self.renderer:Update(board)     -- 渲染层只跟随数据
+    self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:CheckPieceSpawned()        -- 产出新方块则上屏
     if board:isOver() then
         self:OnGameOver()
+    end
+end
+
+-- 消行期间（board.clearing）在动画时长 ClearDelay 后调用 finishClear() 出下一个块。
+-- 用 _clearResumeScheduled 防重入：多个 tick 帧只调度一次。
+function TetrisGame:ScheduleClearResume()
+    if self._clearResumeScheduled then return end
+    self._clearResumeScheduled = true
+    local delay = (TetrisConfig.Clear and TetrisConfig.Clear.ClearDelay) or 0.5
+    self.owner:AddTimerOnce(delay, function()
+        self._clearResumeScheduled = false
+        if not self.running or not self.board then return end
+        self.board:finishClear()
+        if self.renderer and self.board then self.renderer:Update(self.board) end
+        self:CheckPieceSpawned()
+        if self.board:isOver() then self:OnGameOver() end
+    end)
+end
+
+function TetrisGame:maybeScheduleClearResume()
+    if self.board and self.board.clearing then
+        self:ScheduleClearResume()
     end
 end
 
@@ -352,6 +375,7 @@ function TetrisGame:safeApply(fn)
         return
     end
     self.renderer:Update(self.board)
+    self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:CheckPieceSpawned()
     if self.board:isOver() then
         self:OnGameOver()
