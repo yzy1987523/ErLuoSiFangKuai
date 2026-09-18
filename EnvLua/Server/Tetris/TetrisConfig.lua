@@ -383,13 +383,13 @@ TetrisConfig.Camera = {
 
 -- ===================== 调试 =====================
 TetrisConfig.Debug = {
-    PrintBoardBounds = true,  -- Build 完成后打印盘面世界坐标范围
+    PrintBoardBounds = false,  -- Build 完成后打印盘面世界坐标范围
     PrintGrid = false,        -- 每次刷新打印期望显隐的字符画（排查行列映射用，较刷屏）
-    DumpCellStatus = true,    -- 逐行打印 已创建/当前显示/期望显示，定位“生成了但被隐藏”或“没生成”
-    ShowPieceInfo = true,     -- 每次生成新下落方块时，把信息上屏
+    DumpCellStatus = false,    -- 逐行打印 已创建/当前显示/期望显示，定位“生成了但被隐藏”或“没生成”
+    ShowPieceInfo = false,    -- 每次生成新下落方块时上屏（已改由 HUD 显示分数，默认关闭避免刷屏）
     ShowPieceInfoPopup = false, -- false = 聊天框(SendQuickMenuMessage)；true = 屏幕弹窗(SendBattlePopupMessage)
-    ShowGameOverInfo = true,  -- 结束时上屏结算
-    DropDbg = true,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
+    ShowGameOverInfo = false,  -- 结束时上屏结算
+    DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
 }
 
 return TetrisConfig

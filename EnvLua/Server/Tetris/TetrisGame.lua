@@ -87,7 +87,6 @@ function TetrisGame:ProcessInitialClears()
     if self.board:isOver() then return end
     local cleared = self.board:clearLines(false)
     if cleared and cleared > 0 then
-        self:SendScreenMessage("开局预消 " .. tostring(cleared) .. " 行")
         self:UpdateHUD()            -- 开局预消会改变消行数
         -- 刷若干帧让渲染层消费 pendingClearedRows 并播放动画（独立于重力 tick）
         self:RefreshRenderer(10)

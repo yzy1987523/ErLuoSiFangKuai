@@ -1109,7 +1109,7 @@ function TetrisRenderer:parkWholePieceV3(p)
     local gap = step * 4                        -- 每种间隔 4 格，避免重叠
     local o = self.origin or r.BoardOrigin
     local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2
-    local zShow = o.Z + step * 8                -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
+    local zShow = o.Z + step * 50                -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
     local x = midX + (p.type - 4) * gap
     pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = o.Y, Z = zShow }), self.rot) end)
 end
@@ -1296,7 +1296,7 @@ function TetrisRenderer:LayoutShowcasePieces()
     local o = self.origin or r.BoardOrigin
     local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
     local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2  -- 盘面横向中心
-    local zShow = o.Z + step * 2               -- 盘面上方两行处（Z 越大越高）
+    local zShow = o.Z + step * 5              -- 盘面上方两行处（Z 越大越高）
     if not self._diagLayoutSelfDone then
         self._diagLayoutSelfDone = true
     end
