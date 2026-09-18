@@ -307,10 +307,10 @@ TetrisConfig.SceneObjects = {
 }
 
 -- 出生点装置前方生成棋盘的距离（米，可配置）：棋盘中心 = 装置位置 + 世界 +Y(北) * 该值。
-TetrisConfig.BoardForwardDistM = 18
+TetrisConfig.BoardForwardDistM = 16
 
 -- 盘面左右偏移（米，沿盘面右向量 right，正=向玩家右手侧移）：与 BoardForwardDistM 垂直，仅平移不改朝向/前后。
-TetrisConfig.BoardSideOffsetM = 10
+TetrisConfig.BoardSideOffsetM = 0
 
 -- 盘面相对玩家朝向的额外旋转（度，从上方俯视）：仅微调“盘心落点”方位（绕出生装置公转），不改盘面自身轴向。
 -- 当前朝向源用角色 Actor 前向（pawn:GetActorForwardVector）；若盘面仍不正对，调此值：
@@ -323,7 +323,7 @@ TetrisConfig.BoardYawOffsetDeg = 0
 TetrisConfig.BoardFlipAxis180 = true
 
 -- 盘面整体离地高度（米）：棋盘底行距“出生点装置所在水平面”的间隙，越大盘面越悬空越高。
-TetrisConfig.BoardHeightOffsetM = -5
+TetrisConfig.BoardHeightOffsetM = -6
 
 -- 固定相机（玩家自身第三人称相机）参数：
 TetrisConfig.Camera = {
