@@ -449,15 +449,32 @@ function TetrisRenderer:PlayClearEffectAt(row, col)
         return
     end
     local loc = self:cellLocation(row, col)
+    -- 在格中心点基础上叠加配置偏移（单位：米，与 cellLocation 同坐标系）。
+    local off = (TetrisConfig.Clear and TetrisConfig.Clear.EffectPositionOffset) or { X = 0.0, Y = 0.0, Z = 0.0 }
+    local pos = { X = loc.X + (off.X or 0), Y = loc.Y + (off.Y or 0), Z = loc.Z + (off.Z or 0) }
     local dur = (TetrisConfig.Clear and TetrisConfig.Clear.EffectDuration) or 1.0
     local ok, id = pcall(function()
         return SceneEffectAPI.CreateSceneEffect(
             ref,
-            Game:ConstructFVectorByLuaTable({ X = loc.X, Y = loc.Y, Z = loc.Z }),
+            Game:ConstructFVectorByLuaTable(pos),
             dur)
     end)
+    if not ok or not id or id == 0 then
+        if TetrisConfig.Debug then
+            print(string.format("[Tetris][Clear][WARN] 特效创建失败 row=%d col=%d id=%s", row, col, tostring(id)))
+        end
+        return
+    end
+    -- 创建后调整尺寸：CreateSceneEffect 无缩放参数，需用 SetSceneEffectScale。
+    -- 缩放为 FVector，各分量默认 1.0 = 原始大小。
+    local scale = (TetrisConfig.Clear and TetrisConfig.Clear.EffectScale) or { X = 1.0, Y = 1.0, Z = 1.0 }
+    pcall(function()
+        SceneEffectAPI.SetSceneEffectScale(id,
+            Game:ConstructFVectorByLuaTable({ X = scale.X, Y = scale.Y, Z = scale.Z }))
+    end)
     if TetrisConfig.Debug then
-        print(string.format("[Tetris][Clear] 特效 row=%d col=%d id=%s", row, col, tostring(ok and id or "fail")))
+        print(string.format("[Tetris][Clear] 特效 row=%d col=%d id=%s scale=(%.2f,%.2f,%.2f)",
+            row, col, tostring(id), scale.X, scale.Y, scale.Z))
     end
 end
 
@@ -1696,6 +1713,11 @@ end
 --   阶段B（延迟）：用现存 parent-shift 方式把下移块整体下移填补空缺，移完拆父还原独立 Actor。
 -- 这样视觉上：被消行先瞬间清空 → 停顿 ClearDelay 秒 → 上方方块再整块落下（而非原版一次性同步完成）。
 function TetrisRenderer:ReconcileClear(board, clearedRows)
+    if TetrisConfig.Debug then
+        print(string.format("[Tetris][DBG] ReconcileClear 进入: 行数=%d _clearFallPending=%s -> %s",
+            #(clearedRows or {}), tostring(self._clearFallPending ~= nil),
+            self._clearFallPending and "先同步flush上一次下落(立即)" or "无pending"))
+    end
     -- 若上一次消行的下落尚未执行（0.5s 窗口内又发生锁定），先同步 flush 上一次，
     -- 保证 occ 与数据层一致，避免叠加错位。
     if self._clearFallPending then self:ReconcileClearFall() end
@@ -1717,8 +1739,8 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
         for c = 1, cols do
             local a = oldOcc[cr] and oldOcc[cr][c]
             if a then self:ReleaseActor(a) end
-            self:PlayClearEffectAt(cr, c)   -- 在待消除格位置播放特效
         end
+        self:PlayClearEffectAt(cr, 9)   -- 在待消除格位置播放特效
     end
 
     -- 2) 计算每个最终格的来源旧行：clearLines 从底向上紧凑堆叠保留行，被消行上方的行整体下落填补。
@@ -1765,6 +1787,11 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
     for _ in pairs(groups) do groupCount = groupCount + 1 end
     if groupCount > 0 then
         self._clearFallPending = { groups = groups }
+        if TetrisConfig.Debug then
+            print(string.format("[Tetris][DBG] 阶段B调度: groupCount=%d ownerHasTimer=%s delay=%.2f -> %s",
+                groupCount, tostring(self.owner and self.owner.AddTimerOnce ~= nil), delay,
+                (self.owner and self.owner.AddTimerOnce) and "定时器延迟" or "SYNC同步兜底"))
+        end
         if self.owner and self.owner.AddTimerOnce then
             self.owner:AddTimerOnce(delay, function()
                 if self and self.ReconcileClearFall then self:ReconcileClearFall() end
@@ -1786,6 +1813,9 @@ end
 function TetrisRenderer:ReconcileClearFall()
     local pending = self._clearFallPending
     self._clearFallPending = nil
+    if TetrisConfig.Debug then
+        print(string.format("[Tetris][DBG] 阶段B触发: ReconcileClearFall 执行 pending=%s", tostring(pending ~= nil)))
+    end
     if not pending then return end
     local groups = pending.groups
     local step = TetrisConfig.Render.CellSize + TetrisConfig.Render.CellGap
@@ -1888,18 +1918,50 @@ function TetrisRenderer:Update(board)
     local rows = TetrisConfig.Board.Rows
     local cols = TetrisConfig.Board.Cols
 
+    -- 提交刚锁定的方块为静态块（按锁定前行号摆位）：必须在消行重排之前完成，
+    -- 使其进入 occ 成为“旧块”；若位于被消行上方，ReconcileClear 的 delta 计算会把它归入
+    -- groups 参与延迟下落。活动块整体 actor 由随后的 RenderActivePiece 回收（先放置后回收，无闪烁）。
+    if self.poolReady then
+        local locked = board:consumeLockedCells()
+        if locked then
+            for _, lc in ipairs(locked) do
+                local a = self.occ[lc.row] and self.occ[lc.row][lc.col]
+                if not a then
+                    a = self:AcquireActor()
+                    if a then
+                        self:placeActor(a, lc.row, lc.col)
+                        self.occ[lc.row] = self.occ[lc.row] or {}
+                        self.occ[lc.row][lc.col] = a
+                    end
+                end
+            end
+        end
+    end
+
     -- 静态层：仅在盘面数据变化（锁定/消行）时重排；且仅在对象池就绪后
     if self.poolReady then
         local sig = self:boardSignature(board)
         if sig ~= self.lastBoardSig then
             local cleared = board:consumeClearedRows()
             local garbageMoved = board:consumedGarbageMoved()
+            if TetrisConfig.Debug then
+                print(string.format(
+                    "[Tetris][DBG] Update重排: sig变化 cleared=%s garbageMoved=%s 等待下落中=%s UseParentShift=%s -> %s",
+                    tostring(cleared and #cleared or 0), tostring(garbageMoved),
+                    tostring(self._clearFallPending ~= nil), tostring(TetrisConfig.Render.UseParentShiftOnClear),
+                    (cleared and #cleared > 0 and not garbageMoved and TetrisConfig.Render.UseParentShiftOnClear) and "ReconcileClear" or "ReconcileBoard"))
+            end
             if cleared and #cleared > 0 and not garbageMoved and TetrisConfig.Render.UseParentShiftOnClear then
                 self:ReconcileClear(board, cleared)
             else
                 self:ReconcileBoard(board)
             end
             self.lastBoardSig = sig
+        else
+            if TetrisConfig.Debug and self._clearFallPending then
+                print(string.format("[Tetris][DBG] Update: 处于0.5s等待窗口，本次 sig 未变(active piece 未动) pendingFall=%s",
+                    tostring(self._clearFallPending ~= nil)))
+            end
         end
     end
 

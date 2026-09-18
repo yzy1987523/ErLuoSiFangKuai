@@ -13,9 +13,17 @@ TetrisConfig.Board = {
 -- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
 -- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
 TetrisConfig.Clear = {
-    ClearDelay = 0.5,   -- 单位：秒。被消行方块消失后、其余行开始下落前的停顿。
+    ClearDelay = 1.5,   -- 单位：秒。被消行方块消失后、其余行开始下落前的停顿。
     EffectDuration = 1.0,   -- 单位：秒。被消除格上播放的特效持续时间。
     EffectPresetKey = "13_EffectPreset_100032",  -- 消行特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
+    -- 特效尺寸（缩放倍数）。FVector，各分量默认 1.0 = 原始大小；
+    -- 例 {X=2,Y=2,Z=2} 放大到 2 倍，{X=0.5,Y=0.5,Z=0.5} 缩小一半。
+    -- 由 SceneEffectAPI.SetSceneEffectScale 在创建后应用（CreateSceneEffect 无缩放参数）。
+    -- x：高度，y：长度
+    EffectScale = { X = 8.0, Y = 2.0, Z = 1.0 },
+    -- 特效播放位置的额外偏移（单位：米，与 cellLocation 同坐标系）。
+    -- 各分量默认 0 = 不加偏移；例 {X=0,Y=0,Z=0.5} 把特效抬高 0.5 米。
+    EffectPositionOffset = { X = 0.0, Y = -5.0, Z = 0.0 },
 }
 
 -- ===================== 初始预填版面（开局即存在的方块） =====================

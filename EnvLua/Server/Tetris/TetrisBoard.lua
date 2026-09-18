@@ -301,6 +301,7 @@ function TetrisBoard:lockPiece()
     local m = rotationStates[p.type][p.rot]
     local n = #m
 
+    local lockedCells = {}
     for r = 1, n do
         for c = 1, n do
             if m[r][c] == 1 then
@@ -308,10 +309,14 @@ function TetrisBoard:lockPiece()
                 local gc = p.x + c - 1
                 if gr >= 1 and gr <= self.rows and gc >= 1 and gc <= self.cols then
                     self.grid[gr][gc] = p.type
+                    lockedCells[#lockedCells + 1] = { row = gr, col = gc }
                 end
             end
         end
     end
+    -- 记录本次锁定方块的原始格位置（消行前的行号），供渲染层在消行重排前先提交为静态块，
+    -- 使其能像普通旧块一样参与 delta 计算与延迟下落。
+    self.pendingLockedCells = (#lockedCells > 0) and lockedCells or nil
     self.active = nil
 
     local cleared = self:clearLines()
@@ -385,6 +390,13 @@ function TetrisBoard:consumeClearedRows()
     local r = self.pendingClearedRows
     self.pendingClearedRows = nil
     return r
+end
+
+-- 渲染层消费：取走本次锁定方块的原始格位置（取后清空，避免重复提交）
+function TetrisBoard:consumeLockedCells()
+    local c = self.pendingLockedCells
+    self.pendingLockedCells = nil
+    return c
 end
 
 -- 渲染层消费：本次是否发生过垃圾行上移（取后清空）
