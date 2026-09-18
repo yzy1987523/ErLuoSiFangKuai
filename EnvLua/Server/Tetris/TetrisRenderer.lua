@@ -751,6 +751,120 @@ function TetrisRenderer:BuildActivePiecesV3()
     self:fillPieceQueue()  -- 把预建实例入队，供 acquire/release 管理取还
 end
 
+-- 下一个方块预览：再预建一套 7 种整体实例(预览专用，与活动 7 个互不干扰)，
+-- 写入 self.previewPieces。同样采用方案3(根+4子Actor)，但仅供左侧预览展示，
+-- 不走 acquire/release 队列。连同活动 7 个共 14 个 = 每型 2 个，避免活动块与下一个同型时实例争用。
+function TetrisRenderer:BuildPreviewPieces()
+    if not TetrisConfig.Render.UseWholePiece then return end
+    if not TetrisConfig.Render.EnableNextPreview then return end
+    if not TetrisConfig.Render.UseWholePieceAttach then
+        print("[Tetris][WARN] 下一个方块预览仅支持方案3(整体附着)，当前未启用，跳过")
+        return
+    end
+    local rootRef = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.PieceRootPresetKey] or nil
+    local childRef = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.PieceChildPresetKey] or nil
+    if not rootRef or not childRef then
+        print("[Tetris][WARN] 预览整体方块资源(PieceRoot/PieceChild)未就绪，跳过下一个方块预览")
+        return
+    end
+    local step = TetrisConfig.Render.CellSize + TetrisConfig.Render.CellGap
+    local s = TetrisConfig.Render.BlockScale
+    local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
+    local park = self.hideLoc
+    local rot0 = self.rot
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    self.previewPieces = {}
+    local built = 0
+    for t = 1, 7 do
+        local shape = TetrisConfig.Pieces[t] and TetrisConfig.Pieces[t].shape
+        if shape then
+            local pr, pc = self:piecePivot(t)
+            local offs = {}
+            for r = 1, #shape do
+                for c = 1, #shape do
+                    if shape[r][c] == 1 then
+                        offs[#offs + 1] = { dx = (c - pc) * step, dz = -((r - pr) * step) }
+                    end
+                end
+            end
+            local root = CreativeGameAPI.CreateActor(rootRef, Game:ConstructFVectorByLuaTable(park), rot0, scale, nil)
+            if root then
+                pcall(function() root:SetActorHiddenInGame(false) end)
+                local children = {}
+                local okAll = true
+                for _, o in ipairs(offs) do
+                    local cw = Game:ConstructFVectorByLuaTable({ X = park.X + right.X * o.dx, Y = park.Y + right.Y * o.dx, Z = park.Z + o.dz })
+                    local child = CreativeGameAPI.CreateActor(childRef, cw, rot0, scale, nil)
+                    if not child then okAll = false break end
+                    children[#children + 1] = child
+                end
+                if okAll then
+                    self.previewPieces[t] = { root = root, children = children, offsets = offs, attached = false, type = t }
+                    built = built + 1
+                end
+            end
+        end
+    end
+    print("[Tetris] 下一个方块预览实例已构建: " .. built .. "/7（预览专用，与活动 7 个互不干扰，共14个）")
+end
+
+-- Hold 暂存方块：再预建一套 7 种整体实例(Hold 专用，与活动 7 个、下一预览 7 个互不干扰)，
+-- 写入 self.holdPieces。采用方案3(根+4子Actor)，仅供左侧 Hold 展示，不走 acquire/release 队列。
+-- 连同活动 7 + 下一预览 7 + Hold 7 = 21 个 = 每型 3 个(活动/下一/暂存)，避免三者同型时实例争用。
+function TetrisRenderer:BuildHoldPieces()
+    if not TetrisConfig.Render.UseWholePiece then return end
+    if not TetrisConfig.Render.EnableHoldPreview then return end
+    if not TetrisConfig.Render.UseWholePieceAttach then
+        print("[Tetris][WARN] Hold 暂存预览仅支持方案3(整体附着)，当前未启用，跳过")
+        return
+    end
+    local rootRef = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.PieceRootPresetKey] or nil
+    local childRef = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.PieceChildPresetKey] or nil
+    if not rootRef or not childRef then
+        print("[Tetris][WARN] Hold 整体方块资源(PieceRoot/PieceChild)未就绪，跳过 Hold 暂存预览")
+        return
+    end
+    local step = TetrisConfig.Render.CellSize + TetrisConfig.Render.CellGap
+    local s = TetrisConfig.Render.BlockScale
+    local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
+    local park = self.hideLoc
+    local rot0 = self.rot
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    self.holdPieces = {}
+    local built = 0
+    for t = 1, 7 do
+        local shape = TetrisConfig.Pieces[t] and TetrisConfig.Pieces[t].shape
+        if shape then
+            local pr, pc = self:piecePivot(t)
+            local offs = {}
+            for r = 1, #shape do
+                for c = 1, #shape do
+                    if shape[r][c] == 1 then
+                        offs[#offs + 1] = { dx = (c - pc) * step, dz = -((r - pr) * step) }
+                    end
+                end
+            end
+            local root = CreativeGameAPI.CreateActor(rootRef, Game:ConstructFVectorByLuaTable(park), rot0, scale, nil)
+            if root then
+                pcall(function() root:SetActorHiddenInGame(false) end)
+                local children = {}
+                local okAll = true
+                for _, o in ipairs(offs) do
+                    local cw = Game:ConstructFVectorByLuaTable({ X = park.X + right.X * o.dx, Y = park.Y + right.Y * o.dx, Z = park.Z + o.dz })
+                    local child = CreativeGameAPI.CreateActor(childRef, cw, rot0, scale, nil)
+                    if not child then okAll = false break end
+                    children[#children + 1] = child
+                end
+                if okAll then
+                    self.holdPieces[t] = { root = root, children = children, offsets = offs, attached = false, type = t }
+                    built = built + 1
+                end
+            end
+        end
+    end
+    print("[Tetris] Hold 暂存预览实例已构建: " .. built .. "/7（Hold 专用，活动+下一预览+Hold 共21个）")
+end
+
 -- 方案3：只传送根 Actor（平移单变换，保留 V3 的 1/4 流量优势）；
 -- 旋转由根 Actor 绕盘面垂直轴（世界 Y / UE Pitch = MakeFromEuler 的 X 分量）旋转 (rot-1)*90° 实现，
 -- 子块作为根的子 Actor 随父旋转，保持整体刚体一致（旋转不再烘焙到子块相对偏移）。
@@ -1359,6 +1473,145 @@ function TetrisRenderer:EndShowcase()
     print("[Tetris] 预览结束")
 end
 
+-- 下一个方块预览：游戏进行中，在盘面左侧显示 nextQueue[1]。
+-- 复用展示态的「每帧幂等附着 + 传根到目标点」方式：根未 spawn 时静默失败、下帧再来，最终稳定显示。
+-- 仅整体模式(方案3)有效；开局展示阶段(previewing)不显示(展示 7 种占用 self.pieces)。
+function TetrisRenderer:UpdateNextPreview(board)
+    if not TetrisConfig.Render.EnableNextPreview then return end
+    if not self.previewPieces or not next(self.previewPieces) then return end
+    -- 开局展示阶段不显示下一个方块
+    if self.previewing then
+        for t = 1, 7 do
+            local p = self.previewPieces[t]
+            if p and p.root then
+                pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
+            end
+        end
+        return
+    end
+    -- 预览锚点：盘面左侧、纵向居中（沿 boardRight 反方向外移）；每帧重算以跟随基准变化
+    local anchor = nil
+    if self.origin then
+        local r = TetrisConfig.Render
+        local step = r.CellSize + r.CellGap
+        local o = self.origin
+        local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+        local cols = TetrisConfig.Board.Cols
+        local rows = TetrisConfig.Board.Rows
+        local side = (r.NextPreviewSide == "right") and 1 or -1  -- 1=盘面右侧, -1=盘面左侧
+        local gapCells = (r.NextPreviewLeftCells and r.NextPreviewLeftCells > 0) and r.NextPreviewLeftCells or (cols + 3)
+        local off = r.NextPreviewOffset or {}
+        local offRight = off.right or 0
+        local offZ = off.z or 0
+        local sideTotal = gapCells + offRight
+        anchor = {
+            X = o.X + side * right.X * step * sideTotal,
+            Y = o.Y + side * right.Y * step * sideTotal,
+            Z = o.Z - step * (rows / 2) + step * offZ,
+        }
+    end
+    if not anchor then
+        for t = 1, 7 do
+            local p = self.previewPieces[t]
+            if p and p.root then
+                pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
+            end
+        end
+        return
+    end
+    local nextTypes = board:getNextQueue()
+    local showT = nextTypes and nextTypes[1]
+    for t = 1, 7 do
+        local p = self.previewPieces[t]
+        if p and p.root then
+            if t == showT then
+                -- 每帧幂等附着(根未 spawn 时静默失败，下帧再来) + 设置相对偏移(沿盘面 right) + 传根到预览锚点
+                for i, child in ipairs(p.children or {}) do
+                    self:attachChildToRoot(child, p.root)
+                    local o2 = p.offsets[i]
+                    if o2 then
+                        local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+                        local relLoc = Game:ConstructFVectorByLuaTable({
+                            X = right.X * o2.dx * 100, Y = right.Y * o2.dx * 100, Z = o2.dz * 100 })
+                        pcall(function() child:K2_SetActorRelativeLocation(relLoc) end)
+                    end
+                end
+                pcall(function() p.root:K2_TeleportTo(cmVec(anchor), makePieceRotator(1)) end)
+            else
+                pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
+            end
+        end
+    end
+end
+
+-- Hold 暂存预览：每帧幂等附着 + 传根到左侧 Hold 锚点（仅显示 board.holdType；无暂存时隐藏全部）。
+-- 复用展示态的「每帧幂等附着 + 传根到目标点」方式。仅整体模式(方案3)有效。
+function TetrisRenderer:UpdateHoldPreview(board)
+    if not TetrisConfig.Render.EnableHoldPreview then return end
+    if not self.holdPieces or not next(self.holdPieces) then return end
+    -- 开局展示阶段不显示 Hold
+    if self.previewing then
+        for t = 1, 7 do
+            local p = self.holdPieces[t]
+            if p and p.root then
+                pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
+            end
+        end
+        return
+    end
+    -- Hold 锚点：盘面左侧、纵向居中（沿 boardRight 反方向外移）；每帧重算以跟随基准变化
+    local anchor = nil
+    if self.origin then
+        local r = TetrisConfig.Render
+        local step = r.CellSize + r.CellGap
+        local o = self.origin
+        local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+        local cols = TetrisConfig.Board.Cols
+        local rows = TetrisConfig.Board.Rows
+        local side = (r.HoldPreviewSide == "right") and 1 or -1  -- 1=盘面右侧, -1=盘面左侧
+        local gapCells = (r.HoldPreviewGapCells and r.HoldPreviewGapCells > 0) and r.HoldPreviewGapCells or (cols + 3)
+        local off = r.HoldPreviewOffset or {}
+        local offRight = off.right or 0
+        local offZ = off.z or 0
+        local sideTotal = gapCells + offRight
+        anchor = {
+            X = o.X + side * right.X * step * sideTotal,
+            Y = o.Y + side * right.Y * step * sideTotal,
+            Z = o.Z - step * (rows / 2) + step * offZ,
+        }
+    end
+    if not anchor then
+        for t = 1, 7 do
+            local p = self.holdPieces[t]
+            if p and p.root then
+                pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
+            end
+        end
+        return
+    end
+    local holdT = board:getHoldType()
+    for t = 1, 7 do
+        local p = self.holdPieces[t]
+        if p and p.root then
+            if t == holdT then
+                for i, child in ipairs(p.children or {}) do
+                    self:attachChildToRoot(child, p.root)
+                    local o2 = p.offsets[i]
+                    if o2 then
+                        local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+                        local relLoc = Game:ConstructFVectorByLuaTable({
+                            X = right.X * o2.dx * 100, Y = right.Y * o2.dx * 100, Z = o2.dz * 100 })
+                        pcall(function() child:K2_SetActorRelativeLocation(relLoc) end)
+                    end
+                end
+                pcall(function() p.root:K2_TeleportTo(cmVec(anchor), makePieceRotator(1)) end)
+            else
+                pcall(function() p.root:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
+            end
+        end
+    end
+end
+
 -- ---------------- 创建全部格子并隐藏 ----------------
 function TetrisRenderer:Build()
     if self.built then return true end
@@ -1451,6 +1704,8 @@ function TetrisRenderer:Build()
     end
     self:BuildBorder()
     self:BuildActivePieces()
+    self:BuildPreviewPieces()
+    self:BuildHoldPieces()
     return #self.pool > 0
 end
 
@@ -1967,6 +2222,12 @@ function TetrisRenderer:Update(board)
 
     -- 活动方块整体层（位移/旋转只传根）
     self:RenderActivePiece(board)
+
+    -- 下一个方块预览（盘面右侧）
+    self:UpdateNextPreview(board)
+
+    -- Hold 暂存方块预览（盘面左侧）
+    self:UpdateHoldPreview(board)
 
     if TetrisConfig.Debug.PrintGrid then
         local want = {}

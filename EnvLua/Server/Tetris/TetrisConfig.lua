@@ -13,8 +13,8 @@ TetrisConfig.Board = {
 -- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
 -- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
 TetrisConfig.Clear = {
-    ClearDelay = 1.5,   -- 单位：秒。被消行方块消失后、其余行开始下落前的停顿。
-    EffectDuration = 1.0,   -- 单位：秒。被消除格上播放的特效持续时间。
+    ClearDelay = 0.75,   -- 单位：秒。被消行方块消失后、其余行开始下落前的停顿。
+    EffectDuration = 0.5,   -- 单位：秒。被消除格上播放的特效持续时间。
     EffectPresetKey = "13_EffectPreset_100032",  -- 消行特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
     -- 特效尺寸（缩放倍数）。FVector，各分量默认 1.0 = 原始大小；
     -- 例 {X=2,Y=2,Z=2} 放大到 2 倍，{X=0.5,Y=0.5,Z=0.5} 缩小一半。
@@ -168,7 +168,7 @@ TetrisConfig.Timing = {
     -- 重力下落间隔（秒），随等级提升而缩短；索引 = 等级，超出取最后一个
     GravityIntervalByLevel = { 0.80, 0.72, 0.63, 0.55, 0.47, 0.38, 0.30, 0.22, 0.17, 0.13, 0.10, 0.08, 0.07, 0.06, 0.05 },
     SoftDropInterval = 0.05,  -- 软降时的下落间隔（秒）
-    LockDelay = 0.50,         -- 触底后的锁定延迟（秒）
+    LockDelay = 0.25,         -- 触底后的锁定延迟（秒）
     LinesPerLevel = 10,       -- 每消除多少行升 1 级
     MaxLevel = 15,
 }
@@ -246,6 +246,26 @@ TetrisConfig.Render = {
     -- 消行动画：把会下落的方块临时挂到 parent-shift 根整体下移，移完拆父还原为独立 Actor。
     -- 关闭则消行退化为逐格传送（更安全但流量大、可能出现逐格延迟）。
     UseParentShiftOnClear = true,
+
+    -- 下一个方块预览：游戏进行中(有方块正在下落时)在盘面一侧显示 nextQueue[1]。
+    -- 为此再预建一套 7 种整体实例作预览专用(与活动方块的 7 个互不干扰)，
+    -- 连同活动 7 个 + Hold 7 个共 21 个 = 每型 3 个(活动/下一/暂存)，即使三者同型(7-bag 跨袋边界可能出现)也能同屏渲染。
+    EnableNextPreview = true,
+    NextPreviewSide = "right",  -- "left" = 盘面左侧(旧行为)；"right" = 盘面右侧
+    NextPreviewLeftCells = 0,   -- 预览区与盘面之间的间距格数（沿预览所在侧的“外移”方向）；0 表示自动 = Cols + 3
+    -- 预览方块位置偏移量（单位：格，沿盘面轴向）：
+    --   right = 沿预览所在侧的“外移”方向额外外移(+) / 内移(-)的格数（与 NextPreviewLeftCells 同向）；
+    --   z     = 竖直方向偏移格数（+ 抬高 / - 降低）。用于微调预览的确切落点。
+    NextPreviewOffset = { right = 0, z = 0 },
+
+    -- Hold 暂存方块：固定在盘面左侧显示 board.holdType（无暂存时隐藏全部）。
+    -- 同样预建一套 7 种整体实例作 Hold 专用(与活动/下一预览都不冲突)，带来总数 21 个。
+    EnableHoldPreview = true,
+    HoldPreviewSide = "left",   -- 固定左侧
+    HoldPreviewGapCells = 0,    -- 与盘面间距格数（沿“外移”方向）；0 = 自动 = Cols + 3
+    -- Hold 方块位置偏移量（单位：格，沿盘面轴向，语义同 NextPreviewOffset）：
+    --   right = 沿“外移”方向额外格数；z = 竖直偏移格数。
+    HoldPreviewOffset = { right = 0, z = 0 },
 
     -- 实例创建后需若干帧才真正 spawn，过早下发显隐会被静默丢弃。
     -- SettleFrames：开局前 N 次刷新强制全量下发显隐（忽略脏检查），确保每格都被成功设置。
