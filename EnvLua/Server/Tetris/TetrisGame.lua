@@ -27,7 +27,7 @@ end
 -- ---------------- 生命周期 ----------------
 function TetrisGame:Init()
     self.board = TetrisBoard:new()
-    self.renderer = TetrisRenderer:new()
+    self.renderer = TetrisRenderer:new(self.owner)
     local ok = self.renderer:Build()
     -- 刻意不在 Build 之后立刻刷新：此时实例尚未 spawn，显隐指令会被丢弃。
     -- 实际刷新交给 Start 里的稳定期调度。

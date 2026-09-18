@@ -28,8 +28,9 @@ local _boardYawDeg = 0
 local TetrisRenderer = {}
 TetrisRenderer.__index = TetrisRenderer
 
-function TetrisRenderer:new()
+function TetrisRenderer:new(owner)
     local o = setmetatable({}, TetrisRenderer)
+    o.owner = owner  -- WoWObject（GameMain 子类），用于 AddTimerOnce 调度消行延迟下落
     o.cells = {}    -- cells[row][col] = 实例/Actor 对象
     o.actors = {}   -- actors[row][col] = 底层 Actor（若可解析），用于可靠隐藏
     o.shown = {}    -- shown[row][col] = bool，当前显隐状态（脏检查用）
@@ -433,6 +434,31 @@ end
 function TetrisRenderer:placeActor(a, row, col)
     if not a then return end
     pcall(function() a:K2_TeleportTo(cmVec(self:cellLocation(row, col)), self.rot) end)
+end
+
+-- 在指定格位置播放消行特效。Domain API 坐标用米，cellLocation 返回值即米，直接构造 FVector 传入。
+-- 资源走 AssetRef（需 VSCode 插件注册并 update preset）；失败静默，不影响消行主流程。
+function TetrisRenderer:PlayClearEffectAt(row, col)
+    if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
+    local key = (TetrisConfig.Clear and TetrisConfig.Clear.EffectPresetKey) or "13_EffectPreset_100032"
+    local ref = AssetRef and AssetRef[key]
+    if not ref then
+        if TetrisConfig.Debug then
+            print(string.format("[Tetris][Clear][WARN] 特效资源未注册 AssetRef[%s]，跳过", tostring(key)))
+        end
+        return
+    end
+    local loc = self:cellLocation(row, col)
+    local dur = (TetrisConfig.Clear and TetrisConfig.Clear.EffectDuration) or 1.0
+    local ok, id = pcall(function()
+        return SceneEffectAPI.CreateSceneEffect(
+            ref,
+            Game:ConstructFVectorByLuaTable({ X = loc.X, Y = loc.Y, Z = loc.Z }),
+            dur)
+    end)
+    if TetrisConfig.Debug then
+        print(string.format("[Tetris][Clear] 特效 row=%d col=%d id=%s", row, col, tostring(ok and id or "fail")))
+    end
 end
 
 -- ---------------- 整体活动方块（7 种 tetromino） ----------------
@@ -1664,15 +1690,21 @@ function TetrisRenderer:ReconcileBoard(board)
     end
 end
 
--- 消行重排：数据层权威。利用 board:consumeClearedRows() 给出的被消行，
--- 把「会下落的方块」按下移行数 delta 分组，挂到 parent-shift 根整体下移，移完拆父还原为独立 Actor；
--- 被消行的方块归还对象池；本次锁定的新增格从池取 Actor 静态摆放。
+-- 消行重排（两阶段）：
+--   阶段A（立即/本帧）：被消行的方块直接归还对象池（立即消失）；本帧锁定的新增格立即摆放；
+--                 其余需要下落的块按下移行数 delta 分组，延迟 ClearDelay 秒后再整体下移（阶段B）。
+--   阶段B（延迟）：用现存 parent-shift 方式把下移块整体下移填补空缺，移完拆父还原独立 Actor。
+-- 这样视觉上：被消行先瞬间清空 → 停顿 ClearDelay 秒 → 上方方块再整块落下（而非原版一次性同步完成）。
 function TetrisRenderer:ReconcileClear(board, clearedRows)
+    -- 若上一次消行的下落尚未执行（0.5s 窗口内又发生锁定），先同步 flush 上一次，
+    -- 保证 occ 与数据层一致，避免叠加错位。
+    if self._clearFallPending then self:ReconcileClearFall() end
+
     local rows = TetrisConfig.Board.Rows
     local cols = TetrisConfig.Board.Cols
-    local step = TetrisConfig.Render.CellSize + TetrisConfig.Render.CellGap
+    local delay = (TetrisConfig.Clear and TetrisConfig.Clear.ClearDelay) or 0.5
 
-    -- 1) 快照旧占用表；被消行的方块直接归还池
+    -- 1) 快照旧占用表；被消行的方块直接归还池（立即消失，不等延迟）
     local oldOcc = self.occ
     self.occ = {}
     for r = 1, rows do
@@ -1685,6 +1717,7 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
         for c = 1, cols do
             local a = oldOcc[cr] and oldOcc[cr][c]
             if a then self:ReleaseActor(a) end
+            self:PlayClearEffectAt(cr, c)   -- 在待消除格位置播放特效
         end
     end
 
@@ -1718,7 +1751,45 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
         end
     end
 
-    -- 3) parent-shift：每个 delta 组挂到临时根整体下移，再拆父还原独立 Actor
+    -- 3) 本帧锁定的新增格：立即从池取 Actor 静态摆放（与下落解耦，无需等延迟）
+    for _, nl in ipairs(newlyLocked) do
+        local a = self:AcquireActor()
+        if a then
+            self:placeActor(a, nl.r, nl.c)
+            self.occ[nl.r][nl.c] = a
+        end
+    end
+
+    -- 4) 需要下落的块：延迟 ClearDelay 秒后整体下移（现存 parent-shift 方式，见 ReconcileClearFall）
+    local groupCount = 0
+    for _ in pairs(groups) do groupCount = groupCount + 1 end
+    if groupCount > 0 then
+        self._clearFallPending = { groups = groups }
+        if self.owner and self.owner.AddTimerOnce then
+            self.owner:AddTimerOnce(delay, function()
+                if self and self.ReconcileClearFall then self:ReconcileClearFall() end
+            end)
+        else
+            self:ReconcileClearFall()   -- 无定时器能力：同步兜底，行为回退到原版
+        end
+    end
+
+    if TetrisConfig.Debug then
+        print(string.format(
+            "[Tetris][Clear] 阶段A 回收消%d行（新增格=%d 待下落组=%d 池余=%d 延迟=%.2fs）",
+            #clearedRows, #newlyLocked, groupCount, #self.pool, delay))
+    end
+end
+
+-- 阶段B：执行之前记录的 parent-shift 下落（被消行上方的块整体下移填补空缺）。
+-- 在 ClearDelay 秒后由定时器触发；若期间又发生锁定，ReconcileClear 开头会先同步 flush 本函数。
+function TetrisRenderer:ReconcileClearFall()
+    local pending = self._clearFallPending
+    self._clearFallPending = nil
+    if not pending then return end
+    local groups = pending.groups
+    local step = TetrisConfig.Render.CellSize + TetrisConfig.Render.CellGap
+
     if self.shiftRoot then
         for delta, list in pairs(groups) do
             -- 根先归位到停车场，确保子 Actor 以 KeepWorld 挂上时相对偏移正确
@@ -1753,20 +1824,10 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
         end
     end
 
-    -- 4) 本次锁定的新增格：从池取 Actor 静态摆放
-    for _, nl in ipairs(newlyLocked) do
-        local a = self:AcquireActor()
-        if a then
-            self:placeActor(a, nl.r, nl.c)
-            self.occ[nl.r][nl.c] = a
-        end
-    end
-
     if TetrisConfig.Debug then
-        print(string.format(
-            "[Tetris][Clear] 消%d行 parent-shift 完成（动态组=%d 新增格=%d 池余=%d）",
-            #clearedRows, (function() local n=0 for _ in pairs(groups) do n=n+1 end return n end)(),
-            #newlyLocked, #self.pool))
+        local n = 0
+        for _ in pairs(groups) do n = n + 1 end
+        print(string.format("[Tetris][Clear] 阶段B 下落完成（动态组=%d 池余=%d）", n, #self.pool))
     end
 end
 
@@ -1894,6 +1955,7 @@ function TetrisRenderer:Clear()
     end
     self.shownPieceType = nil
     self.lastBoardSig = nil
+    self._clearFallPending = nil   -- 取消残留的消行延迟下落（定时器触发时不再执行）
 end
 
 return TetrisRenderer

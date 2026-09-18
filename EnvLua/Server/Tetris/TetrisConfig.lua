@@ -9,6 +9,15 @@ TetrisConfig.Board = {
     -- 网格坐标约定：row 1 = 最顶行，row Rows = 最底行；col 1 = 最左列
 }
 
+-- ===================== 消行节奏 =====================
+-- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
+-- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
+TetrisConfig.Clear = {
+    ClearDelay = 0.5,   -- 单位：秒。被消行方块消失后、其余行开始下落前的停顿。
+    EffectDuration = 1.0,   -- 单位：秒。被消除格上播放的特效持续时间。
+    EffectPresetKey = "13_EffectPreset_100032",  -- 消行特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
+}
+
 -- ===================== 初始预填版面（开局即存在的方块） =====================
 -- 让开局盘面直接带有方块，可在编辑器/配置里自由布置；预填成满行时「开局即可消除」。
 -- 时机：Board:reset() 末尾、方块 spawn() 之前写入 grid；是否立即消除由 AutoClearOnStart 控制。
@@ -225,7 +234,7 @@ TetrisConfig.Render = {
     -- 开局预览：初始化时 7 种方块已全部建好，此开关让它们先摆在盘面前方排成一排，
     -- 暂停下落 PreviewSeconds 秒供肉眼核对形状，再正式开始下落。仅整体模式(方案3)有效。
     PreviewBeforeStart = true,
-    PreviewSeconds = 10,
+    PreviewSeconds = 3,
     -- 消行动画：把会下落的方块临时挂到 parent-shift 根整体下移，移完拆父还原为独立 Actor。
     -- 关闭则消行退化为逐格传送（更安全但流量大、可能出现逐格延迟）。
     UseParentShiftOnClear = true,
