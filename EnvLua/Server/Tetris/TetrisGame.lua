@@ -72,6 +72,7 @@ function TetrisGame:Start()
         end)
     end
     self:ScheduleCameraSetup()
+    self:UpdateHUD()                -- 开局先置零（分数=0 消行=0 等级=1）
     print("[Tetris] Start")
 end
 
@@ -87,6 +88,7 @@ function TetrisGame:ProcessInitialClears()
     local cleared = self.board:clearLines(false)
     if cleared and cleared > 0 then
         self:SendScreenMessage("开局预消 " .. tostring(cleared) .. " 行")
+        self:UpdateHUD()            -- 开局预消会改变消行数
         -- 刷若干帧让渲染层消费 pendingClearedRows 并播放动画（独立于重力 tick）
         self:RefreshRenderer(10)
     end
@@ -205,6 +207,7 @@ function TetrisGame:Restart()
     self.board:reset()
     self.renderer:Clear()
     self.renderer:Update(self.board)
+    self:UpdateHUD()                -- 重开置零
     if self.running then
         self:ScheduleTick()
     end
@@ -249,6 +252,7 @@ function TetrisGame:OnTick()
     board:tick()                    -- 数据层下落一格或锁定
     self.renderer:Update(board)     -- 渲染层只跟随数据
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
+    self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
     self:CheckPieceSpawned()        -- 产出新方块则上屏
     if board:isOver() then
         self:OnGameOver()
@@ -306,6 +310,24 @@ function TetrisGame:SendScreenMessage(content)
 end
 
 -- 每次生成新下落方块时上报一次信息
+-- 分数 / 消行 / 等级 HUD：通过预置的 CustomUI 文本控件显示（CustomUIAPI.SetTextContent）。
+-- 控件 UUID 见 TetrisConfig.UI.*Label；任意一项未配置则自动跳过（不报错）。
+function TetrisGame:UpdateHUD()
+    local b = self.board
+    if not b then return end
+    local ui = TetrisConfig.UI
+    if not (ui.ScoreLabel or ui.LinesLabel or ui.LevelLabel) then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local function set(id, text)
+        if not id then return end
+        pcall(function() CustomUIAPI.SetTextContent(ps, id, text) end)
+    end
+    set(ui.ScoreLabel, "分数: " .. tostring(b.score))
+    set(ui.LinesLabel, "消行: " .. tostring(b.lines))
+    set(ui.LevelLabel, "等级: " .. tostring(b.level))
+end
+
 function TetrisGame:CheckPieceSpawned()
     if not TetrisConfig.Debug.ShowPieceInfo then return end
     local s = self.board and self.board.lastSpawned
@@ -333,6 +355,7 @@ function TetrisGame:OnGameOver()
     local msg = "游戏结束 分数=" .. tostring(self.board.score)
         .. " 消行=" .. tostring(self.board.lines)
     self.running = false
+    self:UpdateHUD()                -- 结束时定格最终分数
     if TetrisConfig.Debug.ShowGameOverInfo then
         self:SendScreenMessage(msg)
     end
@@ -376,6 +399,7 @@ function TetrisGame:safeApply(fn)
     end
     self.renderer:Update(self.board)
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
+    self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
     self:CheckPieceSpawned()
     if self.board:isOver() then
         self:OnGameOver()
