@@ -79,6 +79,7 @@ function TetrisBoard:reset()
     self.pendingClearedRows = nil     -- 本次 lockPiece 被消除的行号列表
     self.pendingGarbageMoved = nil    -- 本次是否发生过垃圾行上移（会导致普通位移公式失效）
     self.clearing = false              -- 消行动画期间置 true：挂起出块与重力，等动画结束后 finishClear()
+    self.lockPaused = false             -- 锁定后、消行前的"落地停顿"期间置 true：挂起出块与重力，停顿结束后由 Game 层调用 doClear()
 
     self:applyInitialLayout()
     self:spawn()
@@ -321,7 +322,36 @@ function TetrisBoard:lockPiece()
     self.pendingLockedCells = (#lockedCells > 0) and lockedCells or nil
     self.active = nil
 
-    local cleared = self:clearLines()
+    -- 先不消行：进入"落地停顿"（lockPaused）。此时 grid 中已含刚锁定的方块、满行仍是亮着的，
+    -- 渲染层会把这一帧画出来，玩家能看到"方块落定 + 满行完成"的一瞬；停顿结束后由 Game 层调用 doClear() 再消行。
+    if self:hasFullRows() then
+        self.lockPaused = true
+        return 0
+    end
+
+    self:applyGarbage()
+    self:spawn()
+    return 0
+end
+
+-- 锁定后是否存在满行（仅判定，不修改网格）。供 lockPiece 决定是否进入落地停顿。
+function TetrisBoard:hasFullRows()
+    for r = self.rows, 1, -1 do
+        local full = true
+        for c = 1, self.cols do
+            if self.grid[r][c] == 0 then full = false break end
+        end
+        if full then return true end
+    end
+    return false
+end
+
+-- 落地停顿结束后由 Game 层调用：执行真正的消行 + 注入垃圾 + 决定是否出下一块。
+-- 必须在 lockPaused 期间调用；否则（无满行或非锁定态）直接忽略。
+function TetrisBoard:doClear()
+    if not self.lockPaused then return false end
+    self.lockPaused = false
+    local cleared = self:clearLines(true)
     self:applyGarbage()
     if cleared > 0 then
         -- 消行：动画(渲染层 ClearDelay 秒)未结束前不出块。active 保持 nil、clearing 置位，
@@ -473,6 +503,7 @@ end
 function TetrisBoard:tick()
     if self.isGameOver then return false end
     if self.clearing then return false end  -- 消行动画期间暂停重力与出块，等 finishClear()
+    if self.lockPaused then return false end  -- 落地停顿期间暂停重力与出块，等 Game 层 doClear()
     if not self.active then
         self:spawn()
         return false

@@ -284,6 +284,7 @@ function TetrisGame:OnTick()
         return
     end
     board:tick()                    -- 数据层下落一格或锁定
+    self:maybeScheduleLockFlash()   -- 锁定后满行：先渲染展示 LockFlashDelay 秒，再消行
     self:flushOutgoingGarbage()     -- 对战：把本步消除产生的垃圾行发给对手
     self.renderer:Update(board)     -- 渲染层只跟随数据
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
@@ -292,6 +293,27 @@ function TetrisGame:OnTick()
     if board:isOver() then
         self:OnGameOver()
     end
+end
+
+-- 锁定后满行：在 LockFlashDelay 秒的"落地停顿"内渲染展示锁定态（满行亮起的一瞬），
+-- 停顿结束后调用 board:doClear() 执行真正的消行，再走现有 ClearDelay 下落动画。
+-- 用 _lockFlashScheduled 防重入：hardDrop 与重力 tick 都可能触发锁定，只调度一次。
+function TetrisGame:maybeScheduleLockFlash()
+    if not self.board or not self.board.lockPaused then return end
+    if self._lockFlashScheduled then return end
+    self._lockFlashScheduled = true
+    local fd = (TetrisConfig.Clear and TetrisConfig.Clear.LockFlashDelay) or 0.35
+    self.owner:AddTimerOnce(fd, function()
+        self._lockFlashScheduled = false
+        if not self.running or not self.board then return end
+        self.board:doClear()
+        self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
+        if self.renderer and self.board then self.renderer:Update(self.board) end
+        self:maybeScheduleClearResume() -- clearing=true → 等 ClearDelay 后 finishClear
+        self:UpdateHUD()
+        self:CheckPieceSpawned()
+        if self.board:isOver() then self:OnGameOver() end
+    end)
 end
 
 -- 消行期间（board.clearing）在动画时长 ClearDelay 后调用 finishClear() 出下一个块。
@@ -474,6 +496,7 @@ end
 -- down 键 = 硬降（本作不提供软降）
 function TetrisGame:OnBtnDown()
     self:safeApply(function() self.board:hardDrop() end)
+    self:maybeScheduleLockFlash()   -- 硬降直接锁定，需触发落地停顿调度（不走重力 tick）
 end
 
 function TetrisGame:OnBtnHold()
