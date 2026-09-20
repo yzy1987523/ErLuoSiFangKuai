@@ -79,7 +79,7 @@ local function getLocalPawnLocationM()
     return nil
 end
 
-function TetrisRenderer:ResolveOrigin()
+function TetrisRenderer:ResolveOrigin(spawnPointKey)
     local r = TetrisConfig.Render
     local so = TetrisConfig.SceneObjects
     local step = r.CellSize + r.CellGap
@@ -132,9 +132,10 @@ function TetrisRenderer:ResolveOrigin()
     -- 装置朝向用实例旋转偏航推导 forward；实测该装置 +Yaw 指向其“背面”，故基准 yaw 补 180°
     -- （否则盘面会落在装置背后），再叠加 BoardYawOffsetDeg 微调。
     -- 装置未注入/未就绪时回退玩家基准，待装置就绪后 SetupFixedCamera 会重新 ResolveOrigin 重摆。
-    if type(so) == "table" and so.SpawnPointKey then
+    local key = spawnPointKey or self.spawnPointKey or (so and so.SpawnPointKey)
+    if type(so) == "table" and key then
         if type(CreativeInstance) == "table" then
-            local id = CreativeInstance[so.SpawnPointKey]
+            local id = CreativeInstance[key]
             if id ~= nil and type(InstanceAPI) == "table" then
                 local ok, loc2 = pcall(function() return InstanceAPI.GetInstanceLocation(id) end)
                 if ok and loc2 and loc2.X then
@@ -1542,13 +1543,14 @@ function TetrisRenderer:UpdateHoldPreview(board)
 end
 
 -- ---------------- 创建全部格子并隐藏 ----------------
-function TetrisRenderer:Build()
+function TetrisRenderer:Build(spawnPointKey)
     if self.built then return true end
 
     local cols = TetrisConfig.Board.Cols
     local rows = TetrisConfig.Board.Rows
     local s = TetrisConfig.Render.BlockScale
-    self.origin = self:ResolveOrigin()
+    self.origin = self:ResolveOrigin(spawnPointKey)
+    self.spawnPointKey = spawnPointKey
     self.rot = makeZeroRotator()
     -- 隐藏停车场：隐藏的格子传送到此处（远离盘面、不入画，但保持可见状态，靠位置而非显隐控制）
     self.hideLoc = { X = self.origin.X, Y = self.origin.Y, Z = self.origin.Z - 200 }

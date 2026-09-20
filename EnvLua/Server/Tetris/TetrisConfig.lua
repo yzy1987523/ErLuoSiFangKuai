@@ -338,8 +338,42 @@ TetrisConfig.UI = {
     LevelLabel = ci("1_CreativeInstance_FILL_LEVEL"),
 }
 
+-- ===================== 玩法枚举 =====================
+-- 文档「玩法选择规则」：提供俄罗斯方块 / 四消两种玩法；切换规则支持「随机」。
+TetrisConfig.GameMode = {
+    Tetris = "tetris",   -- 俄罗斯方块（已实现）
+    Match4 = "match4",   -- 四消（6×12 盘面 + 4 色方块，待资源与玩法模块，本期留桩）
+    Random = "random",   -- 随机（从「已实现」的玩法中随机）
+}
+
+-- ===================== 玩法选择（开局前 UI 选择 → 传送到出生点） =====================
+-- 方案：不切地图（当前 LevelPreset 仅 1 张），同图内先用 CustomUI 按钮选玩法，
+-- 选完把玩家传送到各自出生点，再由 TetrisMatch 开局。
+-- 按钮/文本需在编辑器 UI Editor 预放置，把 InstanceUUID 填到这里（与上面的 ci() 同源）。
+-- 未放置（占位/未注入）时自动跳过选择阶段，保持「开局即玩」的旧行为，不影响现有流程。
+-- 选择面板 = 父级面板（内含两个选择按键），面板整体显隐，按键各自注册点击事件。
+TetrisConfig.ModeSelect = {
+    Enabled = true,
+    TimeoutSec = 20,          -- 无人选择时的超时秒数，超时按 DefaultMode 自动开局
+    DefaultMode = "tetris",   -- 超时或跳过选择时的兜底玩法
+    PanelKey  = ci("1_CreativeInstance_23643899474805030"),   -- 选择面板（父级）
+    BtnTetris = ci("1_CreativeInstance_23643901825073557"),   -- 俄罗斯方块
+    BtnMatch4 = ci("1_CreativeInstance_23643901697746451"),   -- 四消
+}
+
 -- 技能按钮：本期占位（技能系统属 P4），点击仅记录日志
 TetrisConfig.SkillEnabled = false
+
+-- ===================== 双人对战（经典对攻） =====================
+-- 固定 2 名玩家：各自出生点前方一块棋盘，各自独立控制；
+-- 消行给对手底部塞垃圾行，先顶出者判负（最后存活胜）。
+TetrisConfig.Versus = {
+    Enabled = true,
+    -- 消 N 行 → 给对手发几行垃圾（按 cleared 行数索引；无对应档位按 0）。
+    --   经典规则：1 行=0、2 行=1、3 行=2、4 行(Tetris)=4。
+    GarbageTable = { [1] = 0, [2] = 1, [3] = 2, [4] = 4 },
+    MaxPending = 30,   -- 待注入垃圾行上限（防止无限堆叠）
+}
 
 -- ===================== 场景标记对象（编辑器预放置的 CreativeInstance Actor） =====================
 -- UUID 来自全局表 CreativeInstance（编辑器运行时注入），运行时按 key 动态取（不在加载期取，避免 nil）。
@@ -347,7 +381,10 @@ TetrisConfig.SkillEnabled = false
 TetrisConfig.SceneObjects = {
     -- 出生点装置：玩家在此生成；棋盘在其前方 BoardForwardDistM 米处生成（来自全局表 CreativeInstance）。
     -- 盘面与固定相机均以该装置为唯一基准（CameraMarkerKey / SpawnMarkerKey 已废弃）。
-    SpawnPointKey   = "1_CreativeInstance_23643899843478899",    
+    -- 出生点装置 1：第 1 名玩家在此生成，棋盘在其正前方 BoardForwardDistM 米处
+    SpawnPointKey   = "1_CreativeInstance_23643902182242797",
+    -- 出生点装置 2：第 2 名玩家在此生成（无第 2 人时该盘作为旁观盘渲染）
+    SpawnPointKey2  = "1_CreativeInstance_23643899985433396",    
 }
 
 -- 出生点装置前方生成棋盘的距离（米，可配置）：棋盘中心 = 装置位置 + 世界 +Y(北) * 该值。
@@ -371,7 +408,7 @@ TetrisConfig.BoardHeightOffsetM = -6
 
 -- 固定相机（玩家自身第三人称相机）参数：
 TetrisConfig.Camera = {
-    PlayerToBoardM = 22,  -- 占位：玩家站位到盘面水平距离（teleport 方案用，SetCameraOffset 方案暂未用）
+    PlayerToBoardM = 22,  -- 占位：玩家站位到盘面水平距离（SetCameraOffset 方案暂未用）
     CamBackM = 3,         -- 相机在玩家身后的退后距离（米，SetCameraDistance）
     OffsetXM = 0,         -- 新方案：盘已在玩家正前方，相机默认看向盘心；X 偏移通常设 0（前/后微调）
     OffsetYM = 0,         -- Y 偏移通常设 0（左/右微调）
@@ -389,6 +426,7 @@ TetrisConfig.Debug = {
     ShowPieceInfo = false,    -- 每次生成新下落方块时上屏（已改由 HUD 显示分数，默认关闭避免刷屏）
     ShowPieceInfoPopup = false, -- false = 聊天框(SendQuickMenuMessage)；true = 屏幕弹窗(SendBattlePopupMessage)
     ShowGameOverInfo = false,  -- 结束时上屏结算
+    PrintGarbage = false,      -- 对战：打印发/收垃圾行日志
     DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
 }
 

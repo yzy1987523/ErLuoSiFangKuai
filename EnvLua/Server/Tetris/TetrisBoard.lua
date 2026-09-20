@@ -72,6 +72,7 @@ function TetrisBoard:reset()
     self.combo = -1               -- -1 表示上一次未消除，用于 combo 计数
     self.isGameOver = false
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
+    self.outgoingGarbage = 0      -- 本次 lock 应发给对手的垃圾行数（对战用，外层消费）
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
     self.lastSpawned = nil
     -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
@@ -389,6 +390,12 @@ function TetrisBoard:clearLines(countScore)
             self.combo = -1
         end
     end
+    -- 对战：把本次消除应发给对手的垃圾行数记下来，供外层（TetrisGame/TetrisMatch）消费
+    if cleared > 0 and countScore ~= false then
+        self.outgoingGarbage = (TetrisConfig.Versus and TetrisConfig.Versus.GarbageTable and TetrisConfig.Versus.GarbageTable[cleared]) or 0
+    else
+        self.outgoingGarbage = 0
+    end
     return cleared
 end
 
@@ -415,7 +422,20 @@ end
 
 -- ---------------- 垃圾行（对战） ----------------
 function TetrisBoard:addGarbage(count)
+    if not count or count <= 0 then return end
+    local cap = TetrisConfig.Versus and TetrisConfig.Versus.MaxPending
+    if cap and self.pendingGarbage + count > cap then
+        count = cap - self.pendingGarbage
+    end
+    if count < 0 then count = 0 end
     self.pendingGarbage = self.pendingGarbage + count
+end
+
+-- 对战：取走本次应发给对手的垃圾行数（取后清零，避免重复发送）
+function TetrisBoard:consumeOutgoingGarbage()
+    local g = self.outgoingGarbage or 0
+    self.outgoingGarbage = 0
+    return g
 end
 
 -- 从底部注入垃圾行：整行填充，随机留一个缺口

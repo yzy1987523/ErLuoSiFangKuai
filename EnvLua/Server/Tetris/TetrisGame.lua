@@ -12,23 +12,28 @@ local TetrisNativeUI = require("EnvLua.Server.Tetris.TetrisNativeUI")
 local TetrisGame = {}
 TetrisGame.__index = TetrisGame
 
-function TetrisGame:new(owner)
+function TetrisGame:new(owner, opts)
     local o = setmetatable({}, TetrisGame)
     o.owner = owner          -- WoWObject，用于 AddTimerOnce / AddVPEvent
     o.board = nil
     o.renderer = nil
     o.nativeUI = TetrisNativeUI:new(owner)   -- 原生 HUD / 操作按钮显隐
     o.running = false
-    o.playerState = nil      -- 上屏用，惰性获取
+    o.playerState = (opts and opts.playerState) or nil  -- 上屏用；对战模式下由 Match 赋值
+    o.playerKey = nil
+    o.match = (opts and opts.match) or nil    -- 双人对战总控（存在则由它统一注册输入/判定胜负）
+    o.spawnPointKey = (opts and opts.spawnPointKey) or nil
+    o.index = (opts and opts.index) or 0
+    o.opponent = nil         -- 对手实例（环形互指）
     o.lastSeq = 0            -- 已提示过的方块生成序号
     return o
 end
 
 -- ---------------- 生命周期 ----------------
-function TetrisGame:Init()
+function TetrisGame:Init(spawnPointKey)
     self.board = TetrisBoard:new()
     self.renderer = TetrisRenderer:new(self.owner)
-    local ok = self.renderer:Build()
+    local ok = self.renderer:Build(spawnPointKey or self.spawnPointKey)
     -- 刻意不在 Build 之后立刻刷新：此时实例尚未 spawn，显隐指令会被丢弃。
     -- 实际刷新交给 Start 里的稳定期调度。
     print("[Tetris] Init, 盘面 " .. TetrisConfig.Board.Cols .. "x" .. TetrisConfig.Board.Rows)
@@ -39,7 +44,9 @@ function TetrisGame:Start()
     if self.running then return end
     self.running = true
     self.nativeUI:Hide()     -- 隐藏全部原生 UI，只留自建 CustomUI
-    self:RegisterInput()
+    if not self.match then
+        self:RegisterInput()  -- 对战模式下由 TetrisMatch 统一注册并按玩家路由
+    end
     self:ScheduleSettle()   -- 先让实例 spawn 完成并把显隐刷到位
 
     -- 开局预览：把 7 种方块摆在面前排成一排，暂停下落 N 秒供肉眼核对形状，再正式开始。
@@ -76,6 +83,27 @@ function TetrisGame:Start()
     print("[Tetris] Start")
 end
 
+-- 旁观盘（无人控制）：仅实例化并渲染盘面 + 预览方块，不锁定相机 / 不接收输入 / 不自动下落。
+-- 用于单人时也能展示「另一块棋盘」的布局（不被玩家数量门控）；不会触发 top-out，因此不会误判胜负。
+function TetrisGame:StartSpectator()
+    self.running = true
+    self.previewShown = false
+    self.owner:AddTimerOnce(0.5, function()
+        if not self.running then return end
+        self.renderer:Update(self.board)   -- 摆好边框与空格子（边框可见，呈现棋盘外形）
+        if not self.previewShown then
+            if self.renderer and self.renderer.wholePieceAttach then
+                self.renderer:ShowcasePieces(2)   -- 棋盘上方展示 7 个预览方块，明确「这是一块棋盘」
+            end
+            self.previewShown = true
+        end
+    end)
+end
+
+-- 把本盘分配的玩家传送到出生点装置位置。
+-- 时机：玩法选择结束之后、相机锁定之前（先站到出生点，再由 Start 锁定相机看向盘心）。
+-- 单位：InstanceAPI.GetInstanceLocation 与 PlayerAPI.TeleportPawn 同为 Domain API，均为米，无需换算。
+-- 来源：EnvLua/Core/LuaHint/PlayerAPI.lua:245 TeleportPawn(PlayerState, SetToLocation)
 -- 是否启用开局初始消除（配置开关）
 function TetrisGame:initialClearEnabled()
     local cfg = TetrisConfig.InitialLayout
@@ -144,6 +172,16 @@ function TetrisGame:SetupFixedCamera()
     if not center then return false end
     local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
     if not (ok and arr and arr.Num and arr:Num() > 0) then return false end
+    -- 对战：仅把相机设给「本实例分配的玩家」；单人/未分配时退化为全部玩家
+    local targets = {}
+    if self.playerState then
+        targets = { self.playerState }
+    else
+        for i = 0, arr:Num() - 1 do
+            local ps = arr:Get(i)
+            if ps then targets[#targets + 1] = ps end
+        end
+    end
     local cam = TetrisConfig.Camera or {}
     local back = cam.CamBackM or 3          -- 相机退后距离（米，SetCameraDistance）
     local lockMove = cam.LockMovement ~= false
@@ -157,9 +195,7 @@ function TetrisGame:SetupFixedCamera()
     -- 偏移向量（局部坐标，米）：X 前/后、Y 左/右、Z 上/下。用 ConstructFVectorByLuaTable 构造（与 BattleBall 项目一致，已验证有效）。
     -- 关键：BlendTime 必须 >0（传 0 会被引擎忽略，ret=true 但偏移不生效）；BattleBall 项目用 0.3。
     local off = Game:ConstructFVectorByLuaTable({ X = ox, Y = oy, Z = oz })
-    for i = 0, arr:Num() - 1 do
-        local ps = arr:Get(i)
-        if ps then
+    for _, ps in ipairs(targets) do
             -- 关键诊断：okOff 只是 pcall 是否抛异常；retOff 才是引擎是否接受该参数（被吞的报错在这里）
             local okOff, retOff = pcall(function() return CameraAPI.SetCameraOffset(ps, off, 0.3) end)
             local okDist, retDist = pcall(function() return CameraAPI.SetCameraDistance(ps, back, 0.3) end)
@@ -167,7 +203,6 @@ function TetrisGame:SetupFixedCamera()
                 off.X, off.Y, off.Z, tostring(okOff), tostring(retOff), tostring(okDist), tostring(retDist)))
             pcall(function() CameraAPI.LockCameraInput(ps, lockRot) end)    -- 锁视角旋转（true=锁定）
             if lockMove then pcall(function() PlayerAPI.SetPlayerSpeedMul(ps, 0) end) end  -- 锁移动
-        end
     end
     return true
 end
@@ -249,6 +284,7 @@ function TetrisGame:OnTick()
         return
     end
     board:tick()                    -- 数据层下落一格或锁定
+    self:flushOutgoingGarbage()     -- 对战：把本步消除产生的垃圾行发给对手
     self.renderer:Update(board)     -- 渲染层只跟随数据
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
@@ -350,11 +386,28 @@ function TetrisGame:CheckPieceSpawned()
     self:SendScreenMessage(msg)
 end
 
+-- 对战：把本局消除产生的「攻击垃圾行」发给对手（写入对手 board.pendingGarbage，
+-- 对手下次 lockPiece 时由 applyGarbage 注入底部）。无对手 / 已结束则不发。
+function TetrisGame:flushOutgoingGarbage()
+    local b = self.board
+    if not b then return end
+    local n = b:consumeOutgoingGarbage()
+    if not n or n <= 0 then return end
+    if self.match and self.match.over then return end
+    if self.opponent and self.opponent.board and not self.opponent.board:isOver() then
+        self.opponent.board:addGarbage(n)
+        if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
+            print(string.format("[Tetris][Versus] 玩家 %s 消行 → 给对手发 %d 行垃圾", tostring(self.playerKey), n))
+        end
+    end
+end
+
 function TetrisGame:OnGameOver()
     local msg = "游戏结束 分数=" .. tostring(self.board.score)
         .. " 消行=" .. tostring(self.board.lines)
     self.running = false
     self:UpdateHUD()                -- 结束时定格最终分数
+    if self.match then self.match:OnPlayerOut(self) end  -- 对战：上报总控判胜负
     if TetrisConfig.Debug.ShowGameOverInfo then
         self:SendScreenMessage(msg)
     end
@@ -397,6 +450,7 @@ function TetrisGame:safeApply(fn)
         return
     end
     self.renderer:Update(self.board)
+    self:flushOutgoingGarbage()     -- 对战：把本步消除产生的垃圾行发给对手
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
     self:CheckPieceSpawned()
