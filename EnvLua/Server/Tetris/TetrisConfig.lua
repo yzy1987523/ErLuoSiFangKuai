@@ -13,7 +13,7 @@ TetrisConfig.Board = {
 -- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
 -- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
 TetrisConfig.Clear = {
-    ClearDelay = 0.75,   -- 单位：秒。被消行方块消失后、其余行开始下落前的停顿。
+    ClearDelay = 0.65,   -- 单位：秒。被消行方块消失后、其余行开始下落前的停顿。
     LockFlashDelay = 0.35,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
     EffectDuration = 0.5,   -- 单位：秒。被消除格上播放的特效持续时间。
     EffectPresetKey = "13_EffectPreset_100032",  -- 消行特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。

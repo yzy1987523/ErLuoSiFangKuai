@@ -21,9 +21,10 @@ local function atan2compat(y, x)
     return 0
 end
 
--- 模块级：当前盘面偏航角(度)。ResolveOrigin 写入，makePieceRotator 读取，
--- 用于让方块绕“盘面法线(forward)”旋转，而非固定的世界 Y 轴。
-local _boardYawDeg = 0
+-- 方块旋转绕“盘面法线(forward)”旋转（而非固定的世界 Y 轴）。
+-- 注意：盘面偏航必须按「每个棋盘实例」取（self.boardYaw），绝不能写成模块级全局——
+-- 否则多盘时后初始化的一方会覆盖前者的 yaw，导致另一盘的方块绕错轴旋转（表现为旋转/落地方向相反）。
+
 
 local TetrisRenderer = {}
 TetrisRenderer.__index = TetrisRenderer
@@ -117,7 +118,6 @@ function TetrisRenderer:ResolveOrigin(spawnPointKey)
         self.boardCenter = center
         self.boardRight = right
         self.boardYaw = frameYaw * 180 / math.pi
-        _boardYawDeg = self.boardYaw   -- 供 makePieceRotator 绕盘面法线旋转
         if type(FRotator) == "table" and FRotator.MakeFromEuler then
             self.rot = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = self.boardYaw }))
         end
@@ -252,9 +252,9 @@ end
 --   yawE       = atan2((1-cosθ)·cosα·sinα,  cosθ + (1-cosθ)·cos²α)
 --   roll       = atan2(sinθ·cosα, cosθ)
 -- （yaw=0 → Roll(θ) 绕世界 X；yaw=90° → Pitch(θ) 绕世界 Y，均与旧行为/rotateOffset 一致）
-local function makePieceRotator(rot)
+function TetrisRenderer:makePieceRotator(rot)
     local sign = TetrisConfig.Render.PieceSpinSign or 1
-    local alpha = math.rad(_boardYawDeg or 0)         -- 盘面偏航(弧度)
+    local alpha = math.rad(self.boardYaw or 0)        -- 盘面偏航(弧度)，按实例取（双盘各自正确）
     local th = math.rad(-(rot - 1) * 90 * sign)       -- 旋转角(弧度，符号对齐 rotateOffset)
     local ca, sa = math.cos(alpha), math.sin(alpha)
     local ct, st = math.cos(th), math.sin(th)
@@ -955,7 +955,7 @@ function TetrisRenderer:placeWholePieceV3(p, active)
     -- 子块附着仅在 PrimeAllPieces 初始化时设置一次（piecesReady 闸门保证此处已就绪）；
     -- 之后只移动/旋转根，子块靠 UE 附着关系随根整体刚体跟随，无需每帧重附防御。
     -- 先把根定位到 spawn 并绕盘面垂直轴旋转到当前 rot（子块随根旋转，保持整体刚体一致）。
-    pcall(function() p.root:K2_TeleportTo(cmVec(center), makePieceRotator(active.rot)) end)
+    pcall(function() p.root:K2_TeleportTo(cmVec(center), self:makePieceRotator(active.rot)) end)
 
     -- 旋转构造验证探针（一次性）：打印根旋转分量(P/Y/R) 与子块相对根实际偏移 vs 期望偏移，
     -- 确认根旋转方向/轴是否对齐 rotateOffset。打印的是数值不是类型，可直接判断方向。
@@ -977,7 +977,7 @@ function TetrisRenderer:placeWholePieceV3(p, active)
             local cl = c1 and c1:K2_GetActorLocation()
             local o = p.offsets[1]
             local dx, dz = self:rotateOffset(o.dx, o.dz, active.rot)
-            local cR = makePieceRotator(active.rot)
+            local cR = self:makePieceRotator(active.rot)
 
         end)
     end
@@ -1328,7 +1328,7 @@ function TetrisRenderer:LayoutShowcasePieces()
             local y = o.Y + right.Y * along
             local z = zShow + row * gap           -- 3 行向上堆叠于盘面上方
             -- 根带旋转量传送：与下落 placeWholePieceV3 同源（makePieceRotator），确保预览旋转=下落旋转。
-            pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = y, Z = z }), makePieceRotator(midRot)) end)
+            pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = y, Z = z }), self:makePieceRotator(midRot)) end)
         end
     end
     -- 诊断（预览开始后等待足够帧数让附着完成，仅打印一次）：
