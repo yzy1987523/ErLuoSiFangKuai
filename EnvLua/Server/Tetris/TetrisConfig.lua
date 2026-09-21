@@ -344,8 +344,13 @@ TetrisConfig.UI = {
 TetrisConfig.GameMode = {
     Tetris = "tetris",   -- 俄罗斯方块（已实现）
     Match4 = "match4",   -- 四消（6×12 盘面 + 4 色方块，待资源与玩法模块，本期留桩）
+    Puyo = "puyo",       -- 噗哟噗哟（四消，已实现：PuyoBoard/PuyoRenderer/PuyoGame）
     Random = "random",   -- 随机（从「已实现」的玩法中随机）
 }
+
+-- 调试：强制所有棋盘使用指定玩法（无选择按钮时测试用）。nil = 走正常选择流程。
+-- 例：填 "puyo" 即可在不放置选择 UI 的情况下直接进入 Puyo。
+TetrisConfig.ForceGameMode = nil
 
 -- ===================== 玩法选择（开局前 UI 选择 → 传送到出生点） =====================
 -- 方案：不切地图（当前 LevelPreset 仅 1 张），同图内先用 CustomUI 按钮选玩法，
@@ -359,7 +364,8 @@ TetrisConfig.ModeSelect = {
     DefaultMode = "tetris",   -- 超时或跳过选择时的兜底玩法
     PanelKey  = ci("1_CreativeInstance_23643899474805030"),   -- 选择面板（父级）
     BtnTetris = ci("1_CreativeInstance_23643901825073557"),   -- 俄罗斯方块
-    BtnMatch4 = ci("1_CreativeInstance_23643901697746451"),   -- 四消
+    BtnMatch4 = nil,                                          -- 四消（旧桩，本期不做；留空不注册
+    BtnPuyo   = ci("1_CreativeInstance_23643901697746451"),   -- 噗哟噗哟（复用原四消按钮）
 }
 
 -- 技能按钮：本期占位（技能系统属 P4），点击仅记录日志
@@ -429,6 +435,31 @@ TetrisConfig.Debug = {
     ShowGameOverInfo = false,  -- 结束时上屏结算
     PrintGarbage = false,      -- 对战：打印发/收垃圾行日志
     DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
+}
+
+-- ===================== 噗哟噗哟（四消）玩法 =====================
+-- 复用 Tetris 的渲染几何（Render）与场景标记（SceneObjects：出生点装置），
+-- 不重复定义盘面定位逻辑；仅描述 Puyo 专属参数。
+TetrisConfig.Puyo = {
+    Board = { Cols = 6, Rows = 12 },   -- classic 6×12
+    Colors = 4,                        -- 颜色数（预留 5 色扩展）
+    BlockScale = 0.5,                  -- 噗哟彩色方块模型缩放（独立于俄方块；模型偏大就调小，如 0.8/0.5）
+    PairSpinSign = 1,                  -- 旋转方向符号（对齐数据层 CW）
+    GravityInterval = 0.8,             -- 重力下落间隔（秒）
+    -- 连锁计分（chain 倍数）
+    ChainBonus = { [1] = 10, [2] = 30, [3] = 70, [4] = 120, [5] = 200 },
+    ShowGhost = false,                 -- 幽灵（落点预览）对子（false = 关闭盘面落点预览）
+    PreviewSideCells = 9,              -- 预览区与盘面间距（沿盘面右向量外移的格数）
+    -- 4 色方块模型（SetStaticMesh 换色用）：编辑器已注册的 CreativeAsset。
+    BlockMesh = {
+        [1] = "50_CreativeAsset_119799555",
+        [2] = "50_CreativeAsset_115405987",
+        [3] = "50_CreativeAsset_114457864",
+        [4] = "50_CreativeAsset_118057836",
+    },
+    -- 复用 Tetris 的渲染与场景资源（盘面对齐/对象池/出生点）
+    Render = TetrisConfig.Render,
+    SceneObjects = TetrisConfig.SceneObjects,
 }
 
 return TetrisConfig

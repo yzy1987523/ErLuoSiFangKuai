@@ -19,6 +19,7 @@ TetrisModeSelect.__index = TetrisModeSelect
 -- 目前全为 nil = 单色），四消靠"同色连通"判定，单色不可玩，故暂不开放。
 local IMPLEMENTED = {
     [TetrisConfig.GameMode.Tetris] = true,
+    [TetrisConfig.GameMode.Puyo] = true,   -- 噗哟噗哟（四消）
 }
 
 -- 玩家稳定 key（仅用于日志与查表）；取不到时回退 PlayerState 本身
@@ -50,13 +51,13 @@ end
 function TetrisModeSelect:Available()
     local cfg = cfgOf()
     if not cfg.Enabled then return false end
-    return (cfg.PanelKey ~= nil or cfg.BtnTetris ~= nil or cfg.BtnMatch4 ~= nil)
+    return (cfg.PanelKey ~= nil or cfg.BtnTetris ~= nil or cfg.BtnMatch4 ~= nil or cfg.BtnPuyo ~= nil)
 end
 
--- 需要统一显隐的控件：面板 + 两个按键（部分引擎隐藏父面板不会级联到子控件，故逐个下发）
+-- 需要统一显隐的控件：面板 + 各玩法按键（部分引擎隐藏父面板不会级联到子控件，故逐个下发）
 function TetrisModeSelect:WidgetIDs()
     local cfg = cfgOf()
-    return { cfg.PanelKey, cfg.BtnTetris, cfg.BtnMatch4 }
+    return { cfg.PanelKey, cfg.BtnTetris, cfg.BtnMatch4, cfg.BtnPuyo }
 end
 
 -- 给玩家发一条聊天框提示（失败不影响流程）
@@ -129,6 +130,7 @@ function TetrisModeSelect:Register()
     local binds = {
         { cfg.BtnTetris, M.Tetris },
         { cfg.BtnMatch4, M.Match4 },
+        { cfg.BtnPuyo, M.Puyo },
     }
     local selfRef = self
     for _, b in ipairs(binds) do

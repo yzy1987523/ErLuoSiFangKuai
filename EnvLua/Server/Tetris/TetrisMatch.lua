@@ -9,6 +9,7 @@ pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
 
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
+local PuyoGame = require("EnvLua.Server.Tetris.PuyoGame")
 local TetrisModeSelect = require("EnvLua.Server.Tetris.TetrisModeSelect")
 
 local TetrisMatch = {}
@@ -43,15 +44,31 @@ function TetrisMatch:spawnKeys()
     return keys
 end
 
--- 建立棋盘实例（各自渲染层 + 各自出生点），但不分配玩家（玩家在 Start 时枚举）
+-- 初始模式：调试 ForceGameMode 优先，否则俄罗斯方块（正常选择流程可覆盖）
+function TetrisMatch:initialMode()
+    if TetrisConfig.ForceGameMode then return TetrisConfig.ForceGameMode end
+    return TetrisConfig.GameMode.Tetris
+end
+
+-- 按模式工厂化创建游戏实例（Tetris / Puyo 共用同一套 match 调度）
+function TetrisMatch:createGame(mode, spawnKey, index)
+    if mode == TetrisConfig.GameMode.Puyo then
+        return PuyoGame:new(self.owner, { match = self, spawnPointKey = spawnKey, index = index })
+    end
+    return TetrisGame:new(self.owner, { match = self, spawnPointKey = spawnKey, index = index })
+end
+
+-- 建立棋盘实例占位（仅创建对象 + 记录出生点，不构建方块）。
+-- 实际棋盘（方块/渲染）推迟到 OnModeSelected，按玩家所选玩法用正确模式构建一次，
+-- 避免「先按默认俄罗斯方块建好、再被选择覆盖」导致选 puyo 却开成俄罗斯方块。
 function TetrisMatch:Init()
     local keys = self:spawnKeys()
+    local mode = self:initialMode()
     for i, sk in ipairs(keys) do
-        local g = TetrisGame:new(self.owner, { match = self, spawnPointKey = sk, index = i })
-        g:Init(sk)
+        local g = self:createGame(mode, sk, i)
         self.list[#self.list + 1] = g
     end
-    print(string.format("[Tetris][Versus] Match.Init 建立 %d 个棋盘实例", #self.list))
+    print(string.format("[Tetris][Versus] Match.Init 建立 %d 个棋盘占位（预览模式=%s，实际模式待选择）", #self.list, tostring(mode)))
 end
 
 -- 开局：枚举在场玩家 → 分配棋盘 → 互设对手 → 注册输入 → 玩法选择阶段（选完传送+开局）
@@ -155,25 +172,39 @@ function TetrisMatch:Start()
     self.modeSelect:Begin(assigned)
 end
 
--- 玩法选择结束（或跳过选择）：把玩家传送到各自出生点，再逐个开局。
--- choices: [PlayerState] = 玩法
+-- 玩法选择结束（或跳过选择）：按各玩家所选玩法，用正确模式构建棋盘并开局。
+-- choices: [PlayerState] = 玩法（"tetris"/"puyo"）。未选择则回退默认玩法。
 function TetrisMatch:OnModeSelected(choices)
     self.choices = choices or {}
     local M = TetrisConfig.GameMode
-    for _, g in ipairs(self.list) do
-        if g.playerState then
-            local mode = self.choices[g.playerState] or M.Tetris
-            print(string.format("[Tetris][Versus] 棋盘#%d 玩家=%s 玩法=%s",
-                tostring(g.index), tostring(g.playerKey), tostring(mode)))
+    for i, g in ipairs(self.list) do
+        -- 分配到玩家的盘 → 用该玩家所选玩法；旁观盘 → 用默认/强制玩法
+        local mode = g.playerState and (self.choices[g.playerState] or M.Tetris) or self:initialMode()
+        -- 用正确模式重建实例（保留出生点/分配/序号），避免俄罗斯方块占位被直接 Start
+        local ng = self:createGame(mode, g.spawnPointKey, g.index)
+        ng.playerState = g.playerState
+        ng.playerKey = g.playerKey
+        ng.opponent = g.opponent
+        self.list[i] = ng
+        if g.playerKey then self.games[g.playerKey] = ng end
+        local ok = ng:Init(g.spawnPointKey)
+        if ok then
+            if ng.playerState then
+                ng:Start()
+            else
+                ng:StartSpectator()
+            end
+            print(string.format("[Tetris][Versus] 棋盘#%d 玩家=%s 玩法=%s 已开局",
+                tostring(ng.index), tostring(ng.playerKey), tostring(mode)))
+        else
+            print(string.format("[Tetris][Versus][WARN] 棋盘#%d 玩法=%s 初始化失败（出生点未注入？）",
+                tostring(g.index), tostring(mode)))
         end
     end
-    -- 逐个开局：分配到玩家的 → 正式对战（预览/下落/相机锁定各自棋盘/输入路由）；
-    -- 未分配到玩家的 → 旁观盘（仅渲染展示，无人控制，单人时也能看到另一块棋盘）。
-    for _, g in ipairs(self.list) do
-        if g.playerState then
-            g:Start()
-        else
-            g:StartSpectator()
+    -- 重新互设对手：上面的重建替换了实例，旧 opponent 链接已指向被替换的对象
+    if #self.list > 1 then
+        for i, g in ipairs(self.list) do
+            g.opponent = self.list[i % #self.list + 1]
         end
     end
     print("[Tetris][Versus] 对局开始")
