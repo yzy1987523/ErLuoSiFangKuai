@@ -67,8 +67,7 @@ function PuyoBoard:reset()
     -- 渲染层消费用的瞬时标记
     self.pendingCleared = nil       -- 本次锁定被消除的格列表 {{row,col},...}
     self.pendingChain = 0           -- 本次连锁层数
-    self.lockPaused = false         -- 落地停顿（暂未用动画，预留）
-    self.clearing = false           -- 消除挂起（预留）
+    self.resolving = false          -- 消除分阶段流程进行中（true 时暂停自动下落/生成）
 
     self:spawn()
     return self
@@ -188,15 +187,18 @@ function PuyoBoard:lockPair()
     end
     self.active = nil
 
-    -- 连锁消除
-    self:resolve()
-    if not self.isGameOver then
+    -- 锁定后不直接同步消除：若有可消除组，交给 Game 分阶段播放「停顿→回收→特效→下落」，
+    -- 否则立即生成下一对。
+    if self:hasClears() then
+        self.resolving = true
+        self.chain = 0
+    else
         self:spawn()
     end
 end
 
 -- 4-连通同色组检测：返回所有 size >= 4 的组（每组为 { {row,col}, ... }）
-local function findGroups(self)
+function PuyoBoard:findGroups()
     local visited = {}
     for r = 1, self.rows do visited[r] = {} end
     local groups = {}
@@ -235,6 +237,29 @@ local function findGroups(self)
     return groups
 end
 
+-- 是否还有可消除组（锁定后立即判断，决定是否进入分阶段消除流程）
+function PuyoBoard:hasClears()
+    return #self:findGroups() > 0
+end
+
+-- 取本步要消除的格（只检测，不改网格）；无则返回 nil
+function PuyoBoard:findStepClears()
+    local groups = self:findGroups()
+    if #groups == 0 then return nil end
+    local cells = {}
+    local seen = {}
+    for _, g in ipairs(groups) do
+        for _, cell in ipairs(g) do
+            local k = cell.row .. "," .. cell.col
+            if not seen[k] then
+                seen[k] = true
+                cells[#cells + 1] = { row = cell.row, col = cell.col }
+            end
+        end
+    end
+    return cells
+end
+
 -- 逐列竖直下落填补空隙（噗哟：每个块独立下落，不做整体保持）
 local function applyGravityColumn(self, c)
     local write = self.rows
@@ -249,37 +274,28 @@ local function applyGravityColumn(self, c)
     end
 end
 
--- 连锁消除：循环 找组→消除→下落，直到无消除；累计 chain
-function PuyoBoard:resolve()
-    local totalCleared = {}
-    local chain = 0
-    while true do
-        local groups = findGroups(self)
-        if #groups == 0 then break end
-        chain = chain + 1
-        for _, g in ipairs(groups) do
-            for _, cell in ipairs(g) do
-                totalCleared[#totalCleared + 1] = { row = cell.row, col = cell.col }
-                self.grid[cell.row][cell.col] = 0
-            end
-        end
-        for c = 1, self.cols do
-            applyGravityColumn(self, c)
-        end
+-- 回收：把给定格置 0，累计 chain 与分数（由 Game 在「停顿」之后调用）
+function PuyoBoard:reclaim(cells)
+    self.chain = (self.chain or 0) + 1
+    for _, cell in ipairs(cells) do
+        self.grid[cell.row][cell.col] = 0
     end
-    self.pendingCleared = (#totalCleared > 0) and totalCleared or nil
-    self.pendingChain = chain
-    self.chain = chain
-    if chain > 0 then
-        local bonus = TetrisConfig.Puyo.ChainBonus or {}
-        local add = bonus[math.min(chain, #bonus)] or 0
-        self.score = self.score + add
+    local bonus = TetrisConfig.Puyo.ChainBonus or {}
+    local add = bonus[math.min(self.chain, #bonus)] or 0
+    self.score = self.score + add
+end
+
+-- 所有列竖直下落填补空隙（由 Game 在「特效播放完」之后调用）
+function PuyoBoard:applyGravityAll()
+    for c = 1, self.cols do
+        applyGravityColumn(self, c)
     end
 end
 
 -- ---------------- 重力 tick ----------------
 function PuyoBoard:tick()
     if self.isGameOver then return false end
+    if self.resolving then return false end   -- 分阶段消除进行中，暂停自动下落/生成
     if not self.active then
         self:spawn()
         return false

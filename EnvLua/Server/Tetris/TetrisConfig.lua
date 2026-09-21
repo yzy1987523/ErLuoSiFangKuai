@@ -449,6 +449,12 @@ TetrisConfig.Puyo = {
     -- 连锁计分（chain 倍数）
     ChainBonus = { [1] = 10, [2] = 30, [3] = 70, [4] = 120, [5] = 200 },
     ShowGhost = false,                 -- 幽灵（落点预览）对子（false = 关闭盘面落点预览）
+    -- 消除动画时序（分步骤：停顿 → 回收+特效 → 等特效完 → 下落）
+    ClearPauseSec = 0.35,                       -- 消除前停顿（秒）：先等待 x 秒，方块仍可见
+    ClearEffectKey = "13_EffectPreset_100021",  -- 消除特效资源 Key（AssetRef；编辑器注册并 update preset）
+    ClearEffectDuration = 0.5,                  -- 特效播放时长（秒）：等特效播完再执行下落
+    ClearEffectScale = { X = 1.0, Y = 1.0, Z = 1.0 },     -- 特效缩放
+    ClearEffectOffset = { X = 0, Y = 0, Z = 0 },         -- 特效位置额外偏移（米）
     PreviewSideCells = 9,              -- 预览区与盘面间距（沿盘面右向量外移的格数）
     -- 4 色方块模型（SetStaticMesh 换色用）：编辑器已注册的 CreativeAsset。
     BlockMesh = {

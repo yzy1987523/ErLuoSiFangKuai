@@ -255,6 +255,41 @@ function PuyoRenderer:HideActor(a)
     if a then pcall(function() a:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end) end
 end
 
+-- 在指定格位置播放消除特效。坐标用米，cellLocation 返回值即米，直接构造 FVector 传入。
+-- 资源走 AssetRef（需 VSCode 插件注册并 update preset）；失败静默，不影响消除主流程。
+function PuyoRenderer:PlayClearEffectAt(row, col)
+    if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
+    local pb = TetrisConfig.Puyo
+    local key = (pb and pb.ClearEffectKey) or "13_EffectPreset_100021"
+    local ref = AssetRef and AssetRef[key]
+    if not ref then
+        if TetrisConfig.Debug then
+            print(string.format("[Puyo][Clear][WARN] 特效资源未注册 AssetRef[%s]，跳过", tostring(key)))
+        end
+        return
+    end
+    local loc = self:cellLocation(row, col)
+    local off = (pb and pb.ClearEffectOffset) or { X = 0.0, Y = 0.0, Z = 0.0 }
+    local pos = { X = loc.X + (off.X or 0), Y = loc.Y + (off.Y or 0), Z = loc.Z + (off.Z or 0) }
+    local dur = (pb and pb.ClearEffectDuration) or 0.5
+    local ok, id = pcall(function()
+        return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), dur)
+    end)
+    if not ok or not id or id == 0 then
+        if TetrisConfig.Debug then
+            print(string.format("[Puyo][Clear][WARN] 特效创建失败 row=%d col=%d id=%s", row, col, tostring(id)))
+        end
+        return
+    end
+    local scale = (pb and pb.ClearEffectScale) or { X = 1.0, Y = 1.0, Z = 1.0 }
+    pcall(function()
+        SceneEffectAPI.SetSceneEffectScale(id, Game:ConstructFVectorByLuaTable({ X = scale.X, Y = scale.Y, Z = scale.Z }))
+    end)
+    if TetrisConfig.Debug then
+        print(string.format("[Puyo][Clear] 特效 row=%d col=%d id=%s", row, col, tostring(id)))
+    end
+end
+
 -- 活动对子 c2 相对枢轴(c1)的格偏移（用于算出 c2 的 grid 坐标）
 local function pairCellOffset(rot)
     if rot == 1 then return { dc = 0, dr = -1 } end  -- 上

@@ -25,6 +25,7 @@ function PuyoGame:new(owner, opts)
     o.spawnPointKey = (opts and opts.spawnPointKey) or nil
     o.index = (opts and opts.index) or 0
     o.opponent = nil
+    o._resolving = false   -- 分阶段消除流程进行中标记（避免重复进入）
     return o
 end
 
@@ -109,6 +110,10 @@ function PuyoGame:OnTick()
     board:tick()
     self.renderer:Update(board)
     self:UpdateHUD()
+    -- 锁定后进入分阶段消除流程（停顿→回收+特效→等特效完→下落）
+    if board.resolving and not self._resolving then
+        self:BeginResolve()
+    end
     if board:isOver() then self:OnGameOver() end
 end
 
@@ -229,7 +234,60 @@ function PuyoGame:safeApply(fn)
     end
     self.renderer:Update(self.board)
     self:UpdateHUD()
+    if self.board.resolving and not self._resolving then
+        self:BeginResolve()
+    end
     if self.board:isOver() then self:OnGameOver() end
+end
+
+-- ---------------- 分阶段消除流程 ----------------
+-- 序列：检测本步消除组 → 等待 ClearPauseSec（方块仍可见）→ 回收 + 播放特效
+--       → 等待 ClearEffectDuration（特效播完）→ 下落 → 进入下一连锁步（递归）
+function PuyoGame:BeginResolve()
+    if self._resolving then return end
+    if not self.board.resolving then return end
+    self._resolving = true
+    self:ResolveStep()
+end
+
+function PuyoGame:ResolveStep()
+    local board = self.board
+    local cells = board:findStepClears()
+    if not cells then
+        -- 无更多消除：结束流程，生成下一对
+        board.resolving = false
+        self._resolving = false
+        board:spawn()
+        self.renderer:Update(board)
+        self:UpdateHUD()
+        if board:isOver() then self:OnGameOver() end
+        return
+    end
+
+    self.renderer:Update(board)  -- 停顿期间方块仍可见
+    local pause = (TetrisConfig.Puyo and TetrisConfig.Puyo.ClearPauseSec) or 0.35
+    self.owner:AddTimerOnce(pause, function()
+        if not self.running or board.isGameOver then return end
+        -- 回收方块 + 在每格播放特效
+        board:reclaim(cells)
+        self.renderer:Update(board)
+        self:UpdateHUD()
+        self:PlayClearEffects(cells)
+        local dur = (TetrisConfig.Puyo and TetrisConfig.Puyo.ClearEffectDuration) or 0.5
+        self.owner:AddTimerOnce(dur, function()
+            if not self.running or board.isGameOver then return end
+            board:applyGravityAll()   -- 特效播完后执行下落
+            self.renderer:Update(board)
+            self:UpdateHUD()
+            self:ResolveStep()        -- 下一连锁步
+        end)
+    end)
+end
+
+function PuyoGame:PlayClearEffects(cells)
+    for _, cell in ipairs(cells) do
+        self.renderer:PlayClearEffectAt(cell.row, cell.col)
+    end
 end
 
 function PuyoGame:OnBtnLeft() self:safeApply(function() self.board:move(-1) end) end
