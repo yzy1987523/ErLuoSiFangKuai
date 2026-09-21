@@ -389,7 +389,7 @@ TetrisConfig.SceneObjects = {
 }
 
 -- 出生点装置前方生成棋盘的距离（米，可配置）：棋盘中心 = 装置位置 + 世界 +Y(北) * 该值。
-TetrisConfig.BoardForwardDistM = 16
+TetrisConfig.BoardForwardDistM = 19
 
 -- 盘面左右偏移（米，沿盘面右向量 right，正=向玩家右手侧移）：与 BoardForwardDistM 垂直，仅平移不改朝向/前后。
 TetrisConfig.BoardSideOffsetM = 0
