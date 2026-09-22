@@ -365,11 +365,26 @@ TetrisConfig.ModeSelect = {
     PanelKey  = ci("1_CreativeInstance_23643899474805030"),   -- 选择面板（父级）
     BtnTetris = ci("1_CreativeInstance_23643901825073557"),   -- 俄罗斯方块
     BtnMatch4 = nil,                                          -- 四消（旧桩，本期不做；留空不注册
-    BtnPuyo   = ci("1_CreativeInstance_23643901697746451"),   -- 噗哟噗哟（复用原四消按钮）
+    BtnPuyo   = nil,                                          -- 噗哟噗哟（复用原四消按钮）：本期不显示/不注册
 }
 
 -- 技能按钮：本期占位（技能系统属 P4），点击仅记录日志
 TetrisConfig.SkillEnabled = false
+
+-- ===================== 结算界面 =====================
+-- 一方失败 / 时间到 / 提前触发 时，给全体玩家弹出结算面板并显示分数。
+-- 面板与文本控件需在编辑器 UI Editor 预放置，把 InstanceUUID 填到这里（与上面的 ci() 同源）。
+TetrisConfig.Settle = {
+    Enabled = true,
+    PanelKey = ci("1_CreativeInstance_23643901015890411"),   -- 结算面板（父级 Widget，SetWidgetVisible 控制显隐）
+    ScoreLabel = ci("1_CreativeInstance_23643901525676407"),  -- 结算分数文本控件（单次 SetTextContent 显示全部玩家分数 + 胜者）
+    WinnerLabel = nil,    -- 胜者文本控件（可选，单独显示胜者）
+    TimeLimitSec = 0,     -- 对局时间上限（秒）；0 = 不限时（仅在「一方失败」时结束）
+    -- 结束游戏 API：仅「提前触发结算」时调用（自然结束已走引擎流程，不调用）。
+    -- 需填一个 function(match) 函数，内部调用引擎「结束游戏」接口；未填时回退 match:Stop()（触发 OnRoundEnd）。
+    -- 例：EndGameCall = function(match) Game:EndGame() end
+    EndGameCall = nil,
+}
 
 -- ===================== 双人对战（经典对攻） =====================
 -- 固定 2 名玩家：各自出生点前方一块棋盘，各自独立控制；

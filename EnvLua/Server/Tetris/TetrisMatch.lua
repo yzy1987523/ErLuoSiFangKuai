@@ -207,6 +207,7 @@ function TetrisMatch:OnModeSelected(choices)
             g.opponent = self.list[i % #self.list + 1]
         end
     end
+    self:StartMatchTimer()
     print("[Tetris][Versus] 对局开始")
 end
 
@@ -246,14 +247,97 @@ end
 -- 某玩家顶出 → 对手获胜，整局结束
 function TetrisMatch:OnPlayerOut(loser)
     if self.over then return end
-    self.over = true
     local winner = loser.opponent
     self.winner = winner
-    for _, g in ipairs(self.list) do
-        g.running = false
+    self:EndMatch("lose", false)
+end
+
+-- 取全体玩家 PlayerState（用于给所有人弹结算）
+function TetrisMatch:AllPlayerStates()
+    local out = {}
+    local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+    if ok and arr and arr.Num then
+        for i = 0, arr:Num() - 1 do
+            local ps = arr:Get(i)
+            if ps then out[#out + 1] = ps end
+        end
     end
-    print(string.format("[Tetris][Versus] 玩家 %s 顶出，%s 获胜",
-        tostring(loser.playerKey), winner and tostring(winner.playerKey) or "?"))
+    return out
+end
+
+-- 整局结束：停所有棋盘 + 弹结算面板；early=true 时额外调用「结束游戏」API
+function TetrisMatch:EndMatch(reason, early)
+    self.over = true
+    for _, g in ipairs(self.list) do
+        if g.running then g:Stop() end
+    end
+    self:ShowSettle(reason)
+    if early then self:CallEndGameAPI() end
+    print(string.format("[Tetris][Versus] 结算 reason=%s early=%s 胜者=%s",
+        tostring(reason), tostring(early),
+        self.winner and tostring(self.winner.playerKey) or "?"))
+end
+
+-- 给全体玩家弹出结算面板并显示分数
+function TetrisMatch:ShowSettle(reason)
+    local cfg = TetrisConfig.Settle
+    if not (cfg and cfg.Enabled) then return end
+    if type(CustomUIAPI) ~= "table" then return end
+    local lines = {}
+    local best, bestKey = nil, nil
+    for _, g in ipairs(self.list) do
+        local score = (g.board and g.board.score) or 0
+        local name = g.playerKey and tostring(g.playerKey) or ("玩家" .. tostring(g.index))
+        lines[#lines + 1] = name .. "  分数: " .. tostring(score)
+        if best == nil or score > best then best, bestKey = score, g.playerKey end
+    end
+    local winnerTxt
+    if reason == "lose" and self.winner then
+        winnerTxt = "胜者: " .. tostring(self.winner.playerKey or "?")
+    else
+        winnerTxt = "胜者: " .. tostring(bestKey or "?")
+    end
+    local text = "【结算】\n" .. table.concat(lines, "\n") .. "\n" .. winnerTxt
+    for _, ps in ipairs(self:AllPlayerStates()) do
+        if cfg.PanelKey then
+            pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.PanelKey, true) end)
+        end
+        if cfg.ScoreLabel then
+            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.ScoreLabel, text) end)
+        end
+        if cfg.WinnerLabel then
+            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.WinnerLabel, winnerTxt) end)
+        end
+    end
+    print("[Tetris][Settle] 结算面板已弹出 reason=" .. tostring(reason))
+end
+
+-- 调用「结束游戏」API（提前触发结算时）。未配置则回退 Match.Stop()
+function TetrisMatch:CallEndGameAPI()
+    local fn = TetrisConfig.Settle and TetrisConfig.Settle.EndGameCall
+    if type(fn) == "function" then
+        local ok, err = pcall(fn, self)
+        if not ok then print("[Tetris][Settle][WARN] EndGameCall 失败: " .. tostring(err)) end
+    else
+        pcall(function() self:Stop() end)
+        print("[Tetris][Settle] 未配置 EndGameCall，回退 Match.Stop()（OnRoundEnd）")
+    end
+end
+
+-- 对局时间上限计时：到点触发 timeup 结算
+function TetrisMatch:StartMatchTimer()
+    local sec = (TetrisConfig.Settle and TetrisConfig.Settle.TimeLimitSec) or 0
+    if sec and sec > 0 then
+        self.owner:AddTimerOnce(sec, function()
+            if not self.over then self:EndMatch("timeup", false) end
+        end)
+        print("[Tetris][Versus] 对局限时 " .. tostring(sec) .. "s 已启动")
+    end
+end
+
+-- 提前触发结算（供外部/调试按钮调用）：弹结算并调用「结束游戏」API
+function TetrisMatch:TriggerEarlySettle()
+    self:EndMatch("manual", true)
 end
 
 function TetrisMatch:Stop()
