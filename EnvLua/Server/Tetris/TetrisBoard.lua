@@ -558,6 +558,19 @@ function TetrisBoard:getActiveCells()
     return out
 end
 
+-- 返回某方块在 (rot) 下的相对填充格 {r, c}（1-indexed，矩阵内），供 AI 枚举落点
+function TetrisBoard:getPieceCells(type, rot)
+    local m = rotationStates[type][rot]
+    local n = #m
+    local out = {}
+    for r = 1, n do
+        for c = 1, n do
+            if m[r][c] == 1 then out[#out + 1] = { r = r, c = c } end
+        end
+    end
+    return out
+end
+
 -- 幽灵块（硬降落点预览）
 function TetrisBoard:getGhostCells()
     local out = {}

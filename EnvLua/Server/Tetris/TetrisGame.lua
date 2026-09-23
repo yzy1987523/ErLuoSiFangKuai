@@ -8,6 +8,7 @@ local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisBoard = require("EnvLua.Server.Tetris.TetrisBoard")
 local TetrisRenderer = require("EnvLua.Server.Tetris.TetrisRenderer")
 local TetrisNativeUI = require("EnvLua.Server.Tetris.TetrisNativeUI")
+local TetrisAI = require("EnvLua.Server.Tetris.TetrisAI")
 
 local TetrisGame = {}
 TetrisGame.__index = TetrisGame
@@ -26,7 +27,9 @@ function TetrisGame:new(owner, opts)
     o.index = (opts and opts.index) or 0
     o.opponent = nil         -- 对手实例（环形互指）
     o.lastSeq = 0            -- 已提示过的方块生成序号
-    o.skillCharge = 0        -- 技能蓄能计数（累计消行次数，达到 NeedClears 即蓄满）
+    o.skillCharge = 0        -- 技能蓄能计数（累计消行行数，达到 NeedClears 即蓄满）
+    o.isAI = false           -- 是否 AI 托管（对手盘自动对战）
+    o.aiSeq = 0              -- AI 已规划到的 spawnSeq（避免同一块重复规划）
     return o
 end
 
@@ -79,7 +82,13 @@ function TetrisGame:Start()
             self:ProcessInitialClears()
         end)
     end
-    self:ScheduleCameraSetup()
+    -- 相机：AI 盘不锁；AI 在场且开启 FreeLook 时人类也不锁，便于观察双方盘面
+    local lockCam = not self.isAI
+    if lockCam and self.match and self.match:hasAI()
+       and TetrisConfig.AI and TetrisConfig.AI.FreeLook then
+        lockCam = false
+    end
+    if lockCam then self:ScheduleCameraSetup() end
     self:UpdateHUD()                -- 开局先置零（分数=0 消行=0 等级=1）
     self:InitSkillUI()              -- 技能：说明文本 + 蓄能条置零
     print("[Tetris] Start")
@@ -292,6 +301,7 @@ function TetrisGame:OnTick()
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
     self:CheckPieceSpawned()        -- 产出新方块则上屏
+    if self.isAI then self:aiStep() end   -- AI：定位本块 + 蓄满放技能
     if board:isOver() then
         self:OnGameOver()
     end
@@ -346,6 +356,7 @@ end
 -- 惰性获取 PlayerState。上屏 API 的首参必须是 PlayerState。
 -- GetAllPlayerStates 返回 LuaArray，要用 :Num()/:Get(i)，下标从 0 起。
 function TetrisGame:GetPlayerState()
+    if self.isAI then return nil end   -- AI 盘不向任何玩家写 HUD/相机
     if self.playerState then return self.playerState end
     local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
     if ok and arr and arr:Num() > 0 then
@@ -583,6 +594,43 @@ function TetrisGame:OnBtnSkill()
     end
     self:UpdateSkillUI()
     print("[Tetris][Skill] 释放：向对手扔 " .. tostring(cfg.GarbageRows or 4) .. " 行垃圾")
+end
+
+-- ---------------- AI 决策（对手盘自动对战） ----------------
+-- 每块新方块生成后调用一次：用 TetrisAI 选最优（朝向 + 列），旋转/平移到位后
+-- 交还给重力自然下落（可见「落点被自动选好 + 方块掉落」）。蓄满则自动放技能。
+function TetrisGame:aiStep()
+    if not self.isAI or not self.running then return end
+    local b = self.board
+    if not b or b:isOver() or b.clearing or b.lockPaused then return end
+
+    -- 蓄满自动放技能（向人类对手扔垃圾）
+    local scfg = TetrisConfig.Skill
+    if scfg and self.skillCharge >= (scfg.NeedClears or 3) then
+        self:OnBtnSkill()
+    end
+
+    local a = b:getActive()
+    if not a then return end
+    if self.aiSeq == b.spawnSeq then return end   -- 本块已规划，不再动
+    local plan = TetrisAI.bestMove(b)
+    self.aiSeq = b.spawnSeq
+    if not plan then return end
+
+    -- 旋转到目标朝向（带 SRS 踢墙，最多尝试 4 次）
+    local guard = 0
+    while b.active and b.active.rot ~= plan.rot and guard < 5 do
+        if not b:rotate(1) then break end
+        guard = guard + 1
+    end
+    -- 水平平移到目标列（到顶后由重力自然下落）
+    guard = 0
+    while b.active and b.active.x ~= plan.x and guard < (b.cols + 2) do
+        local dx = b.active.x < plan.x and 1 or -1
+        if not b:move(dx) then break end
+        guard = guard + 1
+    end
+    if self.renderer then self.renderer:Update(b) end
 end
 
 return TetrisGame

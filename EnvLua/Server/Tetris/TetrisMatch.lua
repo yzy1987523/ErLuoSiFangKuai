@@ -191,6 +191,9 @@ function TetrisMatch:OnModeSelected(choices)
         if ok then
             if ng.playerState then
                 ng:Start()
+            elseif TetrisConfig.AI and TetrisConfig.AI.Enabled then
+                ng.isAI = true          -- 空盘改为 AI 自动对战（玩家能看到其盘面下落）
+                ng:Start()
             else
                 ng:StartSpectator()
             end
@@ -209,6 +212,14 @@ function TetrisMatch:OnModeSelected(choices)
     end
     self:StartMatchTimer()
     print("[Tetris][Versus] 对局开始")
+end
+
+-- 是否存在 AI 托管的盘（用于单人模式 FreeLook / 相机判断）
+function TetrisMatch:hasAI()
+    for _, g in ipairs(self.list) do
+        if g.isAI then return true end
+    end
+    return false
 end
 
 -- 输入路由：所有玩家共用同一套 CustomUI 按钮（相同 InstanceUUID），
