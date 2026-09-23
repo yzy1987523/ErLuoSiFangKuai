@@ -72,6 +72,7 @@ function TetrisBoard:reset()
     self.combo = -1               -- -1 表示上一次未消除，用于 combo 计数
     self.isGameOver = false
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
+    self.lastAppliedGarbage = 0   -- 最近一次被注入的垃圾行数（Game 层弹提示用，取后清零）
     self.outgoingGarbage = 0      -- 本次 lock 应发给对手的垃圾行数（对战用，外层消费）
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
     self.lastSpawned = nil
@@ -474,6 +475,7 @@ function TetrisBoard:applyGarbage()
     if count <= 0 then return 0 end
     self.pendingGarbage = 0
     self.pendingGarbageMoved = true   -- 垃圾行上移会改变方块位置，渲染层应退化为逐格重排
+    self.lastAppliedGarbage = count  -- 供 Game 层判断「本盘被扔垃圾」并弹提示（独立于渲染消费标记）
 
     for _ = 1, count do
         -- 整体上移一行，顶行被挤出（若顶行非空则游戏结束）

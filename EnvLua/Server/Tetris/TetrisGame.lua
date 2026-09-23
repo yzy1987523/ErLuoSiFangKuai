@@ -301,6 +301,7 @@ function TetrisGame:OnTick()
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
     self:CheckPieceSpawned()        -- 产出新方块则上屏
+    self:CheckReceivedGarbage()    -- 本步是否被对手扔了垃圾（无满行→lockPiece 内已注入）
     if self.isAI then self:aiStep() end   -- AI：定位本块 + 蓄满放技能
     if board:isOver() then
         self:OnGameOver()
@@ -321,6 +322,7 @@ function TetrisGame:maybeScheduleLockFlash()
         local cleared = self.board:doClear()
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
+        self:CheckReceivedGarbage()    -- 有满行→doClear 内 applyGarbage 已注入垃圾，弹提示
         if self.renderer and self.board then self.renderer:Update(self.board) end
         self:maybeScheduleClearResume() -- clearing=true → 等 ClearDelay 后 finishClear
         self:UpdateHUD()
@@ -531,6 +533,9 @@ function TetrisGame:InitSkillUI()
     if ps and type(CustomUIAPI) == "table" and cfg.DescText then
         pcall(function() CustomUIAPI.SetTextContent(ps, cfg.DescText, cfg.Desc or "") end)
     end
+    if TetrisConfig.HintText then
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, TetrisConfig.HintText, false) end)
+    end
     self:UpdateSkillUI()
 end
 
@@ -540,8 +545,12 @@ function TetrisGame:onLinesCleared(cleared)
     local cfg = TetrisConfig.Skill
     if not cfg then return end
     local need = cfg.NeedClears or 3
+    local wasReady = self.skillCharge >= need
     self.skillCharge = math.min(self.skillCharge + cleared, need)  -- 按行数蓄能，蓄满即封顶
     self:UpdateSkillUI()
+    if not wasReady and self.skillCharge >= need then
+        self:ShowHint("技能已蓄满，点击释放！")   -- 刚达到蓄满：提示玩家
+    end
 end
 
 -- 刷新蓄能条（进度条控件：MaxValue=NeedClears，Value=当前蓄能）
@@ -594,6 +603,39 @@ function TetrisGame:OnBtnSkill()
     end
     self:UpdateSkillUI()
     print("[Tetris][Skill] 释放：向对手扔 " .. tostring(cfg.GarbageRows or 4) .. " 行垃圾")
+    self:ShowHint("你释放技能，向对手扔出 " .. tostring(cfg.GarbageRows or 4) .. " 行垃圾！")
+end
+
+-- ---------------- 通用游戏提示（飘字，显示 1 秒后隐藏） ----------------
+-- 文本控件见 TetrisConfig.HintText。每次调用刷新内容与显示，1 秒后自动隐藏；
+-- 用 _hintSeq 防止「连续提示时旧的定时器提前把新的提示隐藏」。
+function TetrisGame:ShowHint(text)
+    local id = TetrisConfig.HintText
+    if not id or type(CustomUIAPI) ~= "table" then return end
+    local ps = self:GetPlayerState()
+    if not ps then return end
+    self._hintSeq = (self._hintSeq or 0) + 1
+    local seq = self._hintSeq
+    pcall(function()
+        CustomUIAPI.SetTextContent(ps, id, text or "")
+        CustomUIAPI.SetWidgetVisible(ps, id, true)
+    end)
+    if self.owner and self.owner.AddTimerOnce then
+        self.owner:AddTimerOnce(1, function()
+            if self._hintSeq ~= seq then return end   -- 已被新提示覆盖，不隐藏
+            pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+        end)
+    end
+end
+
+-- 检测本盘刚被注入的垃圾行数（board.lastAppliedGarbage），有则弹提示并清零
+function TetrisGame:CheckReceivedGarbage()
+    if not self.board or not self.board.lastAppliedGarbage or self.board.lastAppliedGarbage <= 0 then
+        return
+    end
+    local n = self.board.lastAppliedGarbage
+    self.board.lastAppliedGarbage = 0
+    self:ShowHint("你被对手扔来 " .. tostring(n) .. " 行垃圾！")
 end
 
 -- ---------------- AI 决策（对手盘自动对战） ----------------
