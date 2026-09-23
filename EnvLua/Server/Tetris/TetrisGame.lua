@@ -26,6 +26,7 @@ function TetrisGame:new(owner, opts)
     o.index = (opts and opts.index) or 0
     o.opponent = nil         -- 对手实例（环形互指）
     o.lastSeq = 0            -- 已提示过的方块生成序号
+    o.skillCharge = 0        -- 技能蓄能计数（累计消行次数，达到 NeedClears 即蓄满）
     return o
 end
 
@@ -80,6 +81,7 @@ function TetrisGame:Start()
     end
     self:ScheduleCameraSetup()
     self:UpdateHUD()                -- 开局先置零（分数=0 消行=0 等级=1）
+    self:InitSkillUI()              -- 技能：说明文本 + 蓄能条置零
     print("[Tetris] Start")
 end
 
@@ -306,7 +308,8 @@ function TetrisGame:maybeScheduleLockFlash()
     self.owner:AddTimerOnce(fd, function()
         self._lockFlashScheduled = false
         if not self.running or not self.board then return end
-        self.board:doClear()
+        local cleared = self.board:doClear()
+        self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
         if self.renderer and self.board then self.renderer:Update(self.board) end
         self:maybeScheduleClearResume() -- clearing=true → 等 ClearDelay 后 finishClear
@@ -503,12 +506,83 @@ function TetrisGame:OnBtnHold()
     self:safeApply(function() self.board:hold() end)
 end
 
--- 技能：本期占位，技能系统属后续阶段
+-- ---------------- 技能（蓄能条 + 释放） ----------------
+-- 蓄能：累计 NeedClears 次消行蓄满（每次 lock 消≥1 行算 1 次）。
+-- 释放：点击技能按钮 → 若已蓄满，向对手 board 注入 GarbageRows 行垃圾，并清空蓄能。
+-- 控件 UUID 见 TetrisConfig.Skill.ChargeBar / DescText（均为进度条/文本控件，按本盘拥有者刷新）。
+
+-- 开局初始化：写说明文本 + 蓄能条置零
+function TetrisGame:InitSkillUI()
+    local cfg = TetrisConfig.Skill
+    if not cfg then return end
+    self.skillCharge = 0
+    local ps = self:GetPlayerState()
+    if ps and type(CustomUIAPI) == "table" and cfg.DescText then
+        pcall(function() CustomUIAPI.SetTextContent(ps, cfg.DescText, cfg.Desc or "") end)
+    end
+    self:UpdateSkillUI()
+end
+
+-- 本次 lock 消行后按「行数」累加蓄能（cleared = 本次消除行数）
+function TetrisGame:onLinesCleared(cleared)
+    if not cleared or cleared <= 0 then return end
+    local cfg = TetrisConfig.Skill
+    if not cfg then return end
+    local need = cfg.NeedClears or 3
+    self.skillCharge = math.min(self.skillCharge + cleared, need)  -- 按行数蓄能，蓄满即封顶
+    self:UpdateSkillUI()
+end
+
+-- 刷新蓄能条（进度条控件：MaxValue=NeedClears，Value=当前蓄能）
+function TetrisGame:UpdateSkillUI()
+    local cfg = TetrisConfig.Skill
+    if not cfg or not cfg.ChargeBar then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local need = cfg.NeedClears or 3
+    local ready = self.skillCharge >= need
+    pcall(function()
+        CustomUIAPI.SetProgressBarWidgetMaxValue(ps, cfg.ChargeBar, need)
+        CustomUIAPI.SetProgressBarWidgetMinValue(ps, cfg.ChargeBar, 0)
+        CustomUIAPI.SetProgressBarWidgetValue(ps, cfg.ChargeBar, math.min(self.skillCharge, need))
+    end)
+    -- 蓄满时技能按钮文字变蓝，未蓄满恢复默认白
+    local btn = TetrisConfig.UI.BtnSkill
+    if btn then
+        local color = ready
+            and Game:ConstructFVectorByLuaTable({ X = 0.2, Y = 0.55, Z = 1.0 })  -- 蓝色（蓄满）
+            or Game:ConstructFVectorByLuaTable({ X = 1, Y = 1, Z = 1 })           -- 默认白（未蓄满）
+        pcall(function() CustomUIAPI.SetButtonTextColor(ps, btn, color) end)
+    end
+    -- 蓄满显示「技能就绪」文本，未蓄满 / 释放后隐藏
+    local readyText = cfg.ReadyText
+    if readyText then
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, readyText, ready) end)
+    end
+end
+
+-- 技能按钮：蓄满才释放；向对手扔 GarbageRows 行垃圾后清空蓄能
 function TetrisGame:OnBtnSkill()
     if not TetrisConfig.SkillEnabled then
         print("[Tetris] 技能按钮（未启用）")
         return
     end
+    if not self.running or (self.board and self.board:isOver()) then return end
+    local cfg = TetrisConfig.Skill
+    if not cfg then return end
+    local need = cfg.NeedClears or 3
+    if self.skillCharge < need then
+        print(string.format("[Tetris][Skill] 蓄能不足（%d/%d），无法释放", self.skillCharge, need))
+        return
+    end
+    -- 释放：写入对手 pendingGarbage，对手下次 lock 时由 applyGarbage 注入底部
+    self.skillCharge = 0
+    if self.opponent and self.opponent.board and not self.opponent.board:isOver()
+       and not (self.match and self.match.over) then
+        self.opponent.board:addGarbage(cfg.GarbageRows or 4)
+    end
+    self:UpdateSkillUI()
+    print("[Tetris][Skill] 释放：向对手扔 " .. tostring(cfg.GarbageRows or 4) .. " 行垃圾")
 end
 
 return TetrisGame

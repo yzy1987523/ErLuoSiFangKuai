@@ -324,12 +324,12 @@ local function ci(key)
 end
 
 TetrisConfig.UI = {
-    BtnDown  = ci("1_CreativeInstance_23643899469166357"),  -- 硬降（本作无软降）
-    BtnHold  = ci("1_CreativeInstance_23643899871618965"),
-    BtnLeft  = ci("1_CreativeInstance_23643901535093337"),
-    BtnRight = ci("1_CreativeInstance_23643901176767026"),
-    BtnRoll  = ci("1_CreativeInstance_23643901459867306"),
-    BtnSkill = ci("1_CreativeInstance_23643902211339624"),
+    BtnDown  = ci("1_CreativeInstance_23643900874412580"),  -- 硬降（本作无软降）
+    BtnHold  = ci("1_CreativeInstance_23643900251825011"),
+    BtnLeft  = ci("1_CreativeInstance_23643899028893263"),
+    BtnRight = ci("1_CreativeInstance_23643902202474034"),
+    BtnRoll  = ci("1_CreativeInstance_23643902309645984"),
+    BtnSkill = ci("1_CreativeInstance_23643901308713165"),   -- 技能按钮（蓄满点击释放：向对手扔垃圾）
 
     -- 分数 / 消行 / 等级 HUD 文本控件：
     --   在编辑器 UI Editor 中预放置「文本控件」，复制其 InstanceUUID 填到下面（形如 "1_CreativeInstance_xxxx"）。
@@ -368,16 +368,27 @@ TetrisConfig.ModeSelect = {
     BtnPuyo   = nil,                                          -- 噗哟噗哟（复用原四消按钮）：本期不显示/不注册
 }
 
--- 技能按钮：本期占位（技能系统属 P4），点击仅记录日志
-TetrisConfig.SkillEnabled = false
+-- ===================== 技能（俄罗斯方块蓄能条） =====================
+-- 蓄能条 / 技能说明文本在编辑器 UI Editor 预放置，UUID 填到下面（与 ci() 同源）。
+-- 规则：累计 NeedClears 次消行蓄满技能条；点击技能按钮向对手扔 GarbageRows 行垃圾；释放后清空。
+-- （本作技能仅俄罗斯方块可用；噗哟暂未接入，见 PuyoGame:OnBtnSkill 占位。）
+TetrisConfig.SkillEnabled = true
+TetrisConfig.Skill = {
+    NeedClears  = 3,                                                -- 蓄满所需「消除行数」（按行数蓄能，满则封顶）
+    GarbageRows = 4,                                                -- 释放时给对手扔的垃圾行数
+    ChargeBar   = ci("1_CreativeInstance_23643901320641840"),        -- 蓄能条（进度条控件）
+    ReadyText   = ci("1_CreativeInstance_23643902269741186"),        -- 蓄满提示文本（蓄满显示 / 用后隐藏）
+    DescText    = ci("1_CreativeInstance_23643899335684710"),        -- 技能说明文本控件
+    Desc        = "技能：向对手扔 4 行垃圾",
+}
 
 -- ===================== 结算界面 =====================
 -- 一方失败 / 时间到 / 提前触发 时，给全体玩家弹出结算面板并显示分数。
 -- 面板与文本控件需在编辑器 UI Editor 预放置，把 InstanceUUID 填到这里（与上面的 ci() 同源）。
 TetrisConfig.Settle = {
     Enabled = true,
-    PanelKey = ci("1_CreativeInstance_23643901015890411"),   -- 结算面板（父级 Widget，SetWidgetVisible 控制显隐）
-    ScoreLabel = ci("1_CreativeInstance_23643901525676407"),  -- 结算分数文本控件（单次 SetTextContent 显示全部玩家分数 + 胜者）
+    PanelKey = ci("1_CreativeInstance_23643902119497962"),   -- 结算面板（父级 Widget，SetWidgetVisible 控制显隐）    
+    ScoreLabel = ci("1_CreativeInstance_23643899546295419"),  -- 结算分数文本控件（单次 SetTextContent 显示全部玩家分数 + 胜者）
     WinnerLabel = nil,    -- 胜者文本控件（可选，单独显示胜者）
     TimeLimitSec = 0,     -- 对局时间上限（秒）；0 = 不限时（仅在「一方失败」时结束）
     -- 结束游戏 API：仅「提前触发结算」时调用（自然结束已走引擎流程，不调用）。
