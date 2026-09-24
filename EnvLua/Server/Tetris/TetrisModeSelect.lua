@@ -149,6 +149,8 @@ function TetrisModeSelect:OnPick(ps, mode)
     local belong = false
     for _, p in ipairs(self.players) do if p == ps then belong = true break end end
     if not belong then return end
+    -- 该玩家已选过：忽略重复点击（连续点击 / 引擎一次点击多次派发都安全）
+    if self.choices[ps] then return end
 
     local resolved = self:Resolve(mode, ps)
     self.choices[ps] = resolved

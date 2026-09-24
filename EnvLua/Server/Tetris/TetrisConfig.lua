@@ -49,7 +49,7 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
         -- [19] = "1.......11",
         -- 多行同消（四连消）示例：
-        [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1.11111111",
+        -- [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1.11111111",
     },
 }
 
@@ -407,6 +407,7 @@ TetrisConfig.Settle = {
     -- 需填一个 function(match) 函数，内部调用引擎「结束游戏」接口；未填时回退 match:Stop()（触发 OnRoundEnd）。
     -- 例：EndGameCall = function(match) Game:EndGame() end
     EndGameCall = nil,
+    ExitBtn    = ci("1_CreativeInstance_23643898739648472"),   -- 结算界面「结束游戏」按钮：点击执行 GameOutcomeAPI.SetRoundGameEnd(true)
 }
 
 -- ===================== 双人对战（经典对攻） =====================

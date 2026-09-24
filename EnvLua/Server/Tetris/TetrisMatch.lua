@@ -6,6 +6,7 @@
 --   4) 胜负判定：某玩家顶出（game over）即判对手获胜，整局结束。
 -- 注：屏幕显示（HUD/胜负面板）交给 TetrisGame.UpdateHUD 与上层逻辑，本模块只做逻辑与日志。
 pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
+pcall(require, "EnvLua.Core.LuaHint.GameOutcomeAPI")
 
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
@@ -319,8 +320,35 @@ function TetrisMatch:ShowSettle(reason)
         if cfg.WinnerLabel then
             pcall(function() CustomUIAPI.SetTextContent(ps, cfg.WinnerLabel, winnerTxt) end)
         end
+        if cfg.ExitBtn then
+            pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.ExitBtn, true) end)
+        end
     end
+    self:RegisterExitBtn()   -- 注册「结束游戏」按钮点击（仅一次）
     print("[Tetris][Settle] 结算面板已弹出 reason=" .. tostring(reason))
+end
+
+-- 结算界面「结束游戏」按钮：注册一次点击监听，点击执行 GameOutcomeAPI.SetRoundGameEnd(true)
+function TetrisMatch:RegisterExitBtn()
+    local cfg = TetrisConfig.Settle
+    if not cfg or not cfg.ExitBtn then return end          -- 未配置按钮则不注册
+    if self._exitBtnReg then return end                    -- 防重复注册
+    self._exitBtnReg = true
+    local owner = self.owner
+    if not owner or type(owner.AddVPEvent) ~= "function" then return end
+    local clickId = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
+    local selfRef = self
+    owner:AddVPEvent(clickId, function(_self, ps)
+        -- 仅在对局已结束（结算面板已弹）时生效，避免对局中误触提前结束
+        if not selfRef.over then return end
+        print("[Tetris][Settle] 「结束游戏」按钮被点击（" .. tostring(ps) .. "），执行 SetRoundGameEnd")
+        if type(GameOutcomeAPI) == "table" and type(GameOutcomeAPI.SetRoundGameEnd) == "function" then
+            pcall(function() GameOutcomeAPI.SetRoundGameEnd(true) end)
+        else
+            print("[Tetris][Settle][WARN] GameOutcomeAPI.SetRoundGameEnd 不可用")
+        end
+    end, selfRef, cfg.ExitBtn, nil)
+    print("[Tetris][Settle] 「结束游戏」按钮点击已注册")
 end
 
 -- 调用「结束游戏」API（提前触发结算时）。未配置则回退 Match.Stop()
