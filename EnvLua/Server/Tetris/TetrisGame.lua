@@ -388,10 +388,12 @@ end
 function TetrisGame:UpdateHUD()
     local b = self.board
     if not b then return end
-    local ui = TetrisConfig.UI
-    if not (ui.ScoreLabel or ui.LinesLabel or ui.LevelLabel) then return end
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
+    self:UpdateHoldNextUI()                       -- 2D Hold / Next 方块预览
+    self:UpdateOpponentHUD()                      -- 对手分数
+    local ui = TetrisConfig.UI
+    if not (ui.ScoreLabel or ui.LinesLabel or ui.LevelLabel) then return end
     local function set(id, text)
         if not id then return end
         pcall(function() CustomUIAPI.SetTextContent(ps, id, text) end)
@@ -399,6 +401,75 @@ function TetrisGame:UpdateHUD()
     set(ui.ScoreLabel, "分数: " .. tostring(b.score))
     set(ui.LinesLabel, "消行: " .. tostring(b.lines))
     set(ui.LevelLabel, "等级: " .. tostring(b.level))
+end
+
+-- 2D UI：把 Hold / Next 方块显示到图片组件（SetImageWidgetContent 换图）。
+-- 仅当方块类型变化时才下发，避免每帧重复 set；无暂存 / 无预览时隐藏对应组件。
+-- 控件 / 图片资源见 TetrisConfig.UI.HoldImg / NextImg / TetrisConfig.PieceImages。
+function TetrisGame:UpdateHoldNextUI()
+    local b = self.board
+    if not b then return end
+    local ui = TetrisConfig.UI
+    if not (ui and (ui.HoldImg or ui.NextImg)) then return end
+    local imgs = TetrisConfig.PieceImages
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+
+    -- 把 PieceImages[type] 的 AssetRef 键解析成实际 ImageID（与项目里特效/方块预设解析一致）
+    local function resolveImg(t)
+        local key = (t and imgs) and imgs[t] or nil
+        if not key then return nil end
+        return (type(AssetRef) == "table" and AssetRef[key]) or key
+    end
+
+    -- Hold（board.holdType：1..7 或 nil）
+    if ui.HoldImg then
+        local ht = b:getHoldType()
+        local imgID = resolveImg(ht)
+        if imgID then
+            if self._shownHold ~= ht then
+                pcall(function()
+                    CustomUIAPI.SetImageWidgetContent(ps, ui.HoldImg, imgID)
+                    CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, true)
+                end)
+                self._shownHold = ht
+            end
+        elseif self._shownHold ~= nil then
+            pcall(function() CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, false) end)
+            self._shownHold = nil
+        end
+    end
+
+    -- Next（预览队列首个：nextQueue[1]）
+    if ui.NextImg then
+        local nq = b:getNextQueue()
+        local nt = (nq and nq[1]) or nil
+        local imgID = resolveImg(nt)
+        if imgID then
+            if self._shownNext ~= nt then
+                pcall(function()
+                    CustomUIAPI.SetImageWidgetContent(ps, ui.NextImg, imgID)
+                    CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, true)
+                end)
+                self._shownNext = nt
+            end
+        elseif self._shownNext ~= nil then
+            pcall(function() CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, false) end)
+            self._shownNext = nil
+        end
+    end
+end
+
+-- 把对手分数显示到 2D 文本（TetrisConfig.UI.OpponentScoreLabel）。
+-- 对手即 self.opponent（对战 / 人机互指，已在 TetrisMatch:Start 设置）；读其 board.score 刷给本玩家。
+function TetrisGame:UpdateOpponentHUD()
+    local id = TetrisConfig.UI and TetrisConfig.UI.OpponentScoreLabel
+    if not id then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local opp = self.opponent
+    local score = (opp and opp.board and opp.board.score) or 0
+    pcall(function() CustomUIAPI.SetTextContent(ps, id, "对手分数: " .. tostring(score)) end)
 end
 
 function TetrisGame:CheckPieceSpawned()

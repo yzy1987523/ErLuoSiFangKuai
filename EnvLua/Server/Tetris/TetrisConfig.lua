@@ -337,6 +337,27 @@ TetrisConfig.UI = {
     ScoreLabel = ci("1_CreativeInstance_23643901648620020"),
     LinesLabel = ci("1_CreativeInstance_FILL_LINES"),
     LevelLabel = ci("1_CreativeInstance_FILL_LEVEL"),
+
+    -- 2D 图片组件：显示 Hold / Next 方块（SetImageWidgetContent 换图）。填编辑器预放置的图片控件 InstanceUUID。
+    HoldImg = ci("1_CreativeInstance_23643900748630271"),   -- Hold 槽图片组件
+    NextImg = ci("1_CreativeInstance_23643898717166573"),   -- Next 槽图片组件
+
+    -- 对手分数文本控件：显示 self.opponent.board.score（对战 / 人机通用）
+    OpponentScoreLabel = ci("1_CreativeInstance_23643899615395720"),
+}
+
+-- ===================== 方块图片资源（2D UI 显示 Hold / Next） =====================
+-- 每种方块（type 1..7，顺序见 TetrisConfig.PieceType：I=1,O=2,T=3,J=4,L=5,S=6,Z=7）
+-- 对应一张「图片资源 ImageID」，由 SetImageWidgetContent 注入到上面的 HoldImg / NextImg 槽位。
+-- ImageID 需通过 vscode 插件注册预设（AssetRef）后获得；未填则对应槽位留空/隐藏。
+TetrisConfig.PieceImages = {
+    [1] = "23_ImagePreset_181443043387535",  -- I
+    [2] = "23_ImagePreset_181443578873772",  -- O
+    [3] = "23_ImagePreset_181444509092659",  -- T
+    [4] = "23_ImagePreset_181442020947558",  -- J
+    [5] = "23_ImagePreset_181441618721512",  -- L
+    [6] = "23_ImagePreset_181443114759746",  -- S
+    [7] = "23_ImagePreset_181444179307978",  -- Z
 }
 
 -- ===================== 玩法枚举 =====================
@@ -434,7 +455,7 @@ TetrisConfig.SceneObjects = {
 }
 
 -- 出生点装置前方生成棋盘的距离（米，可配置）：棋盘中心 = 装置位置 + 世界 +Y(北) * 该值。
-TetrisConfig.BoardForwardDistM = 19
+TetrisConfig.BoardForwardDistM = 32
 
 -- 盘面左右偏移（米，沿盘面右向量 right，正=向玩家右手侧移）：与 BoardForwardDistM 垂直，仅平移不改朝向/前后。
 TetrisConfig.BoardSideOffsetM = 0
@@ -450,7 +471,7 @@ TetrisConfig.BoardYawOffsetDeg = 0
 TetrisConfig.BoardFlipAxis180 = true
 
 -- 盘面整体离地高度（米）：棋盘底行距“出生点装置所在水平面”的间隙，越大盘面越悬空越高。
-TetrisConfig.BoardHeightOffsetM = -6
+TetrisConfig.BoardHeightOffsetM = -8.5
 
 -- 固定相机（玩家自身第三人称相机）参数：
 TetrisConfig.Camera = {
