@@ -148,8 +148,8 @@ function PuyoGame:SetupFixedCamera()
     else for i = 0, arr:Num() - 1 do local ps = arr:Get(i) if ps then targets[#targets + 1] = ps end end end
     local cam = TetrisConfig.Camera or {}
     local back = cam.CamBackM or 3
-    local lockMove = cam.LockMovement ~= false
-    local lockRot = cam.LockRotation ~= false
+    local lockMove = cam.LockMovement == false
+    local lockRot = cam.LockRotation == false
     local ox = cam.OffsetXM or 0
     local oy = cam.OffsetYM or 0
     local oz = cam.OffsetZM or cam.ZExtraM or 0

@@ -30,6 +30,8 @@ function TetrisGame:new(owner, opts)
     o.skillCharge = 0        -- 技能蓄能计数（累计消行行数，达到 NeedClears 即蓄满）
     o.isAI = false           -- 是否 AI 托管（对手盘自动对战）
     o.aiSeq = 0              -- AI 已规划到的 spawnSeq（避免同一块重复规划）
+    o._shownHold = false     -- 当前 Hold 组件显隐状态：false=隐藏，数字=已显示的方块类型
+    o._shownNext = false     -- 当前 Next 组件显隐状态：false=隐藏，数字=已显示的方块类型
     return o
 end
 
@@ -52,6 +54,16 @@ function TetrisGame:Start()
         self:RegisterInput()  -- 对战模式下由 TetrisMatch 统一注册并按玩家路由
     end
     self:ScheduleSettle()   -- 先让实例 spawn 完成并把显隐刷到位
+
+    -- 开局先隐藏 Hold / Next 组件：尚未有方块时不应显示空槽（避免首帧闪烁）。
+    do
+        local ui = TetrisConfig.UI
+        local ps = self:GetPlayerState()
+        if ui and ps and type(CustomUIAPI) == "table" then
+            pcall(function() if ui.HoldImg then CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, false) end end)
+            pcall(function() if ui.NextImg then CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, false) end end)
+        end
+    end
 
     -- 开局预览：把 7 种方块摆在面前排成一排，暂停下落 N 秒供肉眼核对形状，再正式开始。
     -- 仅整体模式(wholePieceAttach)有效；回退模式不进预览，直接开始。
@@ -434,9 +446,9 @@ function TetrisGame:UpdateHoldNextUI()
                 end)
                 self._shownHold = ht
             end
-        elseif self._shownHold ~= nil then
+        elseif self._shownHold ~= false then
             pcall(function() CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, false) end)
-            self._shownHold = nil
+            self._shownHold = false
         end
     end
 
@@ -453,9 +465,9 @@ function TetrisGame:UpdateHoldNextUI()
                 end)
                 self._shownNext = nt
             end
-        elseif self._shownNext ~= nil then
+        elseif self._shownNext ~= false then
             pcall(function() CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, false) end)
-            self._shownNext = nil
+            self._shownNext = false
         end
     end
 end
@@ -505,6 +517,7 @@ function TetrisGame:flushOutgoingGarbage()
     if self.match and self.match.over then return end
     if self.opponent and self.opponent.board and not self.opponent.board:isOver() then
         self.opponent.board:addGarbage(n)
+        self:ShowHint("即将给对手扔出 " .. tostring(n) .. " 行垃圾！")   -- 消行攻击提示
         if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
             print(string.format("[Tetris][Versus] 玩家 %s 消行 → 给对手发 %d 行垃圾", tostring(self.playerKey), n))
         end
@@ -692,7 +705,8 @@ function TetrisGame:ShowHint(text)
         CustomUIAPI.SetWidgetVisible(ps, id, true)
     end)
     if self.owner and self.owner.AddTimerOnce then
-        self.owner:AddTimerOnce(1, function()
+        local dur = TetrisConfig.HintDuration or 1
+        self.owner:AddTimerOnce(dur, function()
             if self._hintSeq ~= seq then return end   -- 已被新提示覆盖，不隐藏
             pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
         end)

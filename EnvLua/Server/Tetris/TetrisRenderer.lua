@@ -439,7 +439,12 @@ end
 
 -- 在指定格位置播放消行特效。Domain API 坐标用米，cellLocation 返回值即米，直接构造 FVector 传入。
 -- 资源走 AssetRef（需 VSCode 插件注册并 update preset）；失败静默，不影响消行主流程。
-function TetrisRenderer:PlayClearEffectAt(row, col)
+-- 在指定“行”的消行位置播放特效。位置只依赖行号：
+--   · 水平取盘面中心（优先 boardCenter，已含 right 投影，与盘面朝向一致；回退 origin + right*(w/2)），
+--     不再依赖列——消行特效本就该横跨整行居中，列方向偏移在旋转盘面下正是之前偏位的根因。
+--   · 竖直按行：与 cellLocation 的 Z = o.Z - (row-1)*step 一致（行方向永远是世界 -Z，不受盘面 yaw 影响，故行很准）。
+-- 资源走 AssetRef（需 VSCode 插件注册并 update preset）；失败静默，不影响消行主流程。
+function TetrisRenderer:PlayClearEffectAt(row)
     if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
     local key = (TetrisConfig.Clear and TetrisConfig.Clear.EffectPresetKey) or "13_EffectPreset_100032"
     local ref = AssetRef and AssetRef[key]
@@ -449,10 +454,24 @@ function TetrisRenderer:PlayClearEffectAt(row, col)
         end
         return
     end
-    local loc = self:cellLocation(row, col)
-    -- 在格中心点基础上叠加配置偏移（单位：米，与 cellLocation 同坐标系）。
+    local r = TetrisConfig.Render
+    local step = r.CellSize + r.CellGap
+    local o = self.origin or r.BoardOrigin
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    -- 盘面水平中心：优先 boardCenter（ResolveOrigin 已算好，含 right 投影）；否则由 origin 推。
+    local center = self.boardCenter
+    if not center then
+        local w = (TetrisConfig.Board.Cols - 1) * step
+        center = { X = o.X + right.X * (w / 2), Y = o.Y + right.Y * (w / 2), Z = o.Z }
+    end
+    -- 竖直按行（与世界 -Z 同向，与 cellLocation 完全一致）；水平直接取盘面中心，不乘列。
+    local loc = { X = center.X, Y = center.Y, Z = o.Z - (row - 1) * step }
+    -- 水平偏移：沿盘面本地左侧（-right）。LeftOffsetM>0 即向左，两块盘朝向不同也各自向左、保持一致。
     local off = (TetrisConfig.Clear and TetrisConfig.Clear.EffectPositionOffset) or { X = 0.0, Y = 0.0, Z = 0.0 }
-    local pos = { X = loc.X + (off.X or 0), Y = loc.Y + (off.Y or 0), Z = loc.Z + (off.Z or 0) }
+    
+    local along = (off.X or 0) * right.X + (off.Y or 0) * right.Y
+    -- 竖直仅用 off.Z 作上下微调（沿世界 -Z，与行方向一致），X/Y 不再参与水平。
+    local pos = { X = loc.X + right.X * along, Y = loc.Y + right.Y * along, Z = loc.Z + (off.Z or 0) }
     local dur = (TetrisConfig.Clear and TetrisConfig.Clear.EffectDuration) or 1.0
     local ok, id = pcall(function()
         return SceneEffectAPI.CreateSceneEffect(
@@ -462,7 +481,7 @@ function TetrisRenderer:PlayClearEffectAt(row, col)
     end)
     if not ok or not id or id == 0 then
         if TetrisConfig.Debug then
-            print(string.format("[Tetris][Clear][WARN] 特效创建失败 row=%d col=%d id=%s", row, col, tostring(id)))
+            print(string.format("[Tetris][Clear][WARN] 特效创建失败 row=%d id=%s", row, tostring(id)))
         end
         return
     end
@@ -474,8 +493,8 @@ function TetrisRenderer:PlayClearEffectAt(row, col)
             Game:ConstructFVectorByLuaTable({ X = scale.X, Y = scale.Y, Z = scale.Z }))
     end)
     if TetrisConfig.Debug then
-        print(string.format("[Tetris][Clear] 特效 row=%d col=%d id=%s scale=(%.2f,%.2f,%.2f)",
-            row, col, tostring(id), scale.X, scale.Y, scale.Z))
+        print(string.format("[Tetris][Clear] 特效 row=%d id=%s scale=(%.2f,%.2f,%.2f)",
+            row, tostring(id), scale.X, scale.Y, scale.Z))
     end
 end
 
@@ -1924,7 +1943,7 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
             local a = oldOcc[cr] and oldOcc[cr][c]
             if a then self:ReleaseActor(a) end
         end
-        self:PlayClearEffectAt(cr, 9)   -- 在待消除格位置播放特效
+        self:PlayClearEffectAt(cr)   -- 在待消除行（盘面居中）播放特效
     end
 
     -- 2) 计算每个最终格的来源旧行：clearLines 从底向上紧凑堆叠保留行，被消行上方的行整体下落填补。

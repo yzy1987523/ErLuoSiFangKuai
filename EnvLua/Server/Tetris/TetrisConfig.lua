@@ -21,10 +21,12 @@ TetrisConfig.Clear = {
     -- 例 {X=2,Y=2,Z=2} 放大到 2 倍，{X=0.5,Y=0.5,Z=0.5} 缩小一半。
     -- 由 SceneEffectAPI.SetSceneEffectScale 在创建后应用（CreateSceneEffect 无缩放参数）。
     -- x：高度，y：长度
-    EffectScale = { X = 8.0, Y = 2.0, Z = 1.0 },
-    -- 特效播放位置的额外偏移（单位：米，与 cellLocation 同坐标系）。
-    -- 各分量默认 0 = 不加偏移；例 {X=0,Y=0,Z=0.5} 把特效抬高 0.5 米。
-    EffectPositionOffset = { X = 0.0, Y = -5.0, Z = 0.0 },
+    EffectScale = { X = 7.0, Y = 1.5, Z = 1.0 },
+    -- 特效播放位置的额外偏移（单位：米）。
+    -- 注意：水平（X/Y）已由 LeftOffsetM 接管（沿盘面本地左向，保证多盘一致）；
+    -- 此处仅保留竖直分量 Z 作上下微调（沿世界 -Z，与行方向一致），X/Y 不再参与水平定位。
+    EffectPositionOffset = { X = 0.0, Y = -5.25, Z = 0.0 },
+   
 }
 
 -- ===================== 初始预填版面（开局即存在的方块） =====================
@@ -49,7 +51,7 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
         -- [19] = "1.......11",
         -- 多行同消（四连消）示例：
-        -- [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1.11111111",
+        -- [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111111",
     },
 }
 
@@ -251,7 +253,7 @@ TetrisConfig.Render = {
     -- 下一个方块预览：游戏进行中(有方块正在下落时)在盘面一侧显示 nextQueue[1]。
     -- 为此再预建一套 7 种整体实例作预览专用(与活动方块的 7 个互不干扰)，
     -- 连同活动 7 个 + Hold 7 个共 21 个 = 每型 3 个(活动/下一/暂存)，即使三者同型(7-bag 跨袋边界可能出现)也能同屏渲染。
-    EnableNextPreview = true,
+    EnableNextPreview = false,
     NextPreviewSide = "right",  -- "left" = 盘面左侧(旧行为)；"right" = 盘面右侧
     NextPreviewLeftCells = 0,   -- 预览区与盘面之间的间距格数（沿预览所在侧的“外移”方向）；0 表示自动 = Cols + 3
     -- 预览方块位置偏移量（单位：格，沿盘面轴向）：
@@ -261,7 +263,7 @@ TetrisConfig.Render = {
 
     -- Hold 暂存方块：固定在盘面左侧显示 board.holdType（无暂存时隐藏全部）。
     -- 同样预建一套 7 种整体实例作 Hold 专用(与活动/下一预览都不冲突)，带来总数 21 个。
-    EnableHoldPreview = true,
+    EnableHoldPreview = false,
     HoldPreviewSide = "left",   -- 固定左侧
     HoldPreviewGapCells = 0,    -- 与盘面间距格数（沿“外移”方向）；0 = 自动 = Cols + 3
     -- Hold 方块位置偏移量（单位：格，沿盘面轴向，语义同 NextPreviewOffset）：
@@ -404,8 +406,9 @@ TetrisConfig.Skill = {
 }
 
 -- ===================== 游戏提示文本（通用飘字） =====================
--- 任意提示（扔垃圾 / 被扔垃圾 / 技能就绪等）写入该文本，显示 1 秒后自动隐藏。
+-- 任意提示（扔垃圾 / 被扔垃圾 / 技能就绪等）写入该文本，显示 HintDuration 秒后自动隐藏。
 TetrisConfig.HintText = ci("1_CreativeInstance_23643899752970406")
+TetrisConfig.HintDuration = 2   -- 提示显示时长（秒），到点自动隐藏
 
 -- ===================== AI 对手（单人模式） =====================
 -- 单人时：第 2 块盘（无人类玩家的旁观盘）改为 AI 自动对战。
@@ -429,6 +432,13 @@ TetrisConfig.Settle = {
     -- 例：EndGameCall = function(match) Game:EndGame() end
     EndGameCall = nil,
     ExitBtn    = ci("1_CreativeInstance_23643898739648472"),   -- 结算界面「结束游戏」按钮：点击执行 GameOutcomeAPI.SetRoundGameEnd(true)
+
+    -- 引擎胜负上报：把每队的输赢告诉引擎（GameOutcomeAPI.SetTeamRoundOutcome），并推送分数（BattleDataAPI.SetPlayerIntegral）。
+    -- 关闭后只走自建结算面板，引擎不知道谁赢谁输（影响官方结算/排名/MVP）。
+    ReportOutcome = true,
+    -- OutcomeType 取值：引擎桩只标注为 "Win/loss status"，本地未给枚举，需向编辑器/平台确认具体值。
+    -- 默认按常见约定填 1=胜 2=负 3=平；若引擎要求枚举对象而非数字，改这里即可。
+    OutcomeType = { Win = 1, Lose = 2, Draw = 3 },
 }
 
 -- ===================== 双人对战（经典对攻） =====================

@@ -7,6 +7,8 @@
 -- 注：屏幕显示（HUD/胜负面板）交给 TetrisGame.UpdateHUD 与上层逻辑，本模块只做逻辑与日志。
 pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
 pcall(require, "EnvLua.Core.LuaHint.GameOutcomeAPI")
+pcall(require, "EnvLua.Core.LuaHint.BattleDataAPI")
+pcall(require, "EnvLua.Core.LuaHint.PlayerAPI")
 
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
@@ -261,7 +263,46 @@ function TetrisMatch:OnPlayerOut(loser)
     if self.over then return end
     local winner = loser.opponent
     self.winner = winner
+    self:ReportOutcome(winner, loser)   -- 把胜负 + 分数上报给引擎
     self:EndMatch("lose", false)
+end
+
+-- 把胜负与分数上报给引擎，让官方结算/排名/MVP 知道结果。
+-- 队伍 ID 用各棋盘的 index（稳定唯一、重建实例也保留）；只上报有真人 PlayerState 的队伍（AI 盘无 PlayerState，跳过）。
+-- OutcomeType 取值见 TetrisConfig.Settle.OutcomeType（引擎桩未给枚举，需平台确认）。
+function TetrisMatch:ReportOutcome(winner, loser)
+    local cfg = TetrisConfig.Settle
+    if not (cfg and cfg.ReportOutcome) then return end
+    if type(GameOutcomeAPI) ~= "table" or type(GameOutcomeAPI.SetTeamRoundOutcome) ~= "function" then
+        print("[Tetris][Outcome][WARN] GameOutcomeAPI.SetTeamRoundOutcome 不可用，跳过引擎胜负上报")
+        return
+    end
+    local O = cfg.OutcomeType or { Win = 1, Lose = 2, Draw = 3 }
+    for _, g in ipairs(self.list) do
+        if g.playerState then
+            -- 取玩家真实队伍 ID（PlayerAPI.GetPlayerTeamID）；取不到则回退棋盘 index
+            local teamID
+            pcall(function()
+                if type(PlayerAPI) == "table" and type(PlayerAPI.GetPlayerTeamID) == "function" then
+                    teamID = PlayerAPI.GetPlayerTeamID(g.playerState)
+                end
+            end)
+            if type(teamID) ~= "number" then teamID = g.index end
+            local outcome = (g == winner) and O.Win or (g == loser) and O.Lose or O.Draw
+            local endFighting = (g == winner)   -- 胜者那次结束本轮战斗
+            pcall(function() GameOutcomeAPI.SetTeamRoundOutcome(teamID, outcome, endFighting) end)
+            print(string.format("[Tetris][Outcome] 队伍#%d → outcome=%s endFighting=%s",
+                tostring(teamID), tostring(outcome), tostring(endFighting)))
+        end
+    end
+    -- 分数推给引擎战斗数据（影响官方排名 / 结算面板）
+    if type(BattleDataAPI) == "table" and type(BattleDataAPI.SetPlayerIntegral) == "function" then
+        for _, g in ipairs(self.list) do
+            if g.playerState and g.board then
+                pcall(function() BattleDataAPI.SetPlayerIntegral(g.playerState, g.board.score or 0) end)
+            end
+        end
+    end
 end
 
 -- 取全体玩家 PlayerState（用于给所有人弹结算）
