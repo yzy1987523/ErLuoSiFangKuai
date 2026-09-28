@@ -229,7 +229,9 @@ end
 -- 点击回调由引擎带上「点击者 PlayerState」，据此找到其所属实例并派发对应操作。
 function TetrisMatch:RegisterInput()
     local ui = TetrisConfig.UI
-    local id = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
+    local id     = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
+    local idLong = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUILongPressed) or 120001
+    local idRel  = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUILongPressReleased) or 120002
     local selfRef = self
     -- 路由闭包：引擎调用约定为 cb(registeredSelf, eventOutput1, ...)，eventOutput1 = 点击者 PlayerState
     local function route(action)
@@ -255,7 +257,20 @@ function TetrisMatch:RegisterInput()
             self.owner:AddVPEvent(id, route(b[2]), selfRef, b[1], nil)
         end
     end
-    print("[Tetris][Versus] 输入路由已注册（" .. #binds .. " 个按钮）")
+    -- 左右键长按：长按进入连发（DAS/ARR），抬起停止
+    local holdBinds = {
+        { ui.BtnLeft,  "LeftHold" },
+        { ui.BtnRight, "RightHold" },
+        { ui.BtnLeft,  "LeftRelease" },
+        { ui.BtnRight, "RightRelease" },
+    }
+    for _, b in ipairs(holdBinds) do
+        if b[1] ~= nil then
+            local evt = (string.find(b[2], "Release") and idRel) or idLong
+            self.owner:AddVPEvent(evt, route(b[2]), selfRef, b[1], nil)
+        end
+    end
+    print("[Tetris][Versus] 输入路由已注册（" .. #binds .. " 个按钮 + 左右长按）")
 end
 
 -- 某玩家顶出 → 对手获胜，整局结束

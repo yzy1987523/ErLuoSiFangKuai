@@ -348,6 +348,17 @@ TetrisConfig.UI = {
     OpponentScoreLabel = ci("1_CreativeInstance_23643899615395720"),
 }
 
+-- ===================== 输入手感（长按 / 自动横移 DAS-ARR） =====================
+-- 左右键支持「长按连续横移」：短按 = 点一次移一格（CustomUIClicked）；
+-- 长按 = 按住越过引擎长按阈值后进入连发（CustomUILongPressed / CustomUILongPressReleased）。
+-- DAS（Delayed Auto Shift）：按下后到首次连发的延迟；ARR（Auto Repeat Rate）：连发间隔。
+-- 单位：秒。DAS 越小「起步越快」，ARR 越小「连发越快」。
+TetrisConfig.Input = {
+    LongPressEnabled = true,       -- 总开关：false = 左右键只响应短按，不进入长按连发
+    DAS = 0.16,                    -- 首次连发延迟（秒）
+    ARR = 0.06,                    -- 连发间隔（秒），越小越快
+}
+
 -- ===================== 方块图片资源（2D UI 显示 Hold / Next） =====================
 -- 每种方块（type 1..7，顺序见 TetrisConfig.PieceType：I=1,O=2,T=3,J=4,L=5,S=6,Z=7）
 -- 对应一张「图片资源 ImageID」，由 SetImageWidgetContent 注入到上面的 HoldImg / NextImg 槽位。

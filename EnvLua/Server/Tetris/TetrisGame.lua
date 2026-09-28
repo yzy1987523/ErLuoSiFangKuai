@@ -540,18 +540,21 @@ end
 -- 每个按钮注册独立监听，因此回调里无需再判断来源。
 function TetrisGame:RegisterInput()
     local ui = TetrisConfig.UI
-    -- 读全局表；若尚未注入则回退到事件号字面量 120000
-    local id = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
+    -- 读全局表；若尚未注入则回退到事件号字面量
+    local id     = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
+    local idLong = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUILongPressed) or 120001
+    local idRel  = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUILongPressReleased) or 120002
     if id == 120000 then
-        print("[Tetris][WARN] RcEventIdDefine 未注入，使用字面量 120000")
+        print("[Tetris][WARN] RcEventIdDefine 未注入，使用字面量 120000/120001/120002")
     end
 
-    local function bind(instanceID, handler)
+    local function bind(instanceID, handler, evtId)
+        evtId = evtId or id
         if instanceID == nil then
             print("[Tetris][WARN] 跳过未配置的按钮（InstanceUUID 为 nil）")
             return
         end
-        self.owner:AddVPEvent(id, handler, self, instanceID, nil)
+        self.owner:AddVPEvent(evtId, handler, self, instanceID, nil)
     end
 
     bind(ui.BtnLeft, TetrisGame.OnBtnLeft)
@@ -560,7 +563,12 @@ function TetrisGame:RegisterInput()
     bind(ui.BtnDown, TetrisGame.OnBtnDown)
     bind(ui.BtnHold, TetrisGame.OnBtnHold)
     bind(ui.BtnSkill, TetrisGame.OnBtnSkill)
-    print("[Tetris] UI 输入已注册")
+    -- 左右键长按：长按进入连发（DAS/ARR）
+    bind(ui.BtnLeft, TetrisGame.OnBtnLeftHold, idLong)
+    bind(ui.BtnLeft, TetrisGame.OnBtnLeftRelease, idRel)
+    bind(ui.BtnRight, TetrisGame.OnBtnRightHold, idLong)
+    bind(ui.BtnRight, TetrisGame.OnBtnRightRelease, idRel)
+    print("[Tetris] UI 输入已注册（含左右长按）")
 end
 
 -- 统一安全调用：单个操作出错不应中断整局
@@ -587,6 +595,58 @@ end
 
 function TetrisGame:OnBtnRight()
     self:safeApply(function() self.board:move(1) end)
+end
+
+-- ---------------- 左右键长按（DAS/ARR 自动横移） ----------------
+-- 短按：OnBtnLeft/Right 已处理（点一次移一格）。
+-- 长按：引擎 CustomUILongPressed 触发 OnBtnXxxHold（StartMoveRepeat），
+--       CustomUILongPressReleased 触发 OnBtnXxxRelease（StopMoveRepeat）。
+function TetrisGame:OnBtnLeftHold()
+    if not TetrisConfig.Input or TetrisConfig.Input.LongPressEnabled then
+        self:StartMoveRepeat(-1)
+    end
+end
+
+function TetrisGame:OnBtnRightHold()
+    if not TetrisConfig.Input or TetrisConfig.Input.LongPressEnabled then
+        self:StartMoveRepeat(1)
+    end
+end
+
+function TetrisGame:OnBtnLeftRelease()
+    self:StopMoveRepeat()
+end
+
+function TetrisGame:OnBtnRightRelease()
+    self:StopMoveRepeat()
+end
+
+-- 启动左右长按连发：先立即移一格（按下即响应），再过 DAS 间隔进入 ARR 连发。
+-- 用 _moveHoldGen 代际令牌防止残留定时器串扰（快速松按之间旧链自动失效）。
+function TetrisGame:StartMoveRepeat(dir)
+    if not self.running or (self.board and self.board:isOver()) then return end
+    self._moveHoldDir = dir
+    self._moveHoldGen = (self._moveHoldGen or 0) + 1
+    local gen = self._moveHoldGen
+    local cfg = TetrisConfig.Input or {}
+    local das = cfg.DAS or 0.16
+    local arr = cfg.ARR or 0.06
+    local selfRef = self
+    selfRef:safeApply(function() selfRef.board:move(dir) end)
+    local function repeatStep()
+        if not selfRef.running or selfRef._moveHoldGen ~= gen or selfRef._moveHoldDir ~= dir then
+            return
+        end
+        selfRef:safeApply(function() selfRef.board:move(dir) end)
+        selfRef.owner:AddTimerOnce(arr, repeatStep)
+    end
+    self.owner:AddTimerOnce(das, repeatStep)
+end
+
+-- 停止长按连发：抬换代际令牌，pending 定时器下一帧自检失效后不再续发。
+function TetrisGame:StopMoveRepeat()
+    self._moveHoldDir = nil
+    self._moveHoldGen = (self._moveHoldGen or 0) + 1
 end
 
 function TetrisGame:OnBtnRoll()
