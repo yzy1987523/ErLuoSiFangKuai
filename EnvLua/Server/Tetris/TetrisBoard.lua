@@ -61,6 +61,9 @@ function TetrisBoard:reset()
 
     self.bag = {}                 -- 7-bag 随机袋
     self.active = nil             -- 当前下落方块 { type, rot, x, y }
+    self.grounded = false         -- 当前方块是否已贴地（正在累计落地锁定延迟）
+    self.groundTimer = 0          -- 贴地累计时间（秒，按重力周期累加）
+    self.lockResets = 0           -- 落地后已发生的「移动/旋转重置」次数（超过上限不再重置，防无限拖延）
     self.holdType = nil           -- Hold 暂存方块类型
     self.canHold = true           -- 每次落地前只能用一次 Hold
     self.nextQueue = {}           -- 预览队列
@@ -161,6 +164,9 @@ function TetrisBoard:spawn(typeOverride)
     local y = 1  -- 顶行对齐，矩阵内的空行使方块视觉上略靠下
 
     self.active = { type = t, rot = 1, x = x, y = y }
+    self.grounded = false         -- 新方块出生即未贴地
+    self.groundTimer = 0
+    self.lockResets = 0
     self.canHold = true
 
     -- 生成快照：外层据此判断是否产出了新方块（用于调试上屏）
@@ -202,6 +208,7 @@ function TetrisBoard:move(dx)
     local p = self.active
     if self:canPlace(p, p.x + dx, p.y, p.rot) then
         p.x = p.x + dx
+        self:resetLockDelay()   -- 成功平移（含贴地滑动）→ 重置落地锁定延迟
         return true
     end
     return false
@@ -238,6 +245,7 @@ function TetrisBoard:rotate(dir)
             p.x = p.x + k[1]
             p.y = p.y - k[2]
             p.rot = to
+            self:resetLockDelay()   -- 成功旋转（含贴地转身）→ 重置落地锁定延迟
             return true
         end
     end
@@ -250,10 +258,23 @@ function TetrisBoard:softDrop()
     local p = self.active
     if self:canPlace(p, p.x, p.y + 1, p.rot) then
         p.y = p.y + 1
+        self.grounded = false   -- 又能下落 → 解除贴地锁定状态
+        self.groundTimer = 0
         self.score = self.score + TetrisConfig.Score.SoftDropPerCell
         return true
     end
     return false
+end
+
+-- 落地锁定延迟的「移动/旋转重置」：方块已贴地且本步成功移动/旋转时，把延迟计时归零，
+-- 让玩家能继续在底面滑动/转身（次数受 LockResetLimit 上限约束，防止无限拖延锁定）。
+function TetrisBoard:resetLockDelay()
+    if not self.grounded then return end
+    local maxResets = (TetrisConfig.Timing and TetrisConfig.Timing.LockResetLimit) or 15
+    if (self.lockResets or 0) < maxResets then
+        self.groundTimer = 0
+        self.lockResets = (self.lockResets or 0) + 1
+    end
 end
 
 -- 硬降：直接落到底并锁定
@@ -512,10 +533,25 @@ function TetrisBoard:tick()
     end
     local p = self.active
     if self:canPlace(p, p.x, p.y + 1, p.rot) then
+        -- 仍能下落：解除落地锁定状态，正常下落一格
+        self.grounded = false
+        self.groundTimer = 0
         p.y = p.y + 1
         return true
     end
-    self:lockPiece()
+    -- 落不动：进入/累计「落地锁定延迟」，给玩家在底面滑动/转身的时间（经典 lock delay）。
+    if not self.grounded then
+        self.grounded = true
+        self.groundTimer = 0
+        self.lockResets = 0
+    end
+    local cfg = TetrisConfig.Timing
+    local lockDelay = (cfg and cfg.LockDelay) or 0.25
+    -- 以「一个重力周期」为累计步长：高等级（重力快）精度足够；低等级（重力慢）窗口 ≥ 重力周期，仍可滑动。
+    self.groundTimer = self.groundTimer + self:getGravityInterval()
+    if self.groundTimer >= lockDelay then
+        self:lockPiece()
+    end
     return false
 end
 

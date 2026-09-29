@@ -568,7 +568,10 @@ function TetrisGame:RegisterInput()
     bind(ui.BtnLeft, TetrisGame.OnBtnLeftRelease, idRel)
     bind(ui.BtnRight, TetrisGame.OnBtnRightHold, idLong)
     bind(ui.BtnRight, TetrisGame.OnBtnRightRelease, idRel)
-    print("[Tetris] UI 输入已注册（含左右长按）")
+    -- 下键长按：长按软降、抬起停止
+    bind(ui.BtnDown, TetrisGame.OnBtnDownHold, idLong)
+    bind(ui.BtnDown, TetrisGame.OnBtnDownRelease, idRel)
+    print("[Tetris] UI 输入已注册（含左右/下长按）")
 end
 
 -- 统一安全调用：单个操作出错不应中断整局
@@ -653,10 +656,42 @@ function TetrisGame:OnBtnRoll()
     self:safeApply(function() self.board:rotate(1) end)
 end
 
--- down 键 = 硬降（本作不提供软降）
+-- down 键：短按 = 硬降（落到底并锁定）；长按 = 软降（见 OnBtnDownHold）。
 function TetrisGame:OnBtnDown()
     self:safeApply(function() self.board:hardDrop() end)
     self:maybeScheduleLockFlash()   -- 硬降直接锁定，需触发落地停顿调度（不走重力 tick）
+end
+
+-- ---------------- 下键长按（软降连发） ----------------
+-- 短按（OnBtnDown）已做硬降；长按进入软降：每 SoftDropInterval 下落一格，松手即停。
+function TetrisGame:OnBtnDownHold()
+    if not TetrisConfig.Input or TetrisConfig.Input.LongPressEnabled then
+        self:StartSoftDrop()
+    end
+end
+
+function TetrisGame:OnBtnDownRelease()
+    self:StopSoftDrop()
+end
+
+-- 启动软降连发：按 Timing.SoftDropInterval 间隔持续 softDrop()，触底时 softDrop 自动 no-op。
+-- 用 _softDropGen 代际令牌防止残留定时器串扰。
+function TetrisGame:StartSoftDrop()
+    if not self.running or (self.board and self.board:isOver()) then return end
+    self._softDropGen = (self._softDropGen or 0) + 1
+    local gen = self._softDropGen
+    local interval = (TetrisConfig.Timing and TetrisConfig.Timing.SoftDropInterval) or 0.05
+    local selfRef = self
+    local function step()
+        if not selfRef.running or selfRef._softDropGen ~= gen then return end
+        selfRef:safeApply(function() selfRef.board:softDrop() end)
+        selfRef.owner:AddTimerOnce(interval, step)
+    end
+    self.owner:AddTimerOnce(interval, step)
+end
+
+function TetrisGame:StopSoftDrop()
+    self._softDropGen = (self._softDropGen or 0) + 1
 end
 
 function TetrisGame:OnBtnHold()

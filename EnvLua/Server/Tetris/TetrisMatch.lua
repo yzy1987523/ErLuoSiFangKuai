@@ -257,12 +257,14 @@ function TetrisMatch:RegisterInput()
             self.owner:AddVPEvent(id, route(b[2]), selfRef, b[1], nil)
         end
     end
-    -- 左右键长按：长按进入连发（DAS/ARR），抬起停止
+    -- 左右键长按：长按进入连发（DAS/ARR），抬起停止；下键长按 = 软降
     local holdBinds = {
         { ui.BtnLeft,  "LeftHold" },
         { ui.BtnRight, "RightHold" },
         { ui.BtnLeft,  "LeftRelease" },
         { ui.BtnRight, "RightRelease" },
+        { ui.BtnDown,  "DownHold" },
+        { ui.BtnDown,  "DownRelease" },
     }
     for _, b in ipairs(holdBinds) do
         if b[1] ~= nil then

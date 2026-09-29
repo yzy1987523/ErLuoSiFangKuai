@@ -36,7 +36,19 @@ EnvLua/Server/ErLuoSiFangKuai/   # 玩法代码放这里（可写区）
 
 | API | 状态 | 说明 |
 | --- | --- | --- |
-| （待实跑填充） | ⬜ | |
+| CustomUIClicked (=120000) | ⚠️ 声明已确认，行为待实跑 | CustomUI 按钮**短按/点击**事件。`@listen InstanceID`（按控件 UUID 过滤），`@output` = 点击者 PlayerState。左右/下键短按在此派发（OnBtnLeft/Right/Down）。 |
+| CustomUILongPressed (=120001) | ⚠️ 声明已确认，行为待实跑 | CustomUI 按钮**长按开始**事件。输出同上为 PlayerState。左右键长按 → StartMoveRepeat（DAS/ARR 连发）；下键长按 → StartSoftDrop（软降连发）。 |
+| CustomUILongPressReleased (=120002) | ⚠️ 声明已确认，行为待实跑 | CustomUI 按钮**长按抬起**事件。输出 PlayerState。左右/下键抬起 → StopMoveRepeat / StopSoftDrop 停止连发。 |
+| CameraAPI.LockCameraInput(ps, bLocked) | ⚠️ 声明已确认，待实跑 | 锁定/解锁摄像机旋转输入（屏蔽视角旋转，保留 WASD 移动）。查询用 IsCameraInputLocked(ps)。 |
+| TetrisBoard:softDrop() | ✅ 已读源码确认 | 软降一格：成功下移并 +SoftDropPerCell 分，解除贴地状态；触底返回 false（不锁定），由重力/锁定延迟接管。 |
+| TetrisBoard:hardDrop() | ✅ 已读源码确认 | 硬降：直接落底并 lockPiece() 锁定，+dist*HardDropPerCell 分。 |
+| TetrisBoard 落地锁定延迟（tick / resetLockDelay） | ✅ 已读源码确认 | 方块「落不动」不再立即 lockPiece，改为累计 groundTimer（按重力周期累加）达 LockDelay(0.25s) 才锁定；move/rotate 成功且贴地时 resetLockDelay 把计时归零（上限 LockResetLimit=15，防无限拖延）；新块 spawn 重置为未贴地。硬降仍立即锁定。低等级重力慢时窗口实际 ≥ 重力周期。 |
+
+## ⚠️ 长按事件关键未决项（务必实跑确认）
+
+- **长按手势是否额外触发 CustomUIClicked**：标准预期是「长按只发 LongPressed+LonPressReleased，不发 Clicked」。若引擎在长按起点也发一次 Clicked，则「下键长按软降」会先误触发一次硬降（方块锁死）。联调下键时必须先验证此项；若果然如此，需把硬降改为「延迟判定 + 长按取消」方案。
+- **长按阈值**：引擎判定 LongPressed 的按住时长阈值未知（影响 DAS 手感，当前配置 DAS=0.16s 为连发首延迟，与引擎阈值无关，仅控制连发起步）。
+- 连发实现用 `owner:AddTimerOnce` 递归（因 `AddTimer(...,0)` 实测不触发），并以 `_moveHoldGen` / `_softDropGen` 代际令牌防残留定时器串扰。
 
 ## 已验证不存在的 API（曾错误使用，避免重复踩坑）
 
