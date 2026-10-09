@@ -315,6 +315,37 @@ TetrisConfig.NativeUI = {
     RetryInterval = 0.5,   -- 重发间隔（秒）
 }
 
+-- ===================== 远景背景墙（4×3 模型块，置于盘面背后） =====================
+-- 完全复用盘面的「视线前向 / 右向 / 上向(+Z) / 偏航」基底：
+--   墙心 = 盘心 + 视线前向(装置→盘面) * DistanceX（即盘面背后 X 米）；
+--   4 列沿盘面 right 向量展开，3 行沿世界 +Z 展开；每块复用盘面偏航旋转、放大 ScaleN 倍。
+-- X 与 N 均为运行后手调参数（直接改这里重跑即可）。
+TetrisConfig.BackgroundWall = {
+    Enabled = true,         -- 是否生成远景背景墙
+    DistanceX = 40,         -- 墙心位于盘心沿视线方向再前 X 米（盘面背后距离，调此值）
+    ScaleN = 10,            -- 每个块放大倍数（模型原生尺寸 × N）
+    Cols = 4,               -- 横向块数（沿盘面 right）
+    Rows = 3,               -- 纵向块数（沿世界 +Z）
+    BlockBaseSize = 1,      -- 模型原生边长（米），块间距 pitch = BaseSize*N + Gap
+    BlockGap = 0,           -- 块间空隙（米）
+    -- 12 个模型块的资源键（AssetRef / CreativeAsset 预设 key，形如 "44_CreativeAsset_3400003"）。
+    -- 数量 < 12 时按索引循环复用；只填 1 个 key 即代表 12 块为同一模型。为空则跳过并告警。
+    BlockKeys = {
+        "50_CreativeAsset_111637870",
+        "50_CreativeAsset_111726298",
+        "50_CreativeAsset_111005022",
+        "50_CreativeAsset_114960804",
+        "50_CreativeAsset_115776786",
+        "50_CreativeAsset_117344364",
+        "50_CreativeAsset_113077723",
+        "50_CreativeAsset_114321708",
+        "50_CreativeAsset_111886810",
+        "50_CreativeAsset_113868679",
+        "50_CreativeAsset_116411456",
+        "50_CreativeAsset_111151203",
+    },
+}
+
 -- ===================== 输入（CustomUI 按钮） =====================
 -- 按钮需在编辑器 UI Editor 预放置，把 InstanceUUID 填到这里。
 -- 来自全局表 CreativeInstance（形如 CreativeInstance["1_CreativeInstance_xxx"]）
@@ -398,23 +429,88 @@ TetrisConfig.ModeSelect = {
     TimeoutSec = 20,          -- 无人选择时的超时秒数，超时按 DefaultMode 自动开局
     DefaultMode = "tetris",   -- 超时或跳过选择时的兜底玩法
     PanelKey  = ci("1_CreativeInstance_23643899474805030"),   -- 选择面板（父级）
-    BtnTetris = ci("1_CreativeInstance_23643901825073557"),   -- 俄罗斯方块
+    BtnTetris = nil,   -- 俄罗斯方块
     BtnMatch4 = nil,                                          -- 四消（旧桩，本期不做；留空不注册
     BtnPuyo   = nil,                                          -- 噗哟噗哟（复用原四消按钮）：本期不显示/不注册
 }
 
--- ===================== 技能（俄罗斯方块蓄能条） =====================
--- 蓄能条 / 技能说明文本在编辑器 UI Editor 预放置，UUID 填到下面（与 ci() 同源）。
--- 规则：累计 NeedClears 次消行蓄满技能条；点击技能按钮向对手扔 GarbageRows 行垃圾；释放后清空。
+-- ===================== 技能（俄罗斯方块：3 bar + 3 power） =====================
+-- 规则：每消除 1 行获得 1 个 bar；集满 NeedBars(3) 个 bar 兑换 1 个 power（bar 清零）；
+--       最多持有 MaxPower(3) 个 power；释放技能消耗 1 个 power（技能效果由所选 SK 决定）。
+-- 控件：Bars = 3 个 bar 图片（按当前 bar 数显隐）；PowerSlots = 3 个 power 图片组件（按 power 数换图）。
 -- （本作技能仅俄罗斯方块可用；噗哟暂未接入，见 PuyoGame:OnBtnSkill 占位。）
 TetrisConfig.SkillEnabled = true
 TetrisConfig.Skill = {
-    NeedClears  = 3,                                                -- 蓄满所需「消除行数」（按行数蓄能，满则封顶）
-    GarbageRows = 4,                                                -- 释放时给对手扔的垃圾行数
-    ChargeBar   = ci("1_CreativeInstance_23643901320641840"),        -- 蓄能条（进度条控件）
-    ReadyText   = ci("1_CreativeInstance_23643901191732875"),        -- 蓄满提示文本（蓄满显示 / 用后隐藏）
-    DescText    = ci("1_CreativeInstance_23643899335684710"),        -- 技能说明文本控件
-    Desc        = "技能：向对手扔 4 行垃圾",
+    NeedBars = 3,                                       -- 集满几个 bar 兑换 1 个 power
+    MaxPower = 3,                                       -- 最多持有几个 power
+    DescText = ci("1_CreativeInstance_23643899335684710"),   -- 技能说明文本控件
+    Desc     = "消除 1 行得 1 bar，集满 3 bar 得 1 power；释放技能消耗 1 power",
+    IconImage = ci("1_CreativeInstance_23643899882881827"),   -- 局内技能 icon 图片控件（Image 控件）
+
+    -- 3 个 bar 图片（按当前 bar 数显隐：bar0=第1格, bar1=第2格, bar2=第3格/满）
+    --   编辑器里这 3 张图已是「亮起的 bar」样式，代码只切换显隐，不换图。
+    Bars = {
+        ci("1_CreativeInstance_23643901209584926"),
+        ci("1_CreativeInstance_23643899890453574"),
+        ci("1_CreativeInstance_23643900127986274"),
+    },
+    -- 3 个 power 图片组件：按当前 power 数替换为「有/无」图片
+    PowerSlots = {
+        ci("1_CreativeInstance_23643898058381685"),
+        ci("1_CreativeInstance_23643900333482517"),
+        ci("1_CreativeInstance_23643899552703951"),
+    },
+    PowerEmptyImg = "23_ImagePreset_181443179020119",    -- 无 power 时显示
+    PowerFullImg  = "23_ImagePreset_181443890598929",    -- 有 power 时显示
+}
+
+-- ===================== 技能库（开局由玩家三选一，见 doc/技能.xls） =====================
+-- 本期开放 SK-01 / SK-02 / SK-06 三个（SK-03/04/05 暂未开放）。
+-- 每个技能：
+--   key      技能编号（与表格一致）
+--   name     技能名称（用于提示文本）
+--   desc     技能说明（写入 Skill.DescText，开局替换原说明）
+--   imageKey 技能按钮图片：编辑器注册的 ImagePreset 资源 Key（形如 "23_ImagePreset_xxxx"），
+--            运行前需在 VSCode 插件注册预设并执行 update preset，使 AssetRef[imageKey] 可用；
+--            否则代码回退直接用该字符串（引擎可能不识别）。下方为占位 Key，请替换。
+--   type     "buff"（己方增益）/ "debuff"（敌方减益）
+--   其余字段为效果参数（clearRows / attackBonus），由 TetrisGame:OnBtnSkill 读取。
+TetrisConfig.Skills = {
+    SK01 = {
+        key = "SK01", name = "禁止转动", type = "debuff",
+        desc = "对手接下来 1 个方块无法旋转（左右移动 / 软降 / 硬降 / Hold 不受影响）",
+        imageKey = "23_ImagePreset_40023",   -- 替换为编辑器注册的图片预设 Key
+    },
+    SK02 = {
+        key = "SK02", name = "清除最下方两行", type = "buff", clearRows = 2,
+        desc = "删除可见区最下方 2 行，上方整体下移 2 行（不计分 / 不消行 / 不送攻击）",
+        imageKey = "23_ImagePreset_40029",   -- 替换为编辑器注册的图片预设 Key
+    },
+    SK06 = {
+        key = "SK06", name = "攻势", type = "buff", attackBonus = 1,
+        desc = "接下来 1 次消行结算时，攻击行数 +1（单消亦从 0 行变为 1 行）",
+        imageKey = "23_ImagePreset_40017",   -- 替换为编辑器注册的图片预设 Key
+    },
+}
+
+-- ===================== 技能选择（开局前置 UI：开始游戏 → 三选一） =====================
+-- 流程：开局先显示「开始游戏」按钮 → 点击后显示 3 个技能按钮（各自带技能图片）
+-- → 点击任一技能 → 该玩家 3 个按钮全部失效 → 全部选完 / 超时 → 进入玩法选择或直接开局。
+-- 控件 UUID 在编辑器 UI Editor 预放置后，从全局表 CreativeInstance 复制（形如 "1_CreativeInstance_xxxx"）。
+-- 未放置 / 未注入时自动跳过本阶段，使用 DefaultSkill。
+-- 若想「只保留技能选择、跳过玩法选择」，把 TetrisConfig.ModeSelect.Enabled 设为 false 即可。
+TetrisConfig.SkillSelect = {
+    Enabled = true,
+    TimeoutSec = 20,                -- 无人选择时的超时秒数，超时按 DefaultSkill 开局
+    DefaultSkill = "SK02",          -- 超时 / 跳过选择时的兜底技能（填 Skills 里的 key）
+    ApplyImageToSkillIcon = true,    -- 进入游戏后，把局内技能 icon 图片控件替换为所选技能图片
+
+    StartPanel = ci("1_CreativeInstance_23643901090745098"), -- 开始界面（容器面板，内含「开始游戏」按钮）：点击开始进入选择界面时整体隐藏
+    StartBtn  = ci("1_CreativeInstance_23643901825073557"),  -- 「开始游戏」按钮：点击后显示技能选择面板
+    PanelKey  = ci("1_CreativeInstance_23643901481771979"),  -- 技能选择面板（父级，内含 3 个技能按键）
+    BtnSK01   = ci("1_CreativeInstance_23643901110827074"),  -- 技能按钮：SK-01 禁止转动
+    BtnSK02   = ci("1_CreativeInstance_23643900199050294"),  -- 技能按钮：SK-02 清除最下方两行
+    BtnSK06   = ci("1_CreativeInstance_23643898051465510"),  -- 技能按钮：SK-06 攻势
 }
 
 -- ===================== 游戏提示文本（通用飘字） =====================
@@ -436,8 +532,9 @@ TetrisConfig.AI = {
 TetrisConfig.Settle = {
     Enabled = true,
     PanelKey = ci("1_CreativeInstance_23643902119497962"),   -- 结算面板（父级 Widget，SetWidgetVisible 控制显隐）    
-    ScoreLabel = ci("1_CreativeInstance_23643899546295419"),  -- 结算分数文本控件（单次 SetTextContent 显示全部玩家分数 + 胜者）
-    WinnerLabel = nil,    -- 胜者文本控件（可选，单独显示胜者）
+    P1Score = ci("1_CreativeInstance_23643899546295419"),  -- 玩家1 分数文本控件
+    P2Score = ci("1_CreativeInstance_23643901135143270"),  -- 玩家2 分数文本控件
+    WinnerLabel = ci("1_CreativeInstance_23643900539144808"),  -- 胜者ID 文本控件
     TimeLimitSec = 0,     -- 对局时间上限（秒）；0 = 不限时（仅在「一方失败」时结束）
     -- 结束游戏 API：仅「提前触发结算」时调用（自然结束已走引擎流程，不调用）。
     -- 需填一个 function(match) 函数，内部调用引擎「结束游戏」接口；未填时回退 match:Stop()（触发 OnRoundEnd）。

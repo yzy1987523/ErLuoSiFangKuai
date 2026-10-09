@@ -25,9 +25,11 @@ function TetrisGame:new(owner, opts)
     o.index = (opts and opts.index) or 0
     o.opponent = nil         -- 对手实例（环形互指）
     o.lastSeq = 0            -- 已提示过的方块生成序号
-    o.skillCharge = 0        -- 技能蓄能计数（累计消行行数，达到 NeedClears 即蓄满）
+    o.skillBars = 0          -- 当前 bar 数（0~NeedBars-1）；集满 NeedBars 兑换 1 power 后清零
+    o.skillPower = 0         -- 当前 power 数（0~MaxPower）；释放技能消耗 1 个
     o.isAI = false           -- 是否 AI 托管（对手盘自动对战）
     o.aiSeq = 0              -- AI 已规划到的 spawnSeq（避免同一块重复规划）
+    o.selectedSkill = nil    -- 本盘所选技能 key（"SK01"/"SK02"/"SK06"），由 Match 在开局前赋值
     o._shownHold = false     -- 当前 Hold 组件显隐状态：false=隐藏，数字=已显示的方块类型
     o._shownNext = false     -- 当前 Next 组件显隐状态：false=隐藏，数字=已显示的方块类型
     return o
@@ -479,7 +481,7 @@ function TetrisGame:UpdateOpponentHUD()
     if not ps or type(CustomUIAPI) ~= "table" then return end
     local opp = self.opponent
     local score = (opp and opp.board and opp.board.score) or 0
-    pcall(function() CustomUIAPI.SetTextContent(ps, id, "对手分数: " .. tostring(score)) end)
+    pcall(function() CustomUIAPI.SetTextContent(ps, id, "" .. tostring(score)) end)
 end
 
 function TetrisGame:CheckPieceSpawned()
@@ -697,18 +699,37 @@ function TetrisGame:OnBtnHold()
 end
 
 -- ---------------- 技能（蓄能条 + 释放） ----------------
--- 蓄能：累计 NeedClears 次消行蓄满（每次 lock 消≥1 行算 1 次）。
--- 释放：点击技能按钮 → 若已蓄满，向对手 board 注入 GarbageRows 行垃圾，并清空蓄能。
--- 控件 UUID 见 TetrisConfig.Skill.ChargeBar / DescText（均为进度条/文本控件，按本盘拥有者刷新）。
+-- 蓄能：每消除 1 行得 1 个 bar；集满 NeedBars 个 bar 兑换 1 个 power（bar 清零）。
+-- 释放：点击技能按钮 → 若有 power，消耗 1 个 power 发动所选技能效果。
+-- 控件 UUID 见 TetrisConfig.Skill.Bars / PowerSlots / DescText / IconImage。
 
--- 开局初始化：写说明文本 + 蓄能条置零
+-- 返回本盘所选技能的定义（TetrisConfig.Skills[key]）；无则回退默认技能
+function TetrisGame:GetSelectedSkillDef()
+    local key = self.selectedSkill
+        or (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill)
+    return (key and TetrisConfig.Skills and TetrisConfig.Skills[key]) or nil
+end
+
+-- 开局初始化：写说明文本（替换为所选技能说明）+ 蓄能条置零 + 把局内技能按钮图片换成所选技能
 function TetrisGame:InitSkillUI()
     local cfg = TetrisConfig.Skill
     if not cfg then return end
-    self.skillCharge = 0
+    self.skillBars = 0
+    self.skillPower = 0
     local ps = self:GetPlayerState()
-    if ps and type(CustomUIAPI) == "table" and cfg.DescText then
-        pcall(function() CustomUIAPI.SetTextContent(ps, cfg.DescText, cfg.Desc or "") end)
+    if ps and type(CustomUIAPI) == "table" then
+        -- 说明文本：用所选技能的 desc 替换通用说明
+        local def = self:GetSelectedSkillDef()
+        local desc = (def and def.desc) or cfg.Desc or ""
+        if cfg.DescText then
+            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.DescText, desc) end)
+        end
+        -- 局内技能 icon 图片：换成所选技能的图片（ApplyImageToSkillIcon 开关）
+        if TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.ApplyImageToSkillIcon
+           and def and def.imageKey and cfg.IconImage then
+            local imgID = (type(AssetRef) == "table" and AssetRef[def.imageKey]) or def.imageKey
+            pcall(function() CustomUIAPI.SetImageWidgetContent(ps, cfg.IconImage, imgID) end)
+        end
     end
     if TetrisConfig.HintText then
         pcall(function() CustomUIAPI.SetWidgetVisible(ps, TetrisConfig.HintText, false) end)
@@ -716,49 +737,59 @@ function TetrisGame:InitSkillUI()
     self:UpdateSkillUI()
 end
 
--- 本次 lock 消行后按「行数」累加蓄能（cleared = 本次消除行数）
+-- 本次 lock 消行后按「行数」累加 bar（cleared = 本次消除行数）
+--   每消除 1 行得 1 个 bar；集满 NeedBars 个 bar 兑换 1 个 power（bar 清零）；最多持有 MaxPower 个 power。
 function TetrisGame:onLinesCleared(cleared)
     if not cleared or cleared <= 0 then return end
     local cfg = TetrisConfig.Skill
     if not cfg then return end
-    local need = cfg.NeedClears or 3
-    local wasReady = self.skillCharge >= need
-    self.skillCharge = math.min(self.skillCharge + cleared, need)  -- 按行数蓄能，蓄满即封顶
-    self:UpdateSkillUI()
-    if not wasReady and self.skillCharge >= need then
-        self:ShowHint("技能已蓄满，点击释放！")   -- 刚达到蓄满：提示玩家
+    local needBars = cfg.NeedBars or 3
+    local maxPower = cfg.MaxPower or 3
+    for _ = 1, cleared do
+        if self.skillPower >= maxPower then break end   -- power 已满，不再累积 bar
+        self.skillBars = self.skillBars + 1
+        if self.skillBars >= needBars then
+            self.skillBars = 0
+            self.skillPower = math.min(self.skillPower + 1, maxPower)
+        end
     end
+    self:UpdateSkillUI()
 end
 
--- 刷新蓄能条（进度条控件：MaxValue=NeedClears，Value=当前蓄能）
+-- 刷新技能 UI：bar 图片按当前 bar 数显隐；power 图片组件按当前 power 数换「有/无」图
 function TetrisGame:UpdateSkillUI()
     local cfg = TetrisConfig.Skill
-    if not cfg or not cfg.ChargeBar then return end
+    if not cfg then return end
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
-    local need = cfg.NeedClears or 3
-    local ready = self.skillCharge >= need
-    pcall(function()
-        CustomUIAPI.SetProgressBarWidgetMaxValue(ps, cfg.ChargeBar, need)
-        CustomUIAPI.SetProgressBarWidgetMinValue(ps, cfg.ChargeBar, 0)
-        CustomUIAPI.SetProgressBarWidgetValue(ps, cfg.ChargeBar, math.min(self.skillCharge, need))
-    end)
-    -- 蓄满时技能按钮文字变蓝，未蓄满恢复默认白
+
+    -- bar 图片：bar0..bar2 分别表示第 1~3 格；bar 数 >= 该格序号则显示
+    local bars = cfg.Bars or {}
+    for i, id in ipairs(bars) do
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, self.skillBars >= i) end)
+    end
+
+    -- power 图片组件：按 power 数把对应槽位替换为「有 power」图，其余为「无 power」图
+    local slots = cfg.PowerSlots or {}
+    local emptyID = (type(AssetRef) == "table" and AssetRef[cfg.PowerEmptyImg]) or cfg.PowerEmptyImg
+    local fullID  = (type(AssetRef) == "table" and AssetRef[cfg.PowerFullImg]) or cfg.PowerFullImg
+    for i, id in ipairs(slots) do
+        local imgID = (self.skillPower >= i) and fullID or emptyID
+        pcall(function() CustomUIAPI.SetImageWidgetContent(ps, id, imgID) end)
+    end
+
+    -- 技能按钮：有 power 才可交互，无 power 禁用（避免玩家空点）
     local btn = TetrisConfig.UI.BtnSkill
     if btn then
-        local color = ready
-            and Game:ConstructFVectorByLuaTable({ X = 0.2, Y = 0.55, Z = 1.0 })  -- 蓝色（蓄满）
-            or Game:ConstructFVectorByLuaTable({ X = 1, Y = 1, Z = 1 })           -- 默认白（未蓄满）
-        pcall(function() CustomUIAPI.SetButtonTextColor(ps, btn, color) end)
-    end
-    -- 蓄满显示「技能就绪」文本，未蓄满 / 释放后隐藏
-    local readyText = cfg.ReadyText
-    if readyText then
-        pcall(function() CustomUIAPI.SetWidgetVisible(ps, readyText, ready) end)
+        pcall(function() CustomUIAPI.SetWidgetInteraction(ps, btn, self.skillPower > 0) end)
     end
 end
 
--- 技能按钮：蓄满才释放；向对手扔 GarbageRows 行垃圾后清空蓄能
+-- 技能按钮：蓄满才释放；按本盘所选技能决定效果，释放后清空蓄能。
+--   SK01 禁止转动：给对手盘注入 noRotateNext，其下一块无法旋转（敌方减益）
+--   SK02 清除最下方两行：本盘网格下移 clearRows 行（己方增益，不计分/不送攻击）
+--   SK06 攻势：本盘 attackBonusNext=1，下次消行攻击行数 +1（己方增益）
+--   其他 / 兜底：沿用原「向对手扔垃圾」逻辑
 function TetrisGame:OnBtnSkill()
     if not TetrisConfig.SkillEnabled then
         print("[Tetris] 技能按钮（未启用）")
@@ -767,20 +798,41 @@ function TetrisGame:OnBtnSkill()
     if not self.running or (self.board and self.board:isOver()) then return end
     local cfg = TetrisConfig.Skill
     if not cfg then return end
-    local need = cfg.NeedClears or 3
-    if self.skillCharge < need then
-        print(string.format("[Tetris][Skill] 蓄能不足（%d/%d），无法释放", self.skillCharge, need))
+    if self.skillPower <= 0 then
+        print("[Tetris][Skill] power 不足，无法释放")
+        self:ShowHint("技能 power 不足，无法释放！")
         return
     end
-    -- 释放：写入对手 pendingGarbage，对手下次 lock 时由 applyGarbage 注入底部
-    self.skillCharge = 0
-    if self.opponent and self.opponent.board and not self.opponent.board:isOver()
-       and not (self.match and self.match.over) then
-        self.opponent.board:addGarbage(cfg.GarbageRows or 4)
+    self.skillPower = self.skillPower - 1
+
+    local key = self.selectedSkill
+        or (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
+    local over = self.match and self.match.over
+
+    if key == "SK01" then
+        -- 敌方减益：对手接下来 1 个方块无法旋转
+        if self.opponent and self.opponent.board and not self.opponent.board:isOver() and not over then
+            self.opponent.board.noRotateNext = (self.opponent.board.noRotateNext or 0) + 1
+        end
+        self:ShowHint("技能【禁止转动】发动：对手下个方块无法旋转！")
+    elseif key == "SK02" then
+        -- 己方增益：清除最下方两行
+        local def = self:GetSelectedSkillDef()
+        local n = (def and def.clearRows) or 2
+        local cleared = self.board:clearBottomRows(n)
+        self.renderer:Update(self.board)
+        self:ShowHint("技能【清除最下方 " .. tostring(cleared) .. " 行】发动！")
+    elseif key == "SK06" then
+        -- 己方增益：下次消行攻击 +1
+        self.board.attackBonusNext = (self.board.attackBonusNext or 0) + 1
+        self:ShowHint("技能【攻势】发动：下次消行攻击行数 +1！")
+    else
+        -- 兜底：未知技能 key（正常不会走到，selectedSkill 必为 SK01/02/06）
+        print("[Tetris][Skill] 未知技能 key：" .. tostring(key))
     end
+
     self:UpdateSkillUI()
-    print("[Tetris][Skill] 释放：向对手扔 " .. tostring(cfg.GarbageRows or 4) .. " 行垃圾")
-    self:ShowHint("你释放技能，向对手扔出 " .. tostring(cfg.GarbageRows or 4) .. " 行垃圾！")
+    print("[Tetris][Skill] 释放技能 " .. tostring(key) .. "（玩家 " .. tostring(self.playerKey) .. "）")
 end
 
 -- ---------------- 通用游戏提示（飘字，显示 1 秒后隐藏） ----------------
@@ -824,9 +876,9 @@ function TetrisGame:aiStep()
     local b = self.board
     if not b or b:isOver() or b.clearing or b.lockPaused then return end
 
-    -- 蓄满自动放技能（向人类对手扔垃圾）
+    -- 有 power 自动放技能（按本盘所选技能效果）
     local scfg = TetrisConfig.Skill
-    if scfg and self.skillCharge >= (scfg.NeedClears or 3) then
+    if scfg and self.skillPower >= 1 then
         self:OnBtnSkill()
     end
 

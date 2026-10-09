@@ -14,6 +14,7 @@ local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
 local PuyoGame = require("EnvLua.Server.Tetris.PuyoGame")
 local TetrisModeSelect = require("EnvLua.Server.Tetris.TetrisModeSelect")
+local TetrisSkillSelect = require("EnvLua.Server.Tetris.TetrisSkillSelect")
 
 local TetrisMatch = {}
 TetrisMatch.__index = TetrisMatch
@@ -169,10 +170,27 @@ function TetrisMatch:Start()
     -- 输入路由：每个按钮注册一次，按点击者 PlayerState 分发（避免每个实例重复注册互相覆盖）
     self:RegisterInput()
 
-    -- 玩法选择阶段：先用 UI 选玩法 → 选完把玩家传送到出生点 → 再逐个开局。
-    -- 选择按钮未放置时（占位/未注入）自动跳过，保持「开局即玩」的旧行为。
-    self.modeSelect = TetrisModeSelect:new(self.owner, self)
-    self.modeSelect:Begin(assigned)
+    -- 存下已分配玩家，供技能选择结束后继续玩法选择使用
+    self.assigned = assigned
+
+    -- 技能选择阶段（开局前置）：先用 UI 选技能 → 选完 → 再进入玩法选择 / 直接开局。
+    -- 选择按钮未放置时（占位/未注入）自动跳过，使用默认技能。
+    self.skillSelect = TetrisSkillSelect:new(self.owner, self)
+    self.skillSelect:Begin(assigned)
+end
+
+-- 技能选择结束（或跳过）：按各玩家所选技能记录后，进入玩法选择（若启用）或直接开局。
+-- skillChoices: [PlayerState] = 技能 key（如 "SK01"）。未选择则回退默认技能。
+function TetrisMatch:OnSkillSelected(skillChoices)
+    self.skillChoices = skillChoices or {}
+    if TetrisConfig.ModeSelect and TetrisConfig.ModeSelect.Enabled then
+        -- 仍走「玩法选择」步骤
+        self.modeSelect = TetrisModeSelect:new(self.owner, self)
+        self.modeSelect:Begin(self.assigned or {})
+    else
+        -- 跳过玩法选择，直接按默认玩法开局
+        self:OnModeSelected({})
+    end
 end
 
 -- 玩法选择结束（或跳过选择）：按各玩家所选玩法，用正确模式构建棋盘并开局。
@@ -188,6 +206,9 @@ function TetrisMatch:OnModeSelected(choices)
         ng.playerState = g.playerState
         ng.playerKey = g.playerKey
         ng.opponent = g.opponent
+        -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
+        ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
+            or (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
         self.list[i] = ng
         if g.playerKey then self.games[g.playerKey] = ng end
         local ok = ng:Init(g.spawnPointKey)
@@ -348,32 +369,38 @@ function TetrisMatch:EndMatch(reason, early)
         self.winner and tostring(self.winner.playerKey) or "?"))
 end
 
--- 给全体玩家弹出结算面板并显示分数
+-- 给全体玩家弹出结算面板，分 3 个文本显示：玩家1分数 / 玩家2分数 / 胜者ID
 function TetrisMatch:ShowSettle(reason)
     local cfg = TetrisConfig.Settle
     if not (cfg and cfg.Enabled) then return end
     if type(CustomUIAPI) ~= "table" then return end
-    local lines = {}
+
+    -- 按 index 取玩家1(index=0)/玩家2(index=1) 分数；同时算最高分为兜底胜者
+    local p1Score, p2Score = 0, 0
     local best, bestKey = nil, nil
     for _, g in ipairs(self.list) do
         local score = (g.board and g.board.score) or 0
-        local name = g.playerKey and tostring(g.playerKey) or ("玩家" .. tostring(g.index))
-        lines[#lines + 1] = name .. "  分数: " .. tostring(score)
+        if g.index == 1 then p2Score = score
+        else p1Score = score end   -- index 0（或缺失）按玩家1
         if best == nil or score > best then best, bestKey = score, g.playerKey end
     end
-    local winnerTxt
+    local winnerKey
     if reason == "lose" and self.winner then
-        winnerTxt = "胜者: " .. tostring(self.winner.playerKey or "?")
+        winnerKey = self.winner.playerKey
     else
-        winnerTxt = "胜者: " .. tostring(bestKey or "?")
+        winnerKey = bestKey
     end
-    local text = "【结算】\n" .. table.concat(lines, "\n") .. "\n" .. winnerTxt
+    local winnerTxt = "胜者: " .. tostring(winnerKey or "?")
+
     for _, ps in ipairs(self:AllPlayerStates()) do
         if cfg.PanelKey then
             pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.PanelKey, true) end)
         end
-        if cfg.ScoreLabel then
-            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.ScoreLabel, text) end)
+        if cfg.P1Score then
+            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.P1Score, "玩家1 分数: " .. tostring(p1Score)) end)
+        end
+        if cfg.P2Score then
+            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.P2Score, "玩家2 分数: " .. tostring(p2Score)) end)
         end
         if cfg.WinnerLabel then
             pcall(function() CustomUIAPI.SetTextContent(ps, cfg.WinnerLabel, winnerTxt) end)

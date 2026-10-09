@@ -77,6 +77,9 @@ function TetrisBoard:reset()
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
     self.lastAppliedGarbage = 0   -- 最近一次被注入的垃圾行数（Game 层弹提示用，取后清零）
     self.outgoingGarbage = 0      -- 本次 lock 应发给对手的垃圾行数（对战用，外层消费）
+    self.noRotateNext = 0         -- 待生效「禁止转动」减益层数（对手 SK-01 注入，下一块起生效）
+    self.attackBonusNext = 0      -- 待生效「攻势」加成次数（本盘 SK-06，下次消行攻击 +1）
+    self.lastClearRows = 0        -- 最近一次 clearBottomRows 清除的行数（Game 层提示用）
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
     self.lastSpawned = nil
     -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
@@ -164,6 +167,11 @@ function TetrisBoard:spawn(typeOverride)
     local y = 1  -- 顶行对齐，矩阵内的空行使方块视觉上略靠下
 
     self.active = { type = t, rot = 1, x = x, y = y }
+    -- 应用「禁止转动」减益（对手 SK-01 注入）：本块无法旋转
+    if self.noRotateNext and self.noRotateNext > 0 then
+        self.active.noRotate = true
+        self.noRotateNext = self.noRotateNext - 1
+    end
     self.grounded = false         -- 新方块出生即未贴地
     self.groundTimer = 0
     self.lockResets = 0
@@ -232,6 +240,7 @@ end
 -- 旋转：dir = 1 顺时针，-1 逆时针；带 SRS 踢墙（依次尝试偏移表，含纵向）。
 function TetrisBoard:rotate(dir)
     if self.isGameOver or not self.active then return false end
+    if self.active.noRotate then return false end  -- 被「禁止转动」减益锁定
     local p = self.active
     local n = #rotationStates[p.type]
     local from = p.rot
@@ -307,6 +316,11 @@ function TetrisBoard:hold()
             x = math.floor((self.cols - size) / 2) + 1,
             y = 1,
         }
+        -- Hold 取出的方块同样计入「禁止转动」减益
+        if self.noRotateNext and self.noRotateNext > 0 then
+            self.active.noRotate = true
+            self.noRotateNext = self.noRotateNext - 1
+        end
         if not self:canPlace(self.active, self.active.x, self.active.y, 1) then
             self.isGameOver = true
         end
@@ -444,11 +458,47 @@ function TetrisBoard:clearLines(countScore)
     end
     -- 对战：把本次消除应发给对手的垃圾行数记下来，供外层（TetrisGame/TetrisMatch）消费
     if cleared > 0 and countScore ~= false then
-        self.outgoingGarbage = (TetrisConfig.Versus and TetrisConfig.Versus.GarbageTable and TetrisConfig.Versus.GarbageTable[cleared]) or 0
+        local base = (TetrisConfig.Versus and TetrisConfig.Versus.GarbageTable and TetrisConfig.Versus.GarbageTable[cleared]) or 0
+        -- 「攻势」加成（SK-06）：本次消行攻击行数 +1，仅对本次实际消行生效，用完即弃
+        local bonus = self.attackBonusNext or 0
+        if bonus > 0 then self.attackBonusNext = 0 end
+        self.outgoingGarbage = base + bonus
     else
         self.outgoingGarbage = 0
     end
     return cleared
+end
+
+-- 清除最下方 n 行（SK-02「清除最下方两行」）：
+-- 删除可见区最下方 n 行，上方全部内容整体下移 n 行（顶部 n 行清空）。
+-- 当前下落方块随场地下移（逐格尝试，避免穿过障碍 / 越界）。
+-- 不计分 / 不消行 / 不送攻击：不修改 score / lines / outgoingGarbage / combo。
+function TetrisBoard:clearBottomRows(n)
+    if self.isGameOver or self.clearing or self.lockPaused then return 0 end
+    n = n or 2
+    if n <= 0 then return 0 end
+    -- 网格整体下移 n 行：row r 取旧 row (r-n)；顶部 n 行清空；底部 n 行被删除
+    for r = self.rows, 1, -1 do
+        local src = r - n
+        if src >= 1 then
+            for c = 1, self.cols do self.grid[r][c] = self.grid[src][c] end
+        else
+            for c = 1, self.cols do self.grid[r][c] = 0 end
+        end
+    end
+    -- 当前下落方块随场地下移（逐格尝试，避免穿过障碍 / 越界）
+    if self.active then
+        local p = self.active
+        for _ = 1, n do
+            if self:canPlace(p, p.x, p.y + 1, p.rot) then
+                p.y = p.y + 1
+            else
+                break
+            end
+        end
+    end
+    self.lastClearRows = n
+    return n
 end
 
 -- 渲染层消费：取走本次被消除的行号（取后清空，避免重复处理）
