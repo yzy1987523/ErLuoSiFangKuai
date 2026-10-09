@@ -168,6 +168,10 @@ function TetrisSkillSelect:OnStartClicked(ps)
     if self.done or self._started then return end
     self._started = true
     local cfg = cfgOf()
+    -- 点击「开始游戏」：此刻才隐藏原生 UI（不在 OnStart 隐藏，规避联机延迟开局的时机竞争）
+    if self.owner and self.owner.nativeUI then
+        self.owner.nativeUI:Hide()
+    end
     self:ShowForAll(cfg.StartPanel, false)        -- 隐藏开始界面（整体）
     self:ShowForAll(cfg.StartBtn, false)          -- 隐藏开始按钮（冗余保险）
     for _, p in ipairs(self.players) do

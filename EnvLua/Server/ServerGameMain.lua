@@ -33,8 +33,9 @@ function ServerGameMain:OnStart()
     -- 由各玩法自身的 Hide/Restore 改为全局一次性屏蔽，靠 RetryFrames + PlayerBorn 兜底保持隐藏。
     local ok, NativeUI = pcall(require, "EnvLua.Server.Tetris.TetrisNativeUI")
     if ok and NativeUI then
+        -- 仅创建实例（收集控件类型）；实际隐藏推迟到玩家点击「开始游戏」按钮时执行，
+        -- 见 TetrisSkillSelect:OnStartClicked。
         self.nativeUI = NativeUI:new(self)
-        self.nativeUI:Hide()
     else
         print("[ServerGameMain][WARN] TetrisNativeUI 加载失败，原生 UI 未屏蔽")
     end
