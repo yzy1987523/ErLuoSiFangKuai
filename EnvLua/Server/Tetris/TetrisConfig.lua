@@ -306,7 +306,7 @@ TetrisConfig.Render = {
 -- ===================== 原生 UI（引擎自带 HUD / 屏幕操作按钮） =====================
 -- 用 NativeControlAPI 控制，类型枚举见 EnvLua/Core/Define/CommonDefine.lua:668 NativeControlType（1~30）。
 TetrisConfig.NativeUI = {
-    Enabled = true,        -- 开局隐藏、回合结束还原
+    Enabled = true,        -- 进入游戏即隐藏原生 UI，且不再还原
     -- 需要保留显示的控件类型（填 NativeControlType 数值），空表 = 全隐藏。
     -- 注意：NativeControlType 由编辑器运行时注入，本文件（纯数据）里不便直接引用，需要保留时填数字，
     -- 例：KeepTypes = { 1 } 表示保留小地图。

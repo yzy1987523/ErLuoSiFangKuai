@@ -7,7 +7,6 @@ pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisBoard = require("EnvLua.Server.Tetris.TetrisBoard")
 local TetrisRenderer = require("EnvLua.Server.Tetris.TetrisRenderer")
-local TetrisNativeUI = require("EnvLua.Server.Tetris.TetrisNativeUI")
 local TetrisAI = require("EnvLua.Server.Tetris.TetrisAI")
 
 local TetrisGame = {}
@@ -18,7 +17,6 @@ function TetrisGame:new(owner, opts)
     o.owner = owner          -- WoWObject，用于 AddTimerOnce / AddVPEvent
     o.board = nil
     o.renderer = nil
-    o.nativeUI = TetrisNativeUI:new(owner)   -- 原生 HUD / 操作按钮显隐
     o.running = false
     o.playerState = (opts and opts.playerState) or nil  -- 上屏用；对战模式下由 Match 赋值
     o.playerKey = nil
@@ -49,7 +47,7 @@ end
 function TetrisGame:Start()
     if self.running then return end
     self.running = true
-    self.nativeUI:Hide()     -- 隐藏全部原生 UI，只留自建 CustomUI
+    -- 原生 UI 已在 ServerGameMain:OnStart（玩家打开游戏）统一屏蔽，此处不再重复触发
     if not self.match then
         self:RegisterInput()  -- 对战模式下由 TetrisMatch 统一注册并按玩家路由
     end
@@ -233,7 +231,7 @@ end
 function TetrisGame:Stop()
     if not self.running then return end
     self.running = false
-    self.nativeUI:Restore()  -- 回合结束还原原生 UI
+    -- 原生 UI 在进入游戏时即屏蔽，且不再还原（保持隐藏直到进程结束）
     -- 还原相机与玩家状态（解锁视角/移动、复位偏移与速度）
     if type(CameraAPI) == "table" then
         local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)

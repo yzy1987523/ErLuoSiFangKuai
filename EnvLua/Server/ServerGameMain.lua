@@ -28,6 +28,16 @@ function ServerGameMain:OnStart()
     local MatchClass = GetTetrisMatch()
     self.tetris = MatchClass:new(self)
     self.tetris:Init()
+
+    -- 玩家打开游戏（加载完成）即屏蔽原生 UI，不等回合/战斗开始；且不再还原。
+    -- 由各玩法自身的 Hide/Restore 改为全局一次性屏蔽，靠 RetryFrames + PlayerBorn 兜底保持隐藏。
+    local ok, NativeUI = pcall(require, "EnvLua.Server.Tetris.TetrisNativeUI")
+    if ok and NativeUI then
+        self.nativeUI = NativeUI:new(self)
+        self.nativeUI:Hide()
+    else
+        print("[ServerGameMain][WARN] TetrisNativeUI 加载失败，原生 UI 未屏蔽")
+    end
 end
 
 --- OnGameStart: Callback when game process enters start.

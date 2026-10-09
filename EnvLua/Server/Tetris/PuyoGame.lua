@@ -62,7 +62,7 @@ end
 function PuyoGame:Stop()
     if not self.running then return end
     self.running = false
-    self.nativeUI:Restore()
+    -- 原生 UI 在游戏打开时即屏蔽且不再还原，此处不还原（避免覆盖全局隐藏）
     if type(CameraAPI) == "table" then
         local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
         if ok and arr and arr.Num and arr:Num() > 0 then
