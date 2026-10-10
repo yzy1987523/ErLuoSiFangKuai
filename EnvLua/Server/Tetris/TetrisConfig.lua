@@ -516,6 +516,10 @@ TetrisConfig.SkillSelect = {
 -- ===================== 游戏提示文本（通用飘字） =====================
 -- 任意提示（扔垃圾 / 被扔垃圾 / 技能就绪等）写入该文本，显示 HintDuration 秒后自动隐藏。
 TetrisConfig.HintText = ci("1_CreativeInstance_23643899752970406")
+-- Loading 加载界面：开局与「选技能后对象生成」期间显示的遮罩控件
+TetrisConfig.LoadingScreen = ci("1_CreativeInstance_23643899809238462")
+-- Loading 进度条：loading 显示期间 10 秒内从 0 填充到 100%
+TetrisConfig.LoadingProgress = ci("1_CreativeInstance_23643899128297494")
 TetrisConfig.HintDuration = 2   -- 提示显示时长（秒），到点自动隐藏
 
 -- ===================== AI 对手（单人模式） =====================
@@ -568,13 +572,14 @@ TetrisConfig.SceneObjects = {
     -- 出生点装置：玩家在此生成；棋盘在其前方 BoardForwardDistM 米处生成（来自全局表 CreativeInstance）。
     -- 盘面与固定相机均以该装置为唯一基准（CameraMarkerKey / SpawnMarkerKey 已废弃）。
     -- 出生点装置 1：第 1 名玩家在此生成，棋盘在其正前方 BoardForwardDistM 米处
-    SpawnPointKey   = "1_CreativeInstance_23643902182242797",
+    SpawnPointKey   = "1_CreativeInstance_23643902170822016",
+    
     -- 出生点装置 2：第 2 名玩家在此生成（无第 2 人时该盘作为旁观盘渲染）
-    SpawnPointKey2  = "1_CreativeInstance_23643899985433396",    
+    SpawnPointKey2  = "1_CreativeInstance_23643899581850377",    
 }
 
 -- 出生点装置前方生成棋盘的距离（米，可配置）：棋盘中心 = 装置位置 + 世界 +Y(北) * 该值。
-TetrisConfig.BoardForwardDistM = 32
+TetrisConfig.BoardForwardDistM = 36
 
 -- 盘面左右偏移（米，沿盘面右向量 right，正=向玩家右手侧移）：与 BoardForwardDistM 垂直，仅平移不改朝向/前后。
 TetrisConfig.BoardSideOffsetM = 0
@@ -600,8 +605,8 @@ TetrisConfig.Camera = {
     OffsetYM = 0,         -- Y 偏移通常设 0（左/右微调）
     OffsetZM = 0,         -- Z 偏移：相机相对默认位的上下（米）；想俯视盘面上方设正值，想仰视设负值
     ZExtraM = 0,          -- 兼容旧名（被 OffsetZM 优先读取）
-    LockMovement = true,  -- 是否锁定玩家移动（固定位置，仅供观战）
-    LockRotation = true,   -- 是否锁定摄像机旋转（玩家无法自由转视角，始终看向盘心）
+    LockMovement = false, -- 是否锁定玩家移动（固定位置，仅供观战）—— 临时去掉限制：允许玩家自由移动
+    LockRotation = false,  -- 是否锁定摄像机旋转（玩家无法自由转视角，始终看向盘心）—— 临时去掉限制：允许自由转视角
 }
 
 -- ===================== 调试 =====================

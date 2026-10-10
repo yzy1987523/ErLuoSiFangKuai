@@ -203,13 +203,13 @@ function TetrisSkillSelect:OnPick(ps, key)
 
     self.choices[ps] = key
 
-    -- 该玩家选完：其 3 个技能按钮全部失效（禁用交互）并隐藏面板
+    -- 该玩家选完：其 3 个技能按钮全部失效（禁用交互）；面板暂不隐藏，
+    -- 待 loading 隐藏时由 TetrisMatch 统一隐藏选择界面。
     for _, id in ipairs(self:SkillButtonIDs()) do
         if id ~= nil then
             pcall(function() CustomUIAPI.SetWidgetInteraction(ps, id, false) end)
         end
     end
-    self:ShowPanelFor(ps, false)
 
     print(string.format("[Tetris][Skill] 玩家 %s 选择：%s", tostring(keyOf(ps)), self:SkillName(key)))
     self:Notify(ps, "已选择技能：" .. self:SkillName(key))
@@ -232,7 +232,7 @@ end
 function TetrisSkillSelect:Finish()
     if self.done then return end
     self.done = true
-    self:ShowAll(false)
+    -- 不在此隐藏选择界面：保持可见，待 loading 隐藏时由 TetrisMatch 统一隐藏。
     -- 未选择的玩家回填默认技能
     local def = cfgOf().DefaultSkill or "SK02"
     for _, ps in ipairs(self.players) do

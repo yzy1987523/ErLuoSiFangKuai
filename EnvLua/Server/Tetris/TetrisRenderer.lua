@@ -125,9 +125,6 @@ function TetrisRenderer:ResolveOrigin(spawnPointKey)
         if type(FRotator) == "table" and FRotator.MakeFromEuler then
             self.rot = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = self.boardYaw }))
         end
-        print(string.format(
-            "[Tetris] 锚点=%s loc=(%.2f,%.2f,%.2f) 前方(%.2f,%.2f) offDeg=%.1f 前方%.1fm center=(%.2f,%.2f,%.2f) yaw=%.1f",
-            tostring(fsrc), spawnLoc.X, spawnLoc.Y, spawnLoc.Z, fx, fy, offDeg, dist, center.X, center.Y, center.Z, self.boardYaw))
         return origin
     end
 
@@ -346,7 +343,6 @@ function TetrisRenderer:ProbeCreator(candidates, loc, scale)
             end
         end)
         if ok and obj then
-            print("[Tetris] 创建方式探测成功 -> " .. a.label)
             return a.mode, a.ref, obj
         end
     end
@@ -642,6 +638,129 @@ function TetrisRenderer:BuildActivePieces()
     end
 end
 
+-- ---------------- 活动方块优先构建（含 3 次 × 1s 兜底） ----------------
+-- 先确保 7 个活动方块（整体模式）生成完整，再让上层延迟构建“其他方块”（静态池 / 消行根）。
+-- 流程：生成 → 延迟 1s → 校验（7/7 是否都在）→ 不完整则重置重建，最多 3 次；3 次后无论是否完整都继续，避免死等。
+-- 玩家盘与对方盘各自持有一个 renderer 实例，故“对方的 7 个”会由对方 renderer 同步执行同一流程，无需额外协调。
+-- ---------------- 分阶段构建（由 TetrisMatch 统一编排，跨玩家盘+对方盘汇总数量） ----------------
+-- 步骤：1) 生成 4*7*2 个方块(子块) → 2) 轮询确认数量足够后“设置”14 个整体方块(根+附着)，最多 3 次
+--       → 3) 生成方框(边框) → 4) 确认方框好后，每隔 0.25s 生成 1 个静态方块直到池目标(400)。
+
+-- 生成 4×7 = 28 个子方块（暂未附着根），存于 self._pieceChildren[t]。幂等，仅生成一次。
+function TetrisRenderer:GenPieceChildren()
+    if self._childrenBuilt then return end
+    self._childrenBuilt = true
+    local r = TetrisConfig.Render
+    local step = r.CellSize + r.CellGap
+    local s = r.BlockScale
+    local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
+    local park = self.hideLoc
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local childRef = (type(AssetRef) == "table") and AssetRef[r.PieceChildPresetKey] or nil
+    if not childRef then
+        print("[Tetris][WARN] 缺 PieceChildPresetKey，活动块回退方案1")
+        self._useV1 = true
+        return
+    end
+    self._pieceChildren = {}
+    self._pieceChildrenOffsets = {}
+    for t = 1, 7 do
+        local shape = TetrisConfig.Pieces[t] and TetrisConfig.Pieces[t].shape
+        if shape then
+            local pr, pc = self:piecePivot(t)
+            local offs = {}
+            for rr = 1, #shape do
+                for cc = 1, #shape do
+                    if shape[rr][cc] == 1 then
+                        offs[#offs + 1] = { dx = (cc - pc) * step, dz = -((rr - pr) * step) }
+                    end
+                end
+            end
+            local kids = {}
+            for _, o in ipairs(offs) do
+                local cw = Game:ConstructFVectorByLuaTable({ X = park.X + right.X * o.dx, Y = park.Y + right.Y * o.dx, Z = park.Z + o.dz })
+                local child = CreativeGameAPI.CreateActor(childRef, cw, self.rot, scale, nil)
+                if child then kids[#kids + 1] = child end
+            end
+            self._pieceChildren[t] = kids
+            self._pieceChildrenOffsets[t] = offs
+        end
+    end
+end
+
+-- 本盘已生成的子方块总数（供 match 汇总轮询）。
+function TetrisRenderer:PieceChildCount()
+    local n = 0
+    if self._pieceChildren then
+        for t = 1, 7 do if self._pieceChildren[t] then n = n + #self._pieceChildren[t] end end
+    end
+    return n
+end
+
+-- 设置本盘 7 个整体方块：为每型创建隐形根并把 4 个子块挂上去（构建 self.pieces[t]）。
+-- 每次调用重置重建（供“设置 3 次”重试）；缺 root 预设时回退方案1。
+function TetrisRenderer:SetupPieceRoots()
+    if self._useV1 then
+        self:BuildActivePiecesV1()
+        return
+    end
+    self.pieces = {}
+    self.piecePool = {}
+    local r = TetrisConfig.Render
+    local s = r.BlockScale
+    local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
+    local rootRef = (type(AssetRef) == "table") and AssetRef[r.PieceRootPresetKey] or nil
+    if not rootRef then
+        print("[Tetris][WARN] 缺 PieceRootPresetKey，活动块回退方案1")
+        self:BuildActivePiecesV1()
+        return
+    end
+    self.wholePieceAttach = true
+    for t = 1, 7 do
+        local children = (self._pieceChildren and self._pieceChildren[t]) or {}
+        if #children == 4 then
+            local root = CreativeGameAPI.CreateActor(rootRef, Game:ConstructFVectorByLuaTable(self.hideLoc), self.rot, scale, nil)
+            if root then
+                pcall(function() root:SetActorHiddenInGame(false) end)
+                self.pieces[t] = { root = root, children = children, offsets = self._pieceChildrenOffsets[t], attached = false, type = t }
+                self.piecePool[#self.piecePool + 1] = self.pieces[t]
+            end
+        end
+    end
+    self:fillPieceQueue()
+end
+
+-- 本盘 7 个活动方块是否设置完整（每型 root + 4 children 都在）。
+function TetrisRenderer:ActivePiecesComplete()
+    if self._useV1 then return true end
+    for t = 1, 7 do
+        local p = self.pieces[t]
+        if not p or not p.root or not p.children or #p.children ~= 4 then return false end
+    end
+    return true
+end
+
+-- 生成方框（边框）：转发到幂等的 BuildBorder。
+function TetrisRenderer:GenBorder()
+    self:BuildBorder()
+end
+
+-- 本盘边框是否生成好。
+function TetrisRenderer:BorderDone()
+    return (self.border and #self.border > 0)
+end
+
+-- 生成一个静态方块入池（由 match 每 0.25s 调一次），直到达到本盘目标（rows*cols）。
+function TetrisRenderer:GenStaticOne()
+    local target = TetrisConfig.Board.Cols * TetrisConfig.Board.Rows
+    if #self.pool >= target then return end
+    local s = TetrisConfig.Render.BlockScale
+    local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
+    local ref = self.refTop
+    local obj = self:CreateOne(Game:ConstructFVectorByLuaTable(self.hideLoc), scale, ref)
+    if obj then self.pool[#self.pool + 1] = obj end
+end
+
 -- 方案1：每类 4 个独立子 Actor（回退用）
 function TetrisRenderer:BuildActivePiecesV1()
     if not self.origin then
@@ -774,7 +893,7 @@ end
 -- 统一活动方块池（方案3：每类 1 个隐形根 Actor + 4 个方块子 Actor 附着在根上）：
 -- 仅预建 7 个活动整体实例（每型 1 份），供下落/旋转/移动使用；分帧构建避免一次性 105 个 Actor 卡顿。
 -- 顺序写入 self.piecePool（= self.pieces[t]），由 PrimeAllPieces 预热附着后就绪。
--- 下一预览 / Hold 暂存改为「按需生成的静态方块」（见 UpdateNextPreview / UpdateHoldPreview），仅展示、不预建，
+-- 下一 / Hold 预览已改用 2D 图片展示（见 TetrisGame:UpdateHoldNextUI），不再生成 3D 静态方块，
 -- 故初始化只有 7 个整体方块；子 Actor 是真实 Actor，根一动 4 子随根原子跟随（统一运动 + 1/4 流量）。
 function TetrisRenderer:BuildWholePiecePool()
     local rootRef = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.PieceRootPresetKey] or nil
@@ -875,8 +994,7 @@ function TetrisRenderer:ProcessPoolBuild()
     end
 end
 
--- 下一个方块预览 / Hold 暂存不再预建整体实例，改为游戏进行中按需在对应位置生成静态方块
--- （见 UpdateNextPreview / UpdateHoldPreview 与 BuildPreviewBlocks），故 BuildWholePiecePool 只管 7 个活动方块。
+-- 下一 / Hold 预览已改用 2D 图片展示，不再预建/生成 3D 静态方块，故 BuildWholePiecePool 只管 7 个活动方块。
 
 -- 方案3：只传送根 Actor（平移单变换，保留 V3 的 1/4 流量优势）；
 -- 旋转由根 Actor 绕盘面垂直轴（世界 Y / UE Pitch = MakeFromEuler 的 X 分量）旋转 (rot-1)*90° 实现，
@@ -954,12 +1072,17 @@ function TetrisRenderer:acquirePiece(type)
         if p.type == type and not p.inUse then
             table.remove(self.pieceQueue, i)
             p.inUse = true
+            -- 取出即重附：打破 _everReady 冻结，保证被停放(teleport 到停车场)过的实例
+            -- 子块重新挂回根并归位，避免“复用/换出(hold)时缺子块（孤儿停在停车场）”。
+            self:EnsureWholePieceAttached(p, { rot = 1 })
+            print(string.format("[Tetris][Pool] 取出 acquire type=%d（取出后空闲 %d）", type, #self.pieceQueue))
             return p
         end
     end
     print(string.format("[Tetris][WARN] acquire 队列无空闲 type=%d 回退 self.pieces（仍属7预建池,非新生成）", type))
     local p = self.pieces[type]
     if p then p.inUse = true end
+    if p then self:EnsureWholePieceAttached(p, { rot = 1 }) end  -- 回退路径同样保证子块重新挂回根
     return p
 end
 
@@ -969,6 +1092,7 @@ function TetrisRenderer:releasePiece(p)
     p.inUse = false
     self:parkWholePieceV3(p)
     table.insert(self.pieceQueue, p)
+    print(string.format("[Tetris][Pool] 放回 release type=%d（归还后空闲 %d）", p.type, #self.pieceQueue))
 end
 
 -- 无条件幂等重试：把整体方块的 4 个子 Actor 附着到根，并烘焙当前 rot 的相对偏移。
@@ -1017,9 +1141,12 @@ end
 -- 非整体模式（回退 V1）或已就绪则直接放行。
 function TetrisRenderer:PrimeAllPieces()
     if self.piecesReady then return end
-    if not self.wholePieceAttach then
+    if self._useV1 then  -- 方案1 回退：不经整体附着，直接放行
         self.piecesReady = true
         return
+    end
+    if not self.wholePieceAttach then
+        return  -- 整体模式尚未设置好（处于构建阶段），等 SetupPieceRoots 后再预热，不提前放行
     end
     local allOk = true
     for t = 1, 7 do
@@ -1196,9 +1323,11 @@ function TetrisRenderer:parkWholePieceV3(p)
     local gap = step * 4                        -- 每种间隔 4 格，避免重叠
     local o = self.origin or r.BoardOrigin
     local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2
-    local zShow = o.Z + step * 100                -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
-    local x = midX + (p.type - 4) * gap
-    pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = o.Y, Z = zShow }), self.rot) end)
+    local zShow = o.Z + step * 25          -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
+    -- 排列朝向沿水平面旋转 90°：原沿 X 轴排开，现改为 X 居中、沿 Y 轴排开。
+    local xCenter = midX
+    local y = o.Y + (p.type - 4) * gap
+    pcall(function() p.root:K2_TeleportTo(cmVec({ X = xCenter, Y = y, Z = zShow }), self.rot) end)
 end
 
 -- 方案1：用统一变换把 4 个子 Actor 定位到当前位置
@@ -1460,173 +1589,6 @@ function TetrisRenderer:EndShowcase()
     print("[Tetris] 预览结束")
 end
 
--- 下一个 / Hold 预览均采用「按需生成的静态方块」：仅在对应位置创建若干独立方块 Actor 作展示，
--- 不参与下落/旋转，类型变化时才重建，锚点变化时仅传送跟随。无需预建整体实例，初始化只保留 7 个活动方块。
-
--- 预览静态方块采用与盘面一致的「对象池复用」：归还即传送到隐藏停车场(hideLoc)，
--- 而非销毁——本文件不存在可靠的 DestroyActor，误用会导致旧方块残留世界、新方块进入时不回收。
-function TetrisRenderer:AcquirePreviewBlock()
-    self.previewBlockPool = self.previewBlockPool or {}
-    local b = table.remove(self.previewBlockPool)
-    if b then return b end
-    local s = TetrisConfig.Render.BlockScale
-    local scale = Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s })
-    return self:CreateOne(Game:ConstructFVectorByLuaTable(self.hideLoc), scale, self.refTop)
-end
-
-function TetrisRenderer:ReleasePreviewBlock(b)
-    if not b then return end
-    pcall(function() b:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
-    self.previewBlockPool = self.previewBlockPool or {}
-    self.previewBlockPool[#self.previewBlockPool + 1] = b
-end
-
--- 在 anchor 处为某型方块生成静态展示方块（按 shape 逐格放置，沿盘面 right 展开）。返回 actor 数组。
-function TetrisRenderer:BuildPreviewBlocks(type, anchor)
-    local shape = TetrisConfig.Pieces[type] and TetrisConfig.Pieces[type].shape
-    if not shape then return nil end
-    local r = TetrisConfig.Render
-    local step = r.CellSize + r.CellGap
-    local pr, pc = self:piecePivot(type)
-    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
-    local blocks = {}
-    for rr = 1, #shape do
-        for cc = 1, #shape do
-            if shape[rr][cc] == 1 then
-                local dx = (cc - pc) * step
-                local dz = -((rr - pr) * step)
-                local b = self:AcquirePreviewBlock()
-                if b then
-                    pcall(function() b:K2_TeleportTo(cmVec({ X = anchor.X + right.X * dx, Y = anchor.Y + right.Y * dx, Z = anchor.Z + dz }), self.rot) end)
-                    blocks[#blocks + 1] = b
-                end
-            end
-        end
-    end
-    return blocks
-end
-
--- 把已生成的展示方块按新 anchor 重新排列（锚点/基准变化时跟随）。
-function TetrisRenderer:PositionPreviewBlocks(blocks, type, anchor)
-    if not blocks then return end
-    local shape = TetrisConfig.Pieces[type] and TetrisConfig.Pieces[type].shape
-    if not shape then return end
-    local r = TetrisConfig.Render
-    local step = r.CellSize + r.CellGap
-    local pr, pc = self:piecePivot(type)
-    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
-    local i = 0
-    for rr = 1, #shape do
-        for cc = 1, #shape do
-            if shape[rr][cc] == 1 then
-                i = i + 1
-                local b = blocks[i]
-                if b then
-                    local dx = (cc - pc) * step
-                    local dz = -((rr - pr) * step)
-                    pcall(function() b:K2_TeleportTo(cmVec({ X = anchor.X + right.X * dx, Y = anchor.Y + right.Y * dx, Z = anchor.Z + dz }), self.rot) end)
-                end
-            end
-        end
-    end
-end
-
--- 回收展示方块数组：归还到预览对象池（传送到隐藏停车场），供下次复用。
-function TetrisRenderer:ClearPreviewBlocks(blocks)
-    if not blocks then return end
-    for _, b in ipairs(blocks) do
-        self:ReleasePreviewBlock(b)
-    end
-end
-
--- 下一个方块预览：游戏进行中在盘面指定侧显示 nextQueue[1]；用静态方块按需生成，仅展示。
-function TetrisRenderer:UpdateNextPreview(board)
-    if not TetrisConfig.Render.EnableNextPreview then return end
-    if not board then return end
-    -- 开局展示阶段不显示下一个方块
-    if self.previewing then
-        self:ClearPreviewBlocks(self.nextPreviewBlocks)
-        self.nextPreviewBlocks = nil
-        self.nextPreviewCurType = nil
-        return
-    end
-    if not self.origin then return end
-    local r = TetrisConfig.Render
-    local step = r.CellSize + r.CellGap
-    local o = self.origin
-    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
-    local cols = TetrisConfig.Board.Cols
-    local rows = TetrisConfig.Board.Rows
-    local side = (r.NextPreviewSide == "right") and 1 or -1  -- 1=盘面右侧, -1=盘面左侧
-    local gapCells = (r.NextPreviewLeftCells and r.NextPreviewLeftCells > 0) and r.NextPreviewLeftCells or (cols + 3)
-    local off = r.NextPreviewOffset or {}
-    local sideTotal = gapCells + (off.right or 0)
-    local anchor = {
-        X = o.X + side * right.X * step * sideTotal,
-        Y = o.Y + side * right.Y * step * sideTotal,
-        Z = o.Z - step * (rows / 2) + step * (off.z or 0),
-    }
-    local nextTypes = board:getNextQueue()
-    local showT = nextTypes and nextTypes[1]
-    if not showT then
-        self:ClearPreviewBlocks(self.nextPreviewBlocks)
-        self.nextPreviewBlocks = nil
-        self.nextPreviewCurType = nil
-        return
-    end
-    -- 类型变化才重建静态方块；否则仅跟随锚点传送
-    if self.nextPreviewCurType ~= showT or not self.nextPreviewBlocks then
-        self:ClearPreviewBlocks(self.nextPreviewBlocks)
-        self.nextPreviewBlocks = self:BuildPreviewBlocks(showT, anchor)
-        self.nextPreviewCurType = showT
-    else
-        self:PositionPreviewBlocks(self.nextPreviewBlocks, showT, anchor)
-    end
-end
-
--- Hold 暂存预览：游戏进行中在盘面左侧显示 board.holdType；用静态方块按需生成，仅展示。
-function TetrisRenderer:UpdateHoldPreview(board)
-    if not TetrisConfig.Render.EnableHoldPreview then return end
-    if not board then return end
-    -- 开局展示阶段不显示 Hold
-    if self.previewing then
-        self:ClearPreviewBlocks(self.holdPreviewBlocks)
-        self.holdPreviewBlocks = nil
-        self.holdPreviewCurType = nil
-        return
-    end
-    if not self.origin then return end
-    local r = TetrisConfig.Render
-    local step = r.CellSize + r.CellGap
-    local o = self.origin
-    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
-    local cols = TetrisConfig.Board.Cols
-    local rows = TetrisConfig.Board.Rows
-    local side = (r.HoldPreviewSide == "right") and 1 or -1  -- 1=盘面右侧, -1=盘面左侧
-    local gapCells = (r.HoldPreviewGapCells and r.HoldPreviewGapCells > 0) and r.HoldPreviewGapCells or (cols + 3)
-    local off = r.HoldPreviewOffset or {}
-    local sideTotal = gapCells + (off.right or 0)
-    local anchor = {
-        X = o.X + side * right.X * step * sideTotal,
-        Y = o.Y + side * right.Y * step * sideTotal,
-        Z = o.Z - step * (rows / 2) + step * (off.z or 0),
-    }
-    local holdT = board:getHoldType()
-    if not holdT then
-        self:ClearPreviewBlocks(self.holdPreviewBlocks)
-        self.holdPreviewBlocks = nil
-        self.holdPreviewCurType = nil
-        return
-    end
-    -- 类型变化才重建静态方块；否则仅跟随锚点传送
-    if self.holdPreviewCurType ~= holdT or not self.holdPreviewBlocks then
-        self:ClearPreviewBlocks(self.holdPreviewBlocks)
-        self.holdPreviewBlocks = self:BuildPreviewBlocks(holdT, anchor)
-        self.holdPreviewCurType = holdT
-    else
-        self:PositionPreviewBlocks(self.holdPreviewBlocks, holdT, anchor)
-    end
-end
 
 -- ---------------- 创建全部格子并隐藏 ----------------
 function TetrisRenderer:Build(spawnPointKey)
@@ -1646,7 +1608,6 @@ function TetrisRenderer:Build(spawnPointKey)
     local keyBottom = TetrisConfig.Render.BlockAssetRefKeyBottom
     local candTop = collectRefCandidates(keyTop)
     local candBottom = collectRefCandidates(keyBottom)
-    print(string.format("[Tetris] 资源引用候选: 上区=%d 下区=%d", #candTop, #candBottom))
 
     local loc0 = Game:ConstructFVectorByLuaTable(self.hideLoc)
     local mode, refTop, firstObj
@@ -1688,7 +1649,7 @@ function TetrisRenderer:Build(spawnPointKey)
     self.mode = mode
     self.refTop = refTop
 
-    -- 对象池：预建 rows*cols 个方块 Actor 停在停车场，运行时「取出/归还」，不再有 200 固定槽。
+    -- 对象池占位（occ 必须先建好，供运行时“取出/归还”落定使用）
     self.occ = {}
     for row = 1, rows do
         self.occ[row] = {}
@@ -1696,32 +1657,23 @@ function TetrisRenderer:Build(spawnPointKey)
             self.occ[row][col] = nil
         end
     end
-    self.pool = {}
-    -- 探测阶段已建好 firstObj，直接入池；再补足到 rows*cols 个。
-    if firstObj then self.pool[#self.pool + 1] = firstObj end
-    local ref = self.refTop
-    for _ = 1, (rows * cols) - (firstObj and 1 or 0) do
-        local obj = self:CreateOne(Game:ConstructFVectorByLuaTable(self.hideLoc), scale, ref)
-        if obj then self.pool[#self.pool + 1] = obj end
-    end
+    -- 静态方块对象池：先放入探测阶段建的 firstObj，后续由 match 分阶段每 0.25s 补足到 rows*cols。
+    self._firstObj = firstObj  -- 探测阶段建的示例 Actor，留作静态池首格复用（避免空建泄漏）
+    self.pool = self._firstObj and { self._firstObj } or {}
 
     -- 消行 parent-shift 用的临时根（EmptyActor）：把要下移的方块挂上去整体位移，移完拆父还原为独立 Actor。
     local rootRef = (type(AssetRef) == "table") and AssetRef[TetrisConfig.Render.PieceRootPresetKey] or nil
     if rootRef then
         self.shiftRoot = CreativeGameAPI.CreateActor(rootRef, Game:ConstructFVectorByLuaTable(self.hideLoc), self.rot, scale, nil)
-    else
-        print("[Tetris][WARN] 缺 PieceRootPresetKey，消行 parent-shift 不可用，回退逐格传送")
     end
 
     self.built = true
-    print("[Tetris] 对象池创建完成: " .. #self.pool .. "/" .. (rows * cols)
-          .. "  模式=" .. tostring(self.mode) .. "（静态方块=独立Actor，消行=parent-shift）")
     if TetrisConfig.Debug.PrintBoardBounds then
         self:PrintBounds()
     end
-    self:BuildBorder()
-    self:BuildActivePieces()
-    return #self.pool > 0
+    -- 注意：方块的实际生成（4*7*2 子块 → 设置 14 个整体 → 方框 → 静态池）由 TetrisMatch:BuildGames
+    -- 统一分阶段编排（跨玩家盘+对方盘汇总数量）；Build 只做上述 setup（原点/引用/occ/首格），不在此生成方块。
+    return self.mode ~= nil
 end
 
 -- ---------------- 生成盘面外边框 ----------------
@@ -1778,11 +1730,7 @@ function TetrisRenderer:BuildBorder()
                         log[#log + 1] = string.format("%s/%s/%s->%s",
                             api, c.name, ri == 1 and "rot" or "nil", tostring(obj))
                         if ok and obj then
-                            if not self._borderProbeLogged then
-                                self._borderProbeLogged = true
-                                print("[Tetris][BorderProbe] 命中 -> " .. log[#log]
-                                      .. " ; 全部: " .. table.concat(log, " | "))
-                            end
+                            self._borderProbeLogged = true
                             self._borderCombo = { api = api, ref = c.val, rot = rot, refName = c.name }
                             self._borderProbeObj = obj   -- 探针实例复用为首个边框格
                             return self._borderCombo
@@ -1794,10 +1742,6 @@ function TetrisRenderer:BuildBorder()
             end
         end
         comboFailed = true
-        if not self._borderProbeLogged then
-            self._borderProbeLogged = true
-            print("[Tetris][BorderProbe] 全部失败: " .. table.concat(log, " | "))
-        end
         return nil
     end
 
@@ -2246,11 +2190,7 @@ function TetrisRenderer:Update(board)
     -- 活动方块整体层（位移/旋转只传根）
     self:RenderActivePiece(board)
 
-    -- 下一个方块预览（盘面右侧）
-    self:UpdateNextPreview(board)
-
-    -- Hold 暂存方块预览（盘面左侧）
-    self:UpdateHoldPreview(board)
+    -- 下一/Hold 预览已改用 2D 图片展示（见 TetrisGame:UpdateHoldNextUI），此处不再生成 3D 静态方块。
 
     if TetrisConfig.Debug.PrintGrid then
         local want = {}

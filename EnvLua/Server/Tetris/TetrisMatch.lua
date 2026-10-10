@@ -173,6 +173,18 @@ function TetrisMatch:Start()
     -- 存下已分配玩家，供技能选择结束后继续玩法选择使用
     self.assigned = assigned
 
+    -- 初始 Loading：打开游戏即显示，10 秒后自动隐藏（露出技能选择界面）。
+    -- _enteredGame 标记是否已进入“选技能后的开局阶段”；进入后 10 秒超时隐藏不再生效，
+    -- 改由“对象生成完成”逻辑隐藏（见 OnSkillSelected）。
+    self._enteredGame = false
+    self:ShowLoading(true)
+    self.owner:AddTimerOnce(10, function()
+        if not self._enteredGame then
+            self:ShowLoading(false)
+            print("[Tetris][Loading] 初始 10 秒超时，隐藏 loading")
+        end
+    end)
+
     -- 技能选择阶段（开局前置）：先用 UI 选技能 → 选完 → 再进入玩法选择 / 直接开局。
     -- 选择按钮未放置时（占位/未注入）自动跳过，使用默认技能。
     self.skillSelect = TetrisSkillSelect:new(self.owner, self)
@@ -183,6 +195,9 @@ end
 -- skillChoices: [PlayerState] = 技能 key（如 "SK01"）。未选择则回退默认技能。
 function TetrisMatch:OnSkillSelected(skillChoices)
     self.skillChoices = skillChoices or {}
+    -- 选完技能：进入开局阶段（_enteredGame 让初始 10s 超时隐藏失效）。
+    -- loading 在真正开始生成对象时（OnModeSelected）再显示，避免盖住中间的玩法选择界面。
+    self._enteredGame = true
     if TetrisConfig.ModeSelect and TetrisConfig.ModeSelect.Enabled then
         -- 仍走「玩法选择」步骤
         self.modeSelect = TetrisModeSelect:new(self.owner, self)
@@ -197,6 +212,23 @@ end
 -- choices: [PlayerState] = 玩法（"tetris"/"puyo"）。未选择则回退默认玩法。
 function TetrisMatch:OnModeSelected(choices)
     self.choices = choices or {}
+    -- 显示 loading（10s 进度条）。分阶段构建在 loading 显示期间立即开始进行；
+    -- 10s 到时并不立即隐藏，而是等方框生成完后才隐藏并开局落方块（见 TryStartGameplay）。
+    self._loadingTimeUp = false
+    self._borderDone = false
+    self._started = false
+    self:ShowLoading(true)
+    local selfRef = self
+    self.owner:AddTimerOnce(10, function()
+        selfRef._loadingTimeUp = true
+        selfRef:TryStartGameplay()   -- loading 到时：若方框已生成完则隐藏+开局；否则等方框
+    end)
+    -- 延迟 1 秒再开始分阶段构建（利用 loading 显示窗口；延后启动避免与开局时序冲突）。
+    self.owner:AddTimerOnce(0.5, function() self:BuildGames() end)
+end
+
+-- 构建棋盘并启动分阶段构建（落方块延后到 loading 隐藏后，由 TryStartGameplay 触发）。
+function TetrisMatch:BuildGames()
     local M = TetrisConfig.GameMode
     for i, g in ipairs(self.list) do
         -- 分配到玩家的盘 → 用该玩家所选玩法；旁观盘 → 用默认/强制玩法
@@ -212,18 +244,7 @@ function TetrisMatch:OnModeSelected(choices)
         self.list[i] = ng
         if g.playerKey then self.games[g.playerKey] = ng end
         local ok = ng:Init(g.spawnPointKey)
-        if ok then
-            if ng.playerState then
-                ng:Start()
-            elseif TetrisConfig.AI and TetrisConfig.AI.Enabled then
-                ng.isAI = true          -- 空盘改为 AI 自动对战（玩家能看到其盘面下落）
-                ng:Start()
-            else
-                ng:StartSpectator()
-            end
-            print(string.format("[Tetris][Versus] 棋盘#%d 玩家=%s 玩法=%s 已开局",
-                tostring(ng.index), tostring(ng.playerKey), tostring(mode)))
-        else
+        if not ok then
             print(string.format("[Tetris][Versus][WARN] 棋盘#%d 玩法=%s 初始化失败（出生点未注入？）",
                 tostring(g.index), tostring(mode)))
         end
@@ -234,8 +255,185 @@ function TetrisMatch:OnModeSelected(choices)
             g.opponent = self.list[i % #self.list + 1]
         end
     end
+    -- 启动分阶段构建状态机（生成 4*7*2 子块 → 设置 14 整体 → 方框 → 静态池 400）。
+    self._build = { phase = "genChildren", childTarget = 4 * 7 * 2, staticTarget = 400,
+                    childAttempts = 0, borderAttempts = 0, setupTries = 0 }
+    self:StepBuild()
+    print("[Tetris][Versus] 分阶段构建启动")
+end
+
+-- 分阶段构建状态机：genChildren → setupPieces(≤3次) → genBorder → genStatic(0.25s/个)。
+-- 关键修复：每个阶段动作完成后都必须挂下一个定时器，否则会卡死在某阶段不前进。
+-- 这里用尾部统一自调度（非终态则按阶段 delay 续跑），不再依赖分支各自挂定时器。
+function TetrisMatch:StepBuild()
+    local b = self._build
+    if not b or b.phase == "done" then return end
+    local renderers = {}
+    for _, g in ipairs(self.list) do if g.renderer then renderers[#renderers + 1] = g.renderer end end
+    if #renderers == 0 then return end
+
+    local totalChildren, allActiveOk, allBorderOk, totalStatic = 0, true, true, 0
+    for _, r in ipairs(renderers) do
+        totalChildren = totalChildren + r:PieceChildCount()
+        if not r:ActivePiecesComplete() then allActiveOk = false end
+        if not r:BorderDone() then allBorderOk = false end
+        totalStatic = totalStatic + #r.pool
+    end
+
+    if b.phase == "genChildren" then
+        for _, r in ipairs(renderers) do pcall(function() r:GenPieceChildren() end) end
+        b.childAttempts = (b.childAttempts or 0) + 1
+        if totalChildren >= b.childTarget or b.childAttempts > 8 then
+            b.phase = "setupPieces"; b.setupTries = 0
+            print(string.format("[Tetris][Build] 子块生成 %d/%d，进入设置阶段", totalChildren, b.childTarget))
+        end
+
+    elseif b.phase == "setupPieces" then
+        b.setupTries = (b.setupTries or 0) + 1
+        for _, r in ipairs(renderers) do pcall(function() r:SetupPieceRoots() end) end
+        if allActiveOk or b.setupTries >= 3 then
+            b.phase = "genBorder"
+            print(string.format("[Tetris][Build] 14 个活动方块设置完成（第%d次），进入方框阶段", b.setupTries))
+        end
+
+    elseif b.phase == "genBorder" then
+        for _, r in ipairs(renderers) do pcall(function() r:GenBorder() end) end
+        b.borderAttempts = (b.borderAttempts or 0) + 1
+        if allBorderOk or b.borderAttempts > 25 then
+            b.phase = "genStatic"
+            self._borderDone = true
+            print(string.format("[Tetris][Build] 方框生成 %s，进入静态池阶段", allBorderOk and "完成" or "超时"))
+            self:TryStartGameplay()  -- 若 loading 已到时则隐藏+开局；否则等 loading
+        end
+
+    elseif b.phase == "genStatic" then
+        for _, r in ipairs(renderers) do pcall(function() r:GenStaticOne() end) end
+        if totalStatic >= b.staticTarget then
+            b.phase = "done"
+            print(string.format("[Tetris][Build] 静态池 %d/%d 达标，分阶段构建完成", totalStatic, b.staticTarget))
+        end
+    end
+
+    -- 尾部统一自调度：非终态必挂下一个 StepBuild（生成/轮询阶段 0.2s，静态池 0.25s/个）。
+    if b.phase ~= "done" then
+        local delay = (b.phase == "genStatic") and 0.25 or 0.2
+        self.owner:AddTimerOnce(delay, function() self:StepBuild() end)
+    end
+end
+
+-- 尝试开局落方块：仅在 loading 已到时 且 方框已生成完 后执行一次（隐藏 loading + 各盘 Start）。
+function TetrisMatch:TryStartGameplay()
+    if self._started then return end
+    if not self._loadingTimeUp then return end
+    if not self._borderDone then return end
+    self._started = true
+    self:ShowLoading(false)
+    for _, g in ipairs(self.list) do
+        if g.playerState then
+            g:Start()
+        elseif TetrisConfig.AI and TetrisConfig.AI.Enabled then
+            g.isAI = true
+            g:Start()
+        else
+            g:StartSpectator()
+        end
+    end
     self:StartMatchTimer()
-    print("[Tetris][Versus] 对局开始")
+    print("[Tetris][Versus] 对局开始（loading 隐藏后）")
+end
+
+-- ---------------- Loading 加载界面控制 ----------------
+-- 显隐 Loading 控件（对全部已分配玩家；无分配时退化为全部在线玩家）。
+function TetrisMatch:ShowLoading(visible)
+    local id = TetrisConfig.LoadingScreen
+    if not id or type(CustomUIAPI) ~= "table" then
+        print("[Tetris][Loading] 未配置 LoadingScreen 或 CustomUIAPI 未注入，跳过")
+        return
+    end
+    local list = self.assigned or {}
+    if #list == 0 then
+        local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+        if ok and arr and arr.Num then
+            local t = {}
+            for i = 0, arr:Num() - 1 do local ps = arr:Get(i); if ps then t[#t + 1] = ps end end
+            list = t
+        end
+    end
+    local pid = TetrisConfig.LoadingProgress
+    for _, ps in ipairs(list) do
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, visible) end)
+        if pid then pcall(function() CustomUIAPI.SetWidgetVisible(ps, pid, visible) end) end
+    end
+    print(string.format("[Tetris][Loading] %s -> %d 名玩家", visible and "显示" or "隐藏", #list))
+    -- 进度条：显示时先归零，延迟 0.5s 再启动 10s 填充动画（让 loading 先渲染出来）；隐藏时停止动画并归零。
+    -- 幂等：已在显示中则不打断/不重启动画，避免 Start()/OnModeSelected() 被重复触发时进度动画启动多次。
+    if visible then
+        if self._loadingVisible then return end
+        self._loadingVisible = true
+        for _, ps in ipairs(list) do self:SetLoadingProgress(ps, 0) end
+        local selfRef = self
+        self.owner:AddTimerOnce(0.5, function()
+            if selfRef._loadingVisible then selfRef:StartLoadingProgress(10) end
+        end)
+    else
+        self._loadingVisible = false
+        self:StopLoadingProgress()
+        for _, ps in ipairs(list) do self:SetLoadingProgress(ps, 0) end
+        -- 进入开局阶段后：技能/玩法选择界面随 loading 一起隐藏；
+        -- 开局前(初始 10s 超时)的选择界面不动，由 _enteredGame 守卫。
+        if self._enteredGame then
+            if self.skillSelect then self.skillSelect:ShowAll(false) end
+            if self.modeSelect then self.modeSelect:ShowUI(false) end
+        end
+    end
+end
+
+-- 设置单个玩家进度条值（0~100）。引擎真实接口：SetProgressBarWidgetValue（另可设 Min/Max）。
+function TetrisMatch:SetLoadingProgress(ps, value)
+    local id = TetrisConfig.LoadingProgress
+    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function()
+        CustomUIAPI.SetProgressBarWidgetMaxValue(ps, id, 100)
+        CustomUIAPI.SetProgressBarWidgetMinValue(ps, id, 0)
+        CustomUIAPI.SetProgressBarWidgetValue(ps, id, value)
+    end)
+end
+
+-- 进度条动画：durationSec 秒内从 0 填充到 100%，每 0.5s 刷新一次。
+-- 用 _progressGen 令牌杀死旧动画：每次(重新)启动或停止都自增，tick 只在属于自己的 gen 下才继续，
+-- 避免“旧动画未停又启动新动画”导致进度条来回弹。
+function TetrisMatch:StartLoadingProgress(durationSec)
+    durationSec = durationSec or 10
+    self._progressGen = (self._progressGen or 0) + 1
+    local myGen = self._progressGen
+    local selfRef = self
+    local step = 0.5
+    local elapsed = 0
+    local function tick()
+        if selfRef._progressGen ~= myGen then return end  -- 已被新动画/停止取代，旧链自然死亡
+        elapsed = elapsed + step
+        local pct = math.min(100, math.floor(elapsed / durationSec * 100 + 0.5))
+        local list = selfRef.assigned or {}
+        if #list == 0 then
+            local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+            if ok and arr and arr.Num then
+                local t = {}
+                for i = 0, arr:Num() - 1 do local ps = arr:Get(i); if ps then t[#t + 1] = ps end end
+                list = t
+            end
+        end
+        for _, ps in ipairs(list) do selfRef:SetLoadingProgress(ps, pct) end
+        if elapsed < durationSec then
+            selfRef.owner:AddTimerOnce(step, tick)
+        end
+    end
+    self.owner:AddTimerOnce(step, tick)
+    print(string.format("[Tetris][Loading] 进度条动画启动（%ds 填充）", durationSec))
+end
+
+-- 中止进度条动画（loading 隐藏时调用）：自增令牌，使所有进行中的 tick 自然死亡。
+function TetrisMatch:StopLoadingProgress()
+    self._progressGen = (self._progressGen or 0) + 1
 end
 
 -- 是否存在 AI 托管的盘（用于单人模式 FreeLook / 相机判断）
@@ -301,7 +499,8 @@ function TetrisMatch:OnPlayerOut(loser)
     if self.over then return end
     local winner = loser.opponent
     self.winner = winner
-    self:ReportOutcome(winner, loser)   -- 把胜负 + 分数上报给引擎
+    -- 胜负 + 分数上报从「弹窗前」改到「点击结束游戏按钮时」执行（见 RegisterExitBtn），
+    -- 这里只记录胜者并弹结算面板。
     self:EndMatch("lose", false)
 end
 
@@ -359,14 +558,14 @@ end
 -- 整局结束：停所有棋盘 + 弹结算面板；early=true 时额外调用「结束游戏」API
 function TetrisMatch:EndMatch(reason, early)
     self.over = true
-    for _, g in ipairs(self.list) do
-        if g.running then g:Stop() end
-    end
+    -- for _, g in ipairs(self.list) do
+    --     if g.running then g:Stop() end
+    -- end
     self:ShowSettle(reason)
-    if early then self:CallEndGameAPI() end
-    print(string.format("[Tetris][Versus] 结算 reason=%s early=%s 胜者=%s",
-        tostring(reason), tostring(early),
-        self.winner and tostring(self.winner.playerKey) or "?"))
+    -- if early then self:CallEndGameAPI() end
+    -- print(string.format("[Tetris][Versus] 结算 reason=%s early=%s 胜者=%s",
+    --     tostring(reason), tostring(early),
+    --     self.winner and tostring(self.winner.playerKey) or "?"))
 end
 
 -- 给全体玩家弹出结算面板，分 3 个文本显示：玩家1分数 / 玩家2分数 / 胜者ID
@@ -426,7 +625,11 @@ function TetrisMatch:RegisterExitBtn()
     owner:AddVPEvent(clickId, function(_self, ps)
         -- 仅在对局已结束（结算面板已弹）时生效，避免对局中误触提前结束
         if not selfRef.over then return end
-        print("[Tetris][Settle] 「结束游戏」按钮被点击（" .. tostring(ps) .. "），执行 SetRoundGameEnd")
+        print("[Tetris][Settle] 「结束游戏」按钮被点击（" .. tostring(ps) .. "），先上报胜负+分数，再 SetRoundGameEnd")
+        -- 胜负 + 分数上报（之前在 OnPlayerOut 弹窗前执行，现延迟到此处点击结束按钮时）
+        if selfRef.winner then
+            pcall(function() selfRef:ReportOutcome(selfRef.winner, selfRef.winner.opponent) end)
+        end
         if type(GameOutcomeAPI) == "table" and type(GameOutcomeAPI.SetRoundGameEnd) == "function" then
             pcall(function() GameOutcomeAPI.SetRoundGameEnd(true) end)
         else

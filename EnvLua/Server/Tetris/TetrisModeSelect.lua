@@ -154,14 +154,7 @@ function TetrisModeSelect:OnPick(ps, mode)
 
     local resolved = self:Resolve(mode, ps)
     self.choices[ps] = resolved
-    -- 该玩家选完即隐藏其选择 UI
-    if type(CustomUIAPI) == "table" then
-        for _, id in ipairs(self:WidgetIDs()) do
-            if id ~= nil then
-                pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
-            end
-        end
-    end
+    -- 该玩家选完不立即隐藏其选择 UI，保持可见，待 loading 隐藏时统一隐藏。
     print(string.format("[Tetris][Mode] 玩家 %s 选择：%s -> %s",
         tostring(keyOf(ps)), tostring(mode), tostring(resolved)))
 
@@ -182,7 +175,7 @@ end
 function TetrisModeSelect:Finish()
     if self.done then return end
     self.done = true
-    self:ShowUI(false)
+    -- 不在此隐藏选择界面：保持可见，待 loading 隐藏时由 TetrisMatch 统一隐藏。
     for _, ps in ipairs(self.players) do
         if not self.choices[ps] then
             self.choices[ps] = self:DefaultMode()
