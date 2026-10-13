@@ -1320,10 +1320,10 @@ function TetrisRenderer:parkWholePieceV3(p)
     if not p or not p.root then return end
     local r = TetrisConfig.Render
     local step = r.CellSize + r.CellGap
-    local gap = step * 4                        -- 每种间隔 4 格，避免重叠
+    local gap = step * 3                        -- 每种间隔 1 格
     local o = self.origin or r.BoardOrigin
     local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2
-    local zShow = o.Z + step * 25          -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
+    local zShow = o.Z + step * 13         -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
     -- 排列朝向沿水平面旋转 90°：原沿 X 轴排开，现改为 X 居中、沿 Y 轴排开。
     local xCenter = midX
     local y = o.Y + (p.type - 4) * gap

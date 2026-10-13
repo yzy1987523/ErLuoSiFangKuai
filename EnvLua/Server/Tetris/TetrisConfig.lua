@@ -368,7 +368,7 @@ TetrisConfig.UI = {
     -- 分数 / 消行 / 等级 HUD 文本控件：
     --   在编辑器 UI Editor 中预放置「文本控件」，复制其 InstanceUUID 填到下面（形如 "1_CreativeInstance_xxxx"）。
     --   未放置 / 未填 → UpdateHUD 自动跳过（不报错）。占位 key 需替换为真实 InstanceUUID。
-    ScoreLabel = ci("1_CreativeInstance_23643901648620020"),
+    ScoreLabel = ci("1_CreativeInstance_23643898111776723"),
     LinesLabel = ci("1_CreativeInstance_FILL_LINES"),
     LevelLabel = ci("1_CreativeInstance_FILL_LEVEL"),
 
