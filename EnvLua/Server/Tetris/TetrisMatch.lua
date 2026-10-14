@@ -15,6 +15,8 @@ local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
 local PuyoGame = require("EnvLua.Server.Tetris.PuyoGame")
 local TetrisModeSelect = require("EnvLua.Server.Tetris.TetrisModeSelect")
 local TetrisSkillSelect = require("EnvLua.Server.Tetris.TetrisSkillSelect")
+local TetrisBehindWidget = require("EnvLua.Server.Tetris.TetrisBehindWidget")
+local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")
 
 local TetrisMatch = {}
 TetrisMatch.__index = TetrisMatch
@@ -73,6 +75,112 @@ function TetrisMatch:Init()
         self.list[#self.list + 1] = g
     end
     print(string.format("[Tetris][Versus] Match.Init 建立 %d 个棋盘占位（预览模式=%s，实际模式待选择）", #self.list, tostring(mode)))
+    -- 解耦生成：在 Init（OnStart，游戏加载即执行）阶段就基于出生点装置直接生成背后 3D UI 挂件，
+    -- 不再依赖 renderer 的盘面基底（boardCenter/boardForward/boardYaw）。生成逻辑见 TetrisBehindWidget，
+    -- 仅依赖出生点装置(CreativeInstance) + ActorPreset(AssetRef)，因此在加载时即可尝试生成；
+    -- 若出生点/资源在 OnStart 尚未就绪而失败，OnModeSelected→BuildGames 会再兜底一次。
+    if TetrisConfig.BehindBoardWidget and TetrisConfig.BehindBoardWidget.Enabled then
+        self._behindWidgets = {}
+        for i, g in ipairs(self.list) do
+            -- 仅 tetris 渲染器挂接背后挂件（PuyoRenderer 无该方法）
+            if g.renderer and type(g.renderer.BuildBehindBoardWidget) == "function" then
+                local actor = TetrisBehindWidget.Spawn(g.spawnPointKey, g.index)
+                self._behindWidgets[i] = actor
+                if actor then g.renderer._behindWidgetActor = actor end
+            end
+        end
+    end
+    -- 准备阶段内重试：Init 当下若出生点/资源未注入导致生成失败，每 0.2s 重试，
+    -- 一旦就绪立即生成（不拖到加载阶段）。进入加载构建(BuildGames)后由兜底接管，停止重试。
+    if self._behindWidgets then
+        self._bwRetry = { pending = {}, tries = 0, max = 150 }
+        for i, actor in pairs(self._behindWidgets) do
+            if not actor then self._bwRetry.pending[i] = true end
+        end
+        if next(self._bwRetry.pending) then
+            self:_retryBehindWidgets()
+        end
+    end
+        -- 远景背景 3D UI（背景图）：与 BehindBoardWidget 同思路，但纯背景、不挂接 renderer、不依赖文本组件。
+    -- 每个棋盘各 1 个（双盘 = 2 个），基于出生点装置直接生成；失败则准备阶段重试 + BuildGames 兜底。
+    if TetrisConfig.BackgroundWidget and TetrisConfig.BackgroundWidget.Enabled then
+        self._bgWidgets = {}
+        for i, g in ipairs(self.list) do
+            local actor = TetrisBackgroundWidget.Spawn(g.spawnPointKey, g.index)
+            self._bgWidgets[i] = actor
+        end
+        -- 准备阶段重试：Init 当下若出生点/资源未注入导致生成失败，每 0.2s 重试，直至就绪或进入加载构建。
+        self._bgRetry = { pending = {}, tries = 0, max = 150 }
+        for i, actor in pairs(self._bgWidgets) do
+            if not actor then self._bgRetry.pending[i] = true end
+        end
+        if next(self._bgRetry.pending) then
+            self:_retryBackgroundWidgets()
+        end
+    end
+end
+
+-- 准备/选择阶段内的轻量重试：等待出生点装置(CreativeInstance)与 ActorPreset(AssetRef) 注入就绪后生成挂件。
+-- 进入加载构建(BuildGames 设 _buildGamesStarted)后停止，交由 BuildGames 兜底；max 次(30s)为安全网。
+function TetrisMatch:_retryBehindWidgets()
+    if not self._bwRetry or not next(self._bwRetry.pending) then return end
+    if self._buildGamesStarted then  -- 已进加载构建，交给 BuildGames 兜底
+        self._bwRetry.pending = {}
+        return
+    end
+    self._bwRetry.tries = (self._bwRetry.tries or 0) + 1
+    if self._bwRetry.tries > (self._bwRetry.max or 150) then
+        print(string.format("[Tetris][Widget][WARN] 准备阶段重试超时(%d次)，交由加载阶段兜底", self._bwRetry.tries))
+        self._bwRetry.pending = {}
+        return
+    end
+    for i in pairs(self._bwRetry.pending) do
+        local g = self.list[i]
+        if g and g.renderer and type(g.renderer.BuildBehindBoardWidget) == "function" then
+            local actor = TetrisBehindWidget.Spawn(g.spawnPointKey, g.index)
+            if actor then
+                self._behindWidgets[i] = actor
+                g.renderer._behindWidgetActor = actor
+                self._bwRetry.pending[i] = nil
+                print(string.format("[Tetris][Widget] 准备阶段重试成功生成 index=%s (第%d次)",
+                    tostring(g.index), self._bwRetry.tries))
+            end
+        end
+    end
+    if next(self._bwRetry.pending) then
+        self.owner:AddTimerOnce(0.2, function() self:_retryBehindWidgets() end)
+    end
+end
+
+-- 远景背景 3D UI 准备阶段重试：等待出生点装置(CreativeInstance)与 ActorPreset(AssetRef) 注入就绪后生成。
+-- 进入加载构建(BuildGames 设 _buildGamesStarted)后停止，交由 BuildGames 兜底；max 次(30s)为安全网。
+function TetrisMatch:_retryBackgroundWidgets()
+    if not self._bgRetry or not next(self._bgRetry.pending) then return end
+    if self._buildGamesStarted then  -- 已进加载构建，交给 BuildGames 兜底
+        self._bgRetry.pending = {}
+        return
+    end
+    self._bgRetry.tries = (self._bgRetry.tries or 0) + 1
+    if self._bgRetry.tries > (self._bgRetry.max or 150) then
+        print(string.format("[Tetris][BGWidget][WARN] 准备阶段重试超时(%d次)，交由加载阶段兜底", self._bgRetry.tries))
+        self._bgRetry.pending = {}
+        return
+    end
+    for i in pairs(self._bgRetry.pending) do
+        local g = self.list[i]
+        if g then
+            local actor = TetrisBackgroundWidget.Spawn(g.spawnPointKey, g.index)
+            if actor then
+                self._bgWidgets[i] = actor
+                self._bgRetry.pending[i] = nil
+                print(string.format("[Tetris][BGWidget] 准备阶段重试成功生成 index=%s (第%d次)",
+                    tostring(g.index), self._bgRetry.tries))
+            end
+        end
+    end
+    if next(self._bgRetry.pending) then
+        self.owner:AddTimerOnce(0.2, function() self:_retryBackgroundWidgets() end)
+    end
 end
 
 -- 开局：枚举在场玩家 → 分配棋盘 → 互设对手 → 注册输入 → 玩法选择阶段（选完传送+开局）
@@ -173,17 +281,10 @@ function TetrisMatch:Start()
     -- 存下已分配玩家，供技能选择结束后继续玩法选择使用
     self.assigned = assigned
 
-    -- 初始 Loading：打开游戏即显示，10 秒后自动隐藏（露出技能选择界面）。
-    -- _enteredGame 标记是否已进入“选技能后的开局阶段”；进入后 10 秒超时隐藏不再生效，
-    -- 改由“对象生成完成”逻辑隐藏（见 OnSkillSelected）。
+    -- 不显示开局初始 Loading：技能选择界面直接呈现，Loading 仅保留在「选完技能后对象生成期」
+    -- （见 OnModeSelected）。_enteredGame 仍用于标记已进入开局阶段，供隐藏 loading 时联动隐藏
+    -- 技能/玩法选择界面。
     self._enteredGame = false
-    self:ShowLoading(true)
-    self.owner:AddTimerOnce(10, function()
-        if not self._enteredGame then
-            self:ShowLoading(false)
-            print("[Tetris][Loading] 初始 10 秒超时，隐藏 loading")
-        end
-    end)
 
     -- 技能选择阶段（开局前置）：先用 UI 选技能 → 选完 → 再进入玩法选择 / 直接开局。
     -- 选择按钮未放置时（占位/未注入）自动跳过，使用默认技能。
@@ -195,7 +296,7 @@ end
 -- skillChoices: [PlayerState] = 技能 key（如 "SK01"）。未选择则回退默认技能。
 function TetrisMatch:OnSkillSelected(skillChoices)
     self.skillChoices = skillChoices or {}
-    -- 选完技能：进入开局阶段（_enteredGame 让初始 10s 超时隐藏失效）。
+    -- 选完技能：进入开局阶段（_enteredGame 标记，供隐藏 loading 时联动隐藏选择界面）。
     -- loading 在真正开始生成对象时（OnModeSelected）再显示，避免盖住中间的玩法选择界面。
     self._enteredGame = true
     if TetrisConfig.ModeSelect and TetrisConfig.ModeSelect.Enabled then
@@ -212,14 +313,14 @@ end
 -- choices: [PlayerState] = 玩法（"tetris"/"puyo"）。未选择则回退默认玩法。
 function TetrisMatch:OnModeSelected(choices)
     self.choices = choices or {}
-    -- 显示 loading（10s 进度条）。分阶段构建在 loading 显示期间立即开始进行；
-    -- 10s 到时并不立即隐藏，而是等方框生成完后才隐藏并开局落方块（见 TryStartGameplay）。
+    -- 显示 loading（LoadingTime 秒进度条）。分阶段构建在 loading 显示期间立即开始进行；
+    -- 到时并不立即隐藏，而是等方框生成完后才隐藏并开局落方块（见 TryStartGameplay）。
     self._loadingTimeUp = false
     self._borderDone = false
     self._started = false
     self:ShowLoading(true)
     local selfRef = self
-    self.owner:AddTimerOnce(10, function()
+    self.owner:AddTimerOnce(TetrisConfig.LoadingTime, function()
         selfRef._loadingTimeUp = true
         selfRef:TryStartGameplay()   -- loading 到时：若方框已生成完则隐藏+开局；否则等方框
     end)
@@ -229,6 +330,7 @@ end
 
 -- 构建棋盘并启动分阶段构建（落方块延后到 loading 隐藏后，由 TryStartGameplay 触发）。
 function TetrisMatch:BuildGames()
+    self._buildGamesStarted = true  -- 进入加载构建：停止准备阶段挂件重试，改由本函数兜底
     local M = TetrisConfig.GameMode
     for i, g in ipairs(self.list) do
         -- 分配到玩家的盘 → 用该玩家所选玩法；旁观盘 → 用默认/强制玩法
@@ -241,6 +343,31 @@ function TetrisMatch:BuildGames()
         -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
         ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
             or (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
+        -- 背后 3D UI 挂件（解耦于 renderer，归 Match 持有 self._behindWidgets）：
+        -- Init 已基于出生点尝试生成（可能因装置/资源未就绪失败）；此处（OnModeSelected 已就绪）兜底补一次。
+        -- 仅 tetris 渲染器(有 BuildBehindBoardWidget)挂接；puyo 盘不挂接并销毁已生成的 widget，保持原语义。
+        local bwSupports = ng.renderer and type(ng.renderer.BuildBehindBoardWidget) == "function"
+        if bwSupports then
+            if not self._behindWidgets[i] then
+                self._behindWidgets[i] = TetrisBehindWidget.Spawn(g.spawnPointKey, g.index)
+            end
+            ng.renderer._behindWidgetActor = self._behindWidgets[i] or nil
+        elseif self._behindWidgets[i] then
+            pcall(function()
+                if type(self._behindWidgets[i].K2_DestroyActor) == "function" then
+                    self._behindWidgets[i]:K2_DestroyActor()
+                end
+            end)
+            self._behindWidgets[i] = nil
+        end
+        -- 远景背景 3D UI（背景图）：兜底补生成（Init 未就绪时）。纯背景、不挂接 renderer，
+        -- 每个棋盘各 1 个，已生成则跳过（幂等）。
+        if TetrisConfig.BackgroundWidget and TetrisConfig.BackgroundWidget.Enabled then
+            if not self._bgWidgets then self._bgWidgets = {} end
+            if not self._bgWidgets[i] then
+                self._bgWidgets[i] = TetrisBackgroundWidget.Spawn(g.spawnPointKey, g.index)
+            end
+        end
         self.list[i] = ng
         if g.playerKey then self.games[g.playerKey] = ng end
         local ok = ng:Init(g.spawnPointKey)
@@ -328,14 +455,27 @@ function TetrisMatch:TryStartGameplay()
     if not self._borderDone then return end
     self._started = true
     self:ShowLoading(false)
+
+    -- 单人/双人判定：用"可操作 pawn 数"判定真人（比 GetAllPlayerStates():Num() 更准，
+    -- 单人环境引擎可能多报一个无 pawn 的 PlayerState）。真人 <2 => 单人（多余盘作 AI 对手）；
+    -- >=2 => 双人（正常对战）。盘面恒为 2（spawnKeys 配 2 个出生点）。
+    local stateCount, pawnCount = 0, 0
+    local okS, pstates = pcall(function() return Game:GetAllPlayerStates() end)
+    if okS and pstates and type(pstates.Num) == "function" then stateCount = pstates:Num() end
+    local okP, parrs = pcall(function() return Game:GetAllPlayerPawns() end)
+    if okP and parrs and type(parrs.Num) == "function" then pawnCount = parrs:Num() end
+    local realPlayers = (pawnCount > 0) and pawnCount or stateCount
+    local isSingle = realPlayers < 2
+    print(string.format("[Tetris][Versus] 模式=%s（盘面数=%d）",
+        isSingle and "单人(AI对手)" or "双人", #self.list))
+
     for _, g in ipairs(self.list) do
         if g.playerState then
             g:Start()
-        elseif TetrisConfig.AI and TetrisConfig.AI.Enabled then
+        else
+            -- 无真人分配：单人模式下作为 AI 对手（双人模式两盘都已分配真人，不会走到这）
             g.isAI = true
             g:Start()
-        else
-            g:StartSpectator()
         end
     end
     self:StartMatchTimer()
@@ -365,7 +505,7 @@ function TetrisMatch:ShowLoading(visible)
         if pid then pcall(function() CustomUIAPI.SetWidgetVisible(ps, pid, visible) end) end
     end
     print(string.format("[Tetris][Loading] %s -> %d 名玩家", visible and "显示" or "隐藏", #list))
-    -- 进度条：显示时先归零，延迟 0.5s 再启动 10s 填充动画（让 loading 先渲染出来）；隐藏时停止动画并归零。
+    -- 进度条：显示时先归零，延迟 0.5s 再启动 LoadingTime 秒填充动画（让 loading 先渲染出来）；隐藏时停止动画并归零。
     -- 幂等：已在显示中则不打断/不重启动画，避免 Start()/OnModeSelected() 被重复触发时进度动画启动多次。
     if visible then
         if self._loadingVisible then return end
@@ -373,7 +513,7 @@ function TetrisMatch:ShowLoading(visible)
         for _, ps in ipairs(list) do self:SetLoadingProgress(ps, 0) end
         local selfRef = self
         self.owner:AddTimerOnce(0.5, function()
-            if selfRef._loadingVisible then selfRef:StartLoadingProgress(10) end
+            if selfRef._loadingVisible then selfRef:StartLoadingProgress(TetrisConfig.LoadingTime) end
         end)
     else
         self._loadingVisible = false
@@ -403,7 +543,7 @@ end
 -- 用 _progressGen 令牌杀死旧动画：每次(重新)启动或停止都自增，tick 只在属于自己的 gen 下才继续，
 -- 避免“旧动画未停又启动新动画”导致进度条来回弹。
 function TetrisMatch:StartLoadingProgress(durationSec)
-    durationSec = durationSec or 10
+    durationSec = durationSec or TetrisConfig.LoadingTime
     self._progressGen = (self._progressGen or 0) + 1
     local myGen = self._progressGen
     local selfRef = self

@@ -337,6 +337,12 @@ end
 function TetrisBoard:lockPiece()
     if not self.active then return end
     local p = self.active
+    -- 方块正常锁定（落地）即计 1 分：每次 lockPiece 调用一次，重力落地与硬降都算。
+    self.score = self.score + TetrisConfig.Score.LockPerPiece
+    if TetrisConfig.Debug and TetrisConfig.Debug.LockDbg then
+        print(string.format("[Tetris][LockDbg] 锁定加分 board=%s isAI=%s score=%s",
+            tostring(self.index), tostring(self.isAI), tostring(self.score)))
+    end
     local m = rotationStates[p.type][p.rot]
     local n = #m
 

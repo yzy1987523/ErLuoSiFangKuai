@@ -43,6 +43,10 @@ EnvLua/Server/ErLuoSiFangKuai/   # 玩法代码放这里（可写区）
 | TetrisBoard:softDrop() | ✅ 已读源码确认 | 软降一格：成功下移并 +SoftDropPerCell 分，解除贴地状态；触底返回 false（不锁定），由重力/锁定延迟接管。 |
 | TetrisBoard:hardDrop() | ✅ 已读源码确认 | 硬降：直接落底并 lockPiece() 锁定，+dist*HardDropPerCell 分。 |
 | TetrisBoard 落地锁定延迟（tick / resetLockDelay） | ✅ 已读源码确认 | 方块「落不动」不再立即 lockPiece，改为累计 groundTimer（按重力周期累加）达 LockDelay(0.25s) 才锁定；move/rotate 成功且贴地时 resetLockDelay 把计时归零（上限 LockResetLimit=15，防无限拖延）；新块 spawn 重置为未贴地。硬降仍立即锁定。低等级重力慢时窗口实际 ≥ 重力周期。 |
+| 3D 世界挂件 WidgetComponent 取子控件 + 写文本 | ✅ 2026-10-14 实跑验证 | `actor:GetComponentByClass("WidgetComponent")` 取组件 → `Game:GetAllPlayerPawns()`（LuaArray，`:Num()/:Get(i)` 0基）取 pawn → `wc:GetUserWidgetObject(pawn)` 取 WoWUserWidget → `uw:GetWidgetFromName("控件名")` 取子控件 → `tw:SetTextContent(文本)`。详见 `doc/3D-UI-组件使用指南.md`。 |
+| 3D 挂件子控件无 InstanceUUID | ✅ 2026-10-14 实跑验证 | `tw:GetWoWObjectID()`/`GetInstanceUUID()` 均返回 nil；3D 挂件内部子控件不能用 `CustomUIAPI.SetAllPlayerTextContent(uuid,text)`，必须直接对 `tw` 对象 `SetTextContent`（世界空间共享渲染，全员生效）。 |
+| 3D 挂件图片控件换图 | ✅ 2026-10-14 实跑验证 | `uw:GetWidgetFromName("图片控件名")` 取 `WoWCustomUIImage` → `w:SetImageContent(AssetRef["<ImageKey>"])`；`ImageID` 实际传 `AssetRef` 句柄（非整数 ID，与 2D HUD `resolveImg` 约定一致）。子控件 wrapper 不转发 `GetName()`，取编辑器名需 `w:GetProxy():GetName()`；定位图片推荐直接用 `GetWidgetFromName(编辑器名)`。详见 `doc/3D-UI-组件使用指南.md` 第 10 节。 |
+| 获取玩家显示名 | ✅ 2026-10-14 实跑验证 | Core 无独立 `GetPlayerName()`。玩家名是 `WoWPlayerStateBase.PlayerName`（只读字段）。取 PlayerState 三法：`Game:GetAllPlayerStates()`（LuaArray，`:Num()/:Get(i)` 0基）、`pawn:GetPlayerState()`（`pawn` 为 `WoWSTExtraBaseCharacterBase`）、`Game:GetPlayerStateByPlayerKey(key)`；取稳定标识 `PlayerState:GetPlayerKey()→number`。示例：`ps.PlayerName`、`ps:GetPlayerKey()`。**注意**：冒号取方法本身语法报错，引用方法用点号 `ps.GetPlayerKey` 再 `ps:GetPlayerKey()`。 |
 
 ## ⚠️ 长按事件关键未决项（务必实跑确认）
 

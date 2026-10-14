@@ -38,7 +38,10 @@ end
 -- ---------------- 生命周期 ----------------
 function TetrisGame:Init(spawnPointKey)
     self.board = TetrisBoard:new()
-    self.renderer = TetrisRenderer:new(self.owner)
+    -- 调试用：把"哪块盘"的身份注入数据层，便于 lockPiece 打印区分玩家盘 / 对手盘
+    self.board.index = self.index
+    self.board.isAI = self.isAI
+    self.renderer = TetrisRenderer:new(self.owner, self.index)
     local ok = self.renderer:Build(spawnPointKey or self.spawnPointKey)
     -- 刻意不在 Build 之后立刻刷新：此时实例尚未 spawn，显隐指令会被丢弃。
     -- 实际刷新交给 Start 里的稳定期调度。
@@ -400,6 +403,10 @@ end
 function TetrisGame:UpdateHUD()
     local b = self.board
     if not b then return end
+    -- 3D 挂件分数：与 2D HUD 解耦，不依赖 playerState（AI 盘 GetPlayerState 返回 nil，也要刷新对手盘分数）
+    if self.renderer and self.renderer.SetWidgetOpponentScore then
+        self.renderer:SetWidgetOpponentScore(b.score)
+    end
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
     self:UpdateHoldNextUI()                       -- 2D Hold / Next 方块预览

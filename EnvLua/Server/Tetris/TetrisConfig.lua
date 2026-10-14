@@ -182,6 +182,7 @@ TetrisConfig.Score = {
     LineClear = { 100, 300, 500, 800 },  -- 1/2/3/4 行基础分（乘以等级）
     SoftDropPerCell = 1,
     HardDropPerCell = 2,
+    LockPerPiece = 1,                     -- 方块正常锁定（落地）即计 1 分（与消行/软降/硬降加分叠加）
     ComboBonus = 50,                      -- 连续消除奖励（乘以 combo 次数）
 }
 
@@ -344,6 +345,49 @@ TetrisConfig.BackgroundWall = {
         "50_CreativeAsset_116411456",
         "50_CreativeAsset_111151203",
     },
+}
+
+-- ===================== 盘面背后 3D UI 挂件（WidgetComponent Actor） =====================
+-- 需求：每个盘面（双盘各一）的「背后」各生成 1 个带 WidgetComponent 的 Actor，用于显示 3D UI。
+-- 定位完全复用盘面基底（与背景墙同源）：
+--   挂件位置 = 盘心 + 视线前向(装置→盘面, 即 boardForward) * DistanceBehindM（盘面背后若干米）；
+--   旋转复用盘面偏航 self.rot（与盘面同向，使 3D UI 正面朝向玩家）。
+-- 必须在 AssetRef 注册该 ActorPreset 并执行 update preset（GenerateAssetRef.lua 才会生成键）。
+TetrisConfig.BehindBoardWidget = {
+    Enabled = true,                                   -- 是否生成盘面背后 3D UI 挂件
+    PresetKey = "46_ActorPreset_1273493010",           -- 带 WidgetComponent 的 Actor 预设键（AssetRef）
+    DistanceBehindM = 0.6,                               -- 盘心沿视线方向再向后推的距离（盘面背后，调此值）
+    Scale = { X = 10, Y = 10, Z = 10 },                   -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    SideOffsetM = -0.72,                                   -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
+    HeightOffsetM = -2.8,                                 -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
+    -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让挂件呈对称倾斜。
+    -- 1号 +45°、2号 −45°；未列出的棋盘不额外偏置（0°）。
+    -- 测试时用-45，正式用-180
+    RotationBiasByIndex = { [1] = -180, [2] = 180 },
+    -- 挂件 Actor 上「对方分数」文本组件：运行时从 Actor 实例按 组件名/类名 直接获取（不依赖 UUID）。
+    -- 两个挂件各生成一个，组件就在各自 Actor 下，按实例获取天然互不干扰（盘1挂件显盘2分、盘2挂件显盘1分）。
+    -- 候选名与候选类都会尝试，第一个拿到且有 SetText/SetTextContent 方法的即用；按需增删以匹配编辑器命名。
+    OpponentScoreTextCompName = { "ScoreText", "Text", "OpponentScore", "Score", "TextComp", "Label" },
+    OpponentScoreTextCompClass = { "TextComponent", "TextRenderComponent", "WoWTextComponent", "WidgetComponent" },
+    -- 当文本组件是 WidgetComponent 内部的 UMG 子控件时填这里：UMG 内文本控件的名字（编辑器里给该文本控件命的名）。
+    OpponentScoreTextChildName = { "ui_enemyscore", "ScoreText", "Text", "OpponentScore", "Score", "Label" },
+}
+
+-- ===================== 远景背景 3D UI 挂件（背景图 WidgetComponent Actor） =====================
+-- 需求：每个盘面（双盘各一）的「背后更远处」各生成 1 个带 WidgetComponent 的 Actor，用于显示远景背景图。
+-- 生成方式完全照搬 BehindBoardWidget（仅依赖出生点装置 + ActorPreset(AssetRef)），纯背景、不挂接 renderer、
+-- 不依赖文本组件；数值请按实际背景图尺寸/位置自行调整。
+-- 必须在 AssetRef 注册该 ActorPreset 并执行 update preset（GenerateAssetRef.lua 才会生成键）。
+TetrisConfig.BackgroundWidget = {
+    Enabled = true,                                   -- 是否生成远景背景 3D UI 挂件（双盘 → 2 个 Actor）
+    PresetKey = "46_ActorPreset_830160950",           -- 带 WidgetComponent 的远景背景 Actor 预设键（AssetRef）
+    DistanceBehindM = -6,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
+    Scale = { X = 23, Y = 23, Z = 23 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    SideOffsetM = -45,                                  -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
+    HeightOffsetM = 0,                                -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
+    -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让远景呈对称倾斜。
+    -- 1号 +180°、2号 −180°；未列出的棋盘不额外偏置（0°）。
+    RotationBiasByIndex = { [1] = 180, [2] = -180 },
 }
 
 -- ===================== 输入（CustomUI 按钮） =====================
@@ -518,8 +562,11 @@ TetrisConfig.SkillSelect = {
 TetrisConfig.HintText = ci("1_CreativeInstance_23643899752970406")
 -- Loading 加载界面：开局与「选技能后对象生成」期间显示的遮罩控件
 TetrisConfig.LoadingScreen = ci("1_CreativeInstance_23643899809238462")
--- Loading 进度条：loading 显示期间 10 秒内从 0 填充到 100%
+-- Loading 进度条：loading 显示期间 LoadingTime 秒内从 0 填充到 100%
 TetrisConfig.LoadingProgress = ci("1_CreativeInstance_23643899128297494")
+-- Loading 持续时间（秒）：初始遮罩超时隐藏、对象生成期 loading 到时、以及进度条填充动画时长。
+-- 三处共用此值，改这一项即可统一调整 loading 节奏。默认 1 秒。
+TetrisConfig.LoadingTime = 3
 TetrisConfig.HintDuration = 2   -- 提示显示时长（秒），到点自动隐藏
 
 -- ===================== AI 对手（单人模式） =====================
@@ -619,6 +666,7 @@ TetrisConfig.Debug = {
     ShowGameOverInfo = false,  -- 结束时上屏结算
     PrintGarbage = false,      -- 对战：打印发/收垃圾行日志
     DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
+    LockDbg = true,            -- 锁定加分调试：打印哪块盘(玩家/对手)在 lockPiece 加分，以及对手分控件是否写入成功
 }
 
 -- ===================== 噗哟噗哟（四消）玩法 =====================

@@ -146,9 +146,10 @@ function TetrisSkillSelect:Begin(players)
         self:RegisterSkills()
     end
 
-    local secs = cfg.TimeoutSec or 20
-    self.owner:AddTimerOnce(secs, function() self:OnTimeout() end)
-    print(string.format("[Tetris][Skill] 等待 %d 名玩家选择技能（%.0f 秒超时）", #self.players, secs))
+    -- 已移除超时计时：玩家必须手动选完技能才开局（全部选完 → Finish → OnSkillSelected）。
+    -- 若需「无人选则自动兜底开局」，可在此恢复：
+    --   self.owner:AddTimerOnce(cfg.TimeoutSec or 20, function() self:OnTimeout() end)
+    print(string.format("[Tetris][Skill] 等待 %d 名玩家选择技能（无超时，需全部选完才开局）", #self.players))
 end
 
 -- ---------------- 输入 ----------------
@@ -218,13 +219,6 @@ function TetrisSkillSelect:OnPick(ps, key)
     for _, p in ipairs(self.players) do
         if not self.choices[p] then return end
     end
-    self:Finish()
-end
-
-function TetrisSkillSelect:OnTimeout()
-    if self.done then return end
-    local def = cfgOf().DefaultSkill or "SK02"
-    print("[Tetris][Skill] 技能选择超时，未选择的玩家按默认技能 " .. tostring(def) .. " 开局")
     self:Finish()
 end
 

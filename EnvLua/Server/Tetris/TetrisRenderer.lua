@@ -29,9 +29,10 @@ end
 local TetrisRenderer = {}
 TetrisRenderer.__index = TetrisRenderer
 
-function TetrisRenderer:new(owner)
+function TetrisRenderer:new(owner, index)
     local o = setmetatable({}, TetrisRenderer)
     o.owner = owner  -- WoWObject（GameMain 子类），用于 AddTimerOnce 调度消行延迟下落
+    o.boardIndex = (type(index) == "number") and index or 0  -- 盘面序号（供背向翻转判断）
     o.cells = {}    -- cells[row][col] = 实例/Actor 对象
     o.actors = {}   -- actors[row][col] = 底层 Actor（若可解析），用于可靠隐藏
     o.shown = {}    -- shown[row][col] = bool，当前显隐状态（脏检查用）
@@ -351,12 +352,13 @@ function TetrisRenderer:ProbeCreator(candidates, loc, scale)
     return nil, nil, nil
 end
 
-function TetrisRenderer:CreateOne(loc, scale, ref)
+function TetrisRenderer:CreateOne(loc, scale, ref, rotOverride)
     local ok, obj = pcall(function()
+        local rot = rotOverride or self.rot
         if self.mode == "instance" then
-            return InstanceAPI.CreateInstance(ref, loc, self.rot, scale)
+            return InstanceAPI.CreateInstance(ref, loc, rot, scale)
         else
-            return CreativeGameAPI.CreateActor(ref, loc, self.rot, scale, nil)
+            return CreativeGameAPI.CreateActor(ref, loc, rot, scale, nil)
         end
     end)
     if ok then return obj end
@@ -416,7 +418,9 @@ function TetrisRenderer:BuildBackgroundWall()
             local ref = (type(AssetRef) == "table" and AssetRef[key])
                      or (type(CreativeAsset) == "table" and CreativeAsset[key])
             if ref then
-                local ok, obj = pcall(function() return self:CreateOne(pos, scaleVec, ref) end)
+                local ok, obj = pcall(function()
+                    return self:CreateOne(Game:ConstructFVectorByLuaTable(pos), scaleVec, ref)
+                end)
                 if ok and obj then
                     self._wallActors[#self._wallActors + 1] = obj
                     n = n + 1
@@ -428,6 +432,257 @@ function TetrisRenderer:BuildBackgroundWall()
     end
     print(string.format("[Tetris] 远景背景墙生成 %d/%d 块 (X=%.1f N=%.1f pitch=%.2f)",
         n, cols * rows, X, N, pitch))
+end
+
+-- ---------------- 盘面背后 3D UI 挂件（WidgetComponent Actor） ----------------
+-- 在「盘面背后」各生成 1 个带 WidgetComponent 的 Actor（双盘各一，由各自 renderer 调用）。
+-- 定位：挂件位置 = 盘心 + 视线前向(boardForward) * DistanceBehindM（与背景墙同源，即盘面背后）；
+--       旋转：默认与盘面同向（3D UI 正面朝该盘玩家）；若本盘 index 在 FlipBoardIndices 中，
+--       则绕竖直轴 +180°（背对玩家，给“对面盘”用，避免两边都朝向观察方）。
+-- 幂等：已生成则跳过；重建（ReanchorBoard 重摆）时重定位到新基底。
+function TetrisRenderer:BuildBehindBoardWidget()
+    local cfg = TetrisConfig.BehindBoardWidget
+    if not (cfg and cfg.Enabled) then return end
+    if not self.boardCenter or not self.boardForward or not self.boardRight then
+        if not self._widgetBaseLogged then
+            self._widgetBaseLogged = true
+            print(string.format("[Tetris][Widget][WARN] 盘面基底未就绪(首次): built=%s mode=%s hasCenter=%s hasFwd=%s hasRight=%s",
+                tostring(self.built), tostring(self.mode),
+                tostring(not not self.boardCenter), tostring(not not self.boardForward), tostring(not not self.boardRight)))
+        end
+        return
+    end
+    if self._behindWidgetActor then
+        -- 已生成：交给 ReanchorBoard 重定位，这里不必重复创建
+        return
+    end
+    local ref = (type(AssetRef) == "table" and AssetRef[cfg.PresetKey])
+             or (type(CreativeAsset) == "table" and CreativeAsset[cfg.PresetKey])
+    if not ref then
+        if not self._widgetRefLogged then
+            self._widgetRefLogged = true
+            print(string.format("[Tetris][Widget][WARN] 资源键无引用(首次): %s | AssetRef表=%s CreativeAsset表=%s | 该键将在资源注册后由 Update 兜底生成",
+                tostring(cfg.PresetKey), tostring(type(AssetRef) == "table"), tostring(type(CreativeAsset) == "table")))
+        end
+        return
+    end
+    local D = (type(cfg.DistanceBehindM) == "number") and cfg.DistanceBehindM or 4
+    local side = (type(cfg.SideOffsetM) == "number") and cfg.SideOffsetM or 0
+    local hgt = (type(cfg.HeightOffsetM) == "number") and cfg.HeightOffsetM or 0
+    local pos = {
+        X = self.boardCenter.X + self.boardForward.X * D + self.boardRight.X * side,
+        Y = self.boardCenter.Y + self.boardForward.Y * D + self.boardRight.Y * side,
+        Z = self.boardCenter.Z + self.boardForward.Z * D + hgt,   -- boardForward.Z 恒为 0
+    }
+    local scaleVec = Game:ConstructFVectorByLuaTable({
+        X = (cfg.Scale and cfg.Scale.X) or 1,
+        Y = (cfg.Scale and cfg.Scale.Y) or 1,
+        Z = (cfg.Scale and cfg.Scale.Z) or 1,
+    })
+    local rot = self:BehindBoardWidgetRot()
+    -- widget 是 ActorPreset（46_ActorPreset_*），强制走 CreateActor，不依赖 self.mode
+    -- （Init 阶段占位 renderer 的 self.mode 尚未设置，但 ActorPreset 必用 CreateActor 创建）。
+    local ok, obj = pcall(function()
+        if type(CreativeGameAPI) == "table" and CreativeGameAPI.CreateActor then
+            return CreativeGameAPI.CreateActor(ref, Game:ConstructFVectorByLuaTable(pos), rot, scaleVec, nil)
+        end
+        return self:CreateOne(Game:ConstructFVectorByLuaTable(pos), scaleVec, ref, rot)
+    end)
+    if ok and obj then
+        self._behindWidgetActor = obj
+        pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(false) end end)
+        print(string.format("[Tetris][Widget] 盘面背后 3D UI 挂件已生成 (D=%.1f side=%.1f hgt=%.1f flip=%s)",
+            D, side, hgt, tostring(self._behindWidgetFlipped)))
+        -- AssetRef 晚注册导致挂件在 Update 阶段才生成时，补刷此前缓存的对方分数
+        if self._pendingWidgetScore ~= nil then
+            self:SetWidgetOpponentScore(self._pendingWidgetScore)
+        end
+    else
+        print("[Tetris][Widget][WARN] 创建失败: " .. tostring(obj))
+    end
+end
+
+
+-- 从挂件 Actor 实例上找到「对方分数」文本组件（运行时按候选名/类名获取，不依赖 UUID）。
+-- 两个挂件各生成一个、组件就在各自 Actor 下，按实例获取天然互不干扰。首次找到后缓存到 _behindWidgetTextComp。
+-- 找不到时打印 Actor 上全部组件（含名称），便于确认编辑器里文本组件的真实命名。
+function TetrisRenderer:FindBehindWidgetTextComp()
+    if self._behindWidgetTextComp then return self._behindWidgetTextComp end
+    local actor = self._behindWidgetActor
+    if not actor then return nil end
+    local cfg = TetrisConfig.BehindBoardWidget or {}
+    local childNames = cfg.OpponentScoreTextChildName or { "ui_enemyscore" }
+    if type(childNames) == "string" then childNames = { childNames } end
+    local firstName = childNames[1] or "ui_enemyscore"
+
+    -- 0) 先尝试：文本控件是否直接作为同名组件挂在 Actor 上（少数情况）
+    local direct
+    pcall(function()
+        local ok, c = pcall(function() return actor:GetComponentByName(firstName) end)
+        if ok and c then direct = c end
+    end)
+    if direct then
+        local duuid
+        pcall(function()
+            local ok1, u1 = pcall(function() return direct:GetWoWObjectID() end)
+            local ok2, u2 = pcall(function() return direct:GetInstanceUUID() end)
+            duuid = (ok1 and u1) or (ok2 and u2) or nil
+        end)
+        self._behindWidgetTextUUID = duuid and tostring(duuid) or nil
+        self._behindWidgetTextComp = direct
+        self._behindWidgetTextCompPath = "路径0:直接同名组件"
+        print(string.format("[Tetris][LockDbg] 对手分控件命中[%s] %s uuid=%s",
+            tostring(self._behindWidgetTextCompPath), tostring(firstName), tostring(self._behindWidgetTextUUID)))
+        return direct
+    end
+
+    -- 1) 取 UI 组件（WoWWidgetComponent）
+    local wc
+    pcall(function()
+        if type(actor.GetComponentByClass) == "function" then
+            wc = actor:GetComponentByClass("WidgetComponent")
+        end
+    end)
+    if not wc then
+        pcall(function()
+            for _, nm in ipairs({ "UI", "Widget", "WidgetComp", "WidgetComponent" }) do
+                local ok, c = pcall(function() return actor:GetComponentByName(nm) end)
+                if ok and c then wc = c; break end
+            end
+        end)
+    end
+    if not wc then
+        print("[Tetris][Widget][WARN] 找不到 UI 组件(WidgetComponent)")
+        return nil
+    end
+
+    -- 2) 取 PlayerCharacter 列表（GetUserWidgetObject 要求传入），逐个尝试拿到 WoWUserWidget
+    local plist
+    pcall(function()
+        local okP, p = pcall(function() return Game:GetAllPlayerPawns() end)
+        if okP and p then plist = p end
+    end)
+    if not plist or type(plist.Num) ~= "function" or plist:Num() <= 0 then
+        return nil  -- 暂无玩家，下一帧重试
+    end
+
+    -- 3) 组件(WoWWidgetComponent) -> WoWUserWidget -> 文本控件(WoWCustomUIText) -> InstanceUUID
+    local uw
+    for i = 0, plist:Num() - 1 do
+        local pawn = plist:Get(i)
+        if pawn then
+            pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
+            if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
+            if uw then break end
+        end
+    end
+    if not uw then
+        print("[Tetris][Widget][WARN] wc:GetUserWidgetObject 所有玩家均返回空（组件可能尚未初始化，下一帧重试）")
+        return nil
+    end
+    local tw
+    for _, cn in ipairs(childNames) do
+        pcall(function()
+            local t = uw:GetWidgetFromName(cn)
+            if t then tw = t end
+        end)
+        if tw then break end
+    end
+    if not tw then
+        print(string.format("[Tetris][Widget][WARN] uw:GetWidgetFromName 未命中: %s", table.concat(childNames, ",")))
+        return nil
+    end
+    local uuid
+    pcall(function()
+        local ok1, u1 = pcall(function() return tw:GetWoWObjectID() end)
+        local ok2, u2 = pcall(function() return tw:GetInstanceUUID() end)
+        uuid = (ok1 and u1) or (ok2 and u2) or nil
+    end)
+    self._behindWidgetTextUUID = uuid and tostring(uuid) or nil
+    self._behindWidgetTextComp = tw
+    self._behindWidgetTextCompPath = "路径2:UMG子控件(GetWidgetFromName)"
+    print(string.format("[Tetris][LockDbg] 对手分控件命中[%s] %s uuid=%s",
+        tostring(self._behindWidgetTextCompPath), tostring(firstName), tostring(self._behindWidgetTextUUID)))
+    return tw
+end
+
+
+
+-- 把"对方分数"写到本挂件 Actor 上的文本组件。
+-- 若挂件尚未生成（AssetRef 晚注册），先缓存分数，待 BuildBehindBoardWidget 生成后补刷。
+function TetrisRenderer:SetWidgetOpponentScore(score)
+    local cfg = TetrisConfig.BehindBoardWidget
+    local dbg = (TetrisConfig and TetrisConfig.Debug and TetrisConfig.Debug.LockDbg)
+    if not (cfg and cfg.Enabled) then
+        if dbg then print("[Tetris][LockDbg] 对手分挂件被 BehindBoardWidget.Enabled 关闭，跳过写入") end
+        return
+    end
+    score = (type(score) == "number") and score or 0
+    self._pendingWidgetScore = score
+    if not self._behindWidgetActor then
+        if dbg then print(string.format("[Tetris][LockDbg] 对手分挂件 Actor 未生成，仅缓存 score=%s（待生成后补刷）", tostring(score))) end
+        return
+    end
+    local comp = self:FindBehindWidgetTextComp()
+    if not comp then
+        if dbg then print(string.format("[Tetris][LockDbg] 对手分挂件找不到文本组件，score=%s 未显示（组件名/类名没匹配）", tostring(score))) end
+        return
+    end
+    local txt = tostring(score)
+    -- 本引擎文本控件按 InstanceUUID 寻址：优先用运行时 GetWoWObjectID 拿到的 UUID 走 CustomUIAPI（对所有玩家生效）
+    local uuid = self._behindWidgetTextUUID
+    if uuid and type(CustomUIAPI) == "table" and CustomUIAPI.SetAllPlayerTextContent then
+        pcall(function() CustomUIAPI.SetAllPlayerTextContent(uuid, txt) end)
+        if dbg then print(string.format("[Tetris][LockDbg] 对手分经 CustomUIAPI 写入 uuid=%s score=%s", tostring(uuid), txt)) end
+    else
+        -- 兜底：该文本控件是挂件 Widget 资源内部的子控件，无独立 CreativeInstance UUID，
+        -- 直接对运行时拿到的控件对象 SetText/SetTextContent（世界空间挂件内容共享，对所有玩家生效）。
+        if type(comp.SetTextContent) == "function" then
+            pcall(function() comp:SetTextContent(txt) end)
+        elseif type(comp.SetText) == "function" then
+            pcall(function() comp:SetText(txt) end)
+        end
+        if dbg then print(string.format("[Tetris][LockDbg] 对手分经控件对象写入 board=%s score=%s 路径=%s",
+            tostring(self.boardIndex), txt, tostring(self._behindWidgetTextCompPath))) end
+    end
+end
+
+-- 计算背后 3D UI 挂件旋转：默认与盘面同向（正面朝该盘玩家）；
+-- 若本盘 index 命中 FlipBoardIndices，则绕竖直轴 +180°（背对玩家）。
+function TetrisRenderer:BehindBoardWidgetRot()
+    local cfg = TetrisConfig.BehindBoardWidget
+    -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让挂件呈对称倾斜。
+    -- 1号 +45°、2号 −45°；未列出的棋盘不额外偏置（0°）。
+    local bias = 0
+    if cfg and type(cfg.RotationBiasByIndex) == "table" then
+        bias = cfg.RotationBiasByIndex[self.boardIndex] or 0
+    end
+    self._behindWidgetFlipped = (bias ~= 0)
+    -- 始终基于盘面偏航 self.boardYaw 计算旋转：Build 阶段 self.rot 会被 makeZeroRotator() 覆盖（零/空），
+    -- 但 boardYaw 在 settle 内设置且不被覆盖，故此处不依赖 self.rot，确保开局 Build 阶段也能拿到有效旋转。
+    local yaw = (self.boardYaw or 0) + bias
+    if type(FRotator) == "table" and FRotator.MakeFromEuler then
+        return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = yaw }))
+    end
+    return self.rot   -- FRotator 不可用时的回退（翻转/朝向可能失效，但至少能生成）
+end
+
+-- 将背后 3D UI 挂件重定位到当前盘面基底（应对 ResolveOrigin 重新解析、基准变化）。
+function TetrisRenderer:ReanchorBehindBoardWidget()
+    local cfg = TetrisConfig.BehindBoardWidget
+    if not (cfg and cfg.Enabled) then return end
+    if not self._behindWidgetActor then return end
+    if not self.boardCenter or not self.boardForward or not self.boardRight then return end
+    local D = (type(cfg.DistanceBehindM) == "number") and cfg.DistanceBehindM or 4
+    local side = (type(cfg.SideOffsetM) == "number") and cfg.SideOffsetM or 0
+    local hgt = (type(cfg.HeightOffsetM) == "number") and cfg.HeightOffsetM or 0
+    local pos = {
+        X = self.boardCenter.X + self.boardForward.X * D + self.boardRight.X * side,
+        Y = self.boardCenter.Y + self.boardForward.Y * D + self.boardRight.Y * side,
+        Z = self.boardCenter.Z + self.boardForward.Z * D + hgt,
+    }
+    local rot = self:BehindBoardWidgetRot()
+    pcall(function() self._behindWidgetActor:K2_TeleportTo(cmVec(pos), rot) end)
 end
 
 -- 尝试取出实例背后的 Actor。动态实例可能是纯组件，取不到时返回 nil。
@@ -1668,6 +1923,9 @@ function TetrisRenderer:Build(spawnPointKey)
     end
 
     self.built = true
+    -- 盘面背后 3D UI 挂件：在 Build 阶段（开局构建）即按 SpawnPointKey 解析出的盘面基底直接生成，
+    -- 不再等到对象池就绪（Update/poolReady），双盘各在自己的 Build 里生成一个。
+    self:BuildBehindBoardWidget()
     if TetrisConfig.Debug.PrintBoardBounds then
         self:PrintBounds()
     end
@@ -1840,6 +2098,8 @@ function TetrisRenderer:ReanchorBoard()
             end
         end
     end
+    -- 背后 3D UI 挂件随盘面基底重定位（出生点装置晚注入后基准变化）
+    self:ReanchorBehindBoardWidget()
 end
 
 -- 调试：逐行统计 已创建 / 当前显示 / 期望显示 的格子数。
@@ -2098,6 +2358,9 @@ function TetrisRenderer:Update(board)
         self._wallBuilt = true
         self:BuildBackgroundWall()
     end
+    -- 兜底生成盘面背后 3D UI 挂件：Build 阶段（开局第一帧）若 AssetRef 尚未注册该 ActorPreset 会失败，
+    -- 这里 poolReady 后再次尝试；函数内有 _behindWidgetActor 幂等保护，已生成则跳过，不会重复创建。
+    self:BuildBehindBoardWidget()
 
     -- 分帧补齐 21 个整体实例（BuildWholePiecePool 起的异步构建），未完成前逐帧建少量，避免初始化卡顿。
     if self._poolBuild then self:ProcessPoolBuild() end
