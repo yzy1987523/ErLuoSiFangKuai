@@ -105,6 +105,11 @@ function TetrisSkillSelect:ShowPanelFor(ps, visible)
     self:ShowFor(ps, cfg.PanelKey, visible)
     for _, id in ipairs(self:SkillButtonIDs()) do
         self:ShowFor(ps, id, visible)
+        -- 显示面板时一并恢复技能按钮交互：选完技能(OnPick)会禁用各自按钮，
+        -- 重开复用同一实例时若只恢复可见性不恢复交互，按钮会"可见但点不了"。
+        if visible and id ~= nil and type(CustomUIAPI) == "table" then
+            pcall(function() CustomUIAPI.SetWidgetInteraction(ps, id, true) end)
+        end
     end
 end
 

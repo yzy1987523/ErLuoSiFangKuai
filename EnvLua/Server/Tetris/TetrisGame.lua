@@ -67,6 +67,11 @@ function TetrisGame:Start()
             pcall(function() if ui.HoldImg then CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, false) end end)
             pcall(function() if ui.NextImg then CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, false) end end)
         end
+        -- 同时复位「已显示类型」标记：重开复用实例时 self._shownHold/_shownNext 残留上一局的值，
+        -- 若新抽到的首块类型恰等于旧标记，UpdateHoldNextUI 会误判"已在显示"而不重新 SetVisible(true)，
+        -- 导致 Hold/Next 一直隐藏。归位为 false 后，下一帧 UpdateHoldNextUI 必重新显示。
+        self._shownHold = false
+        self._shownNext = false
     end
 
     -- 开局预览：把 7 种方块摆在面前排成一排，暂停下落 N 秒供肉眼核对形状，再正式开始。
@@ -276,6 +281,27 @@ function TetrisGame:Restart()
     if self:initialClearEnabled() then
         self:ProcessInitialClears()
     end
+end
+
+-- 重置：清空盘面 / 分数 / Hold / Next、重置能量槽、暂停下落，回到开局前状态（不销毁实例）。
+-- 与 Restart 的区别：Restart 在清空后会继续下落；Reset 仅清空并暂停，等待玩家从「开始界面」重新开始。
+function TetrisGame:Reset()
+    -- 暂停下落：停止重力 tick 循环（running=false 时 OnTick / ScheduleTick 均早退）
+    self.running = false
+    -- 清空数据层：网格 / 当前块 / 暂存(Hold) / 分数 / 等级；next 队列刷新为全新 7-bag（无残留旧块）
+    if self.board then self.board:reset() end
+    -- 重置能量槽（技能 bar / power）
+    self.skillBars = 0
+    self.skillPower = 0
+    -- 渲染层清空并跟随空盘面
+    if self.renderer then
+        self.renderer:Clear()
+        self.renderer:Update(self.board)
+    end
+    -- 刷新 HUD：分数归零、Hold/Next 预览更新、对手分数归零；能量槽归零
+    self:UpdateHUD()
+    self:UpdateSkillUI()
+    print("[Tetris] 盘面已重置（暂停下落）")
 end
 
 -- ---------------- 开局稳定期 ----------------

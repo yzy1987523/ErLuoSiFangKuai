@@ -373,80 +373,145 @@ end
 -- choices: [PlayerState] = 玩法（"tetris"/"puyo"）。未选择则回退默认玩法。
 function TetrisMatch:OnModeSelected(choices)
     self.choices = choices or {}
-    -- 显示 loading（LoadingTime 秒进度条）。分阶段构建在 loading 显示期间立即开始进行；
-    -- 到时并不立即隐藏，而是等方框生成完后才隐藏并开局落方块（见 TryStartGameplay）。
+    -- 显示 loading（LoadingTime 秒进度条）。
     self._loadingTimeUp = false
-    self._borderDone = false
     self._started = false
     self:ShowLoading(true)
     local selfRef = self
-    self.owner:AddTimerOnce(TetrisConfig.LoadingTime, function()
-        selfRef._loadingTimeUp = true
-        selfRef:TryStartGameplay()   -- loading 到时：若方框已生成完则隐藏+开局；否则等方框
-    end)
-    -- 延迟 1 秒再开始分阶段构建（利用 loading 显示窗口；延后启动避免与开局时序冲突）。
-    self.owner:AddTimerOnce(0.5, function() self:BuildGames() end)
+    if self._restart then
+        -- 重开：实例与渲染器已生成（首局 BuildGames 已建好），直接复用，不再新建实例 / 不再重建渲染器。
+        -- 仅按当前选择刷新每盘属性（技能 / AI / 对手），并把 _borderDone 置真（渲染器已就绪），
+        -- 等 loading 到时即可直接 g:Start() 复用既有实例。
+        self._restart = false
+        self._borderDone = true
+        self:ApplyModeToGames(choices)
+        self.owner:AddTimerOnce(TetrisConfig.LoadingTime, function()
+            selfRef._loadingTimeUp = true
+            selfRef:TryStartGameplay()
+        end)
+    else
+        -- 首次构建：显示 loading 期间进行分阶段构建（BuildGames → StepBuild → 完成边框后开局落方块）。
+        self._borderDone = false
+        self.owner:AddTimerOnce(TetrisConfig.LoadingTime, function()
+            selfRef._loadingTimeUp = true
+            selfRef:TryStartGameplay()   -- loading 到时：若方框已生成完则隐藏+开局；否则等方框
+        end)
+        -- 延迟 1 秒再开始分阶段构建（利用 loading 显示窗口；延后启动避免与开局时序冲突）。
+        self.owner:AddTimerOnce(0.5, function() self:BuildGames() end)
+    end
+end
+
+-- 重开复用既有实例时，按当前选择刷新每盘属性（技能 / AI / 对手），不重建渲染器。
+-- 首次构建仍由 BuildGames 完成「实例创建 + 渲染器构建」；本函数仅用于重开，复用已生成的实例。
+function TetrisMatch:ApplyModeToGames(choices)
+    local defaultSkill = (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
+    for i, g in ipairs(self.list) do
+        if not g then goto continue end
+        -- 分配到玩家的盘 → 用该玩家所选技能；旁观盘（无真人）→ 默认技能
+        g.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState]) or defaultSkill
+        if not g.playerState then
+            -- 无真人分配：单人模式下作为 AI 对手
+            g.isAI = true
+            local lv = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+            local lvl = (TetrisConfig.AI and TetrisConfig.AI.DifficultyLevels) or {}
+            g.aiQuality = (lvl[lv] and lvl[lv].Quality) or 1.0
+        else
+            g.isAI = false
+        end
+        ::continue::
+    end
+    -- 重新互设对手（环形互指，顺序不变）
+    if #self.list > 1 then
+        for i, g in ipairs(self.list) do
+            g.opponent = self.list[i % #self.list + 1]
+        end
+    end
 end
 
 -- 构建棋盘并启动分阶段构建（落方块延后到 loading 隐藏后，由 TryStartGameplay 触发）。
 function TetrisMatch:BuildGames()
     self._buildGamesStarted = true  -- 进入加载构建：停止准备阶段挂件重试，改由本函数兜底
     local M = TetrisConfig.GameMode
+    local defaultSkill = (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
+    local reusedAll = true  -- 是否全部复用既有实例（重开）
     for i, g in ipairs(self.list) do
         -- 分配到玩家的盘 → 用该玩家所选玩法；旁观盘 → 用默认/强制玩法
         local mode = g.playerState and (self.choices[g.playerState] or M.Tetris) or self:initialMode()
-        -- 用正确模式重建实例（保留出生点/分配/序号），避免俄罗斯方块占位被直接 Start
-        local ng = self:createGame(mode, g.spawnPointKey, g.index)
-        ng.playerState = g.playerState
-        ng.playerKey = g.playerKey
-        ng.opponent = g.opponent
-        -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
-        ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
-            or (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
-        -- 背后 3D UI 挂件（解耦于 renderer，归 Match 持有 self._behindWidgets）：
-        -- Init 已基于出生点尝试生成（可能因装置/资源未就绪失败）；此处（OnModeSelected 已就绪）兜底补一次。
-        -- 仅 tetris 渲染器(有 BuildBehindBoardWidget)挂接；puyo 盘不挂接并销毁已生成的 widget，保持原语义。
-        local bwSupports = ng.renderer and type(ng.renderer.BuildBehindBoardWidget) == "function"
-        if bwSupports then
-            if not self._behindWidgets[i] then
-                self._behindWidgets[i] = TetrisBehindWidget.Spawn(g.spawnPointKey, g.index)
+        if g.renderer then
+            -- 已构建过（重开复用）：不新建实例、不重建渲染器，仅刷新属性并保留既有挂件/渲染器
+            reusedAll = reusedAll and true
+            g.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState]) or defaultSkill
+            if not g.playerState then
+                -- 无真人分配：单人模式下作为 AI 对手
+                g.isAI = true
+                local lv = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+                local lvl = (TetrisConfig.AI and TetrisConfig.AI.DifficultyLevels) or {}
+                g.aiQuality = (lvl[lv] and lvl[lv].Quality) or 1.0
+            else
+                g.isAI = false
             end
-            ng.renderer._behindWidgetActor = self._behindWidgets[i] or nil
-        elseif self._behindWidgets[i] then
-            pcall(function()
-                if type(self._behindWidgets[i].K2_DestroyActor) == "function" then
-                    self._behindWidgets[i]:K2_DestroyActor()
+        else
+            -- 首次构建：用正确模式重建实例（保留出生点/分配/序号），避免俄罗斯方块占位被直接 Start
+            reusedAll = false
+            local ng = self:createGame(mode, g.spawnPointKey, g.index)
+            ng.playerState = g.playerState
+            ng.playerKey = g.playerKey
+            ng.opponent = g.opponent
+            -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
+            ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
+                or defaultSkill
+            -- 背后 3D UI 挂件（解耦于 renderer，归 Match 持有 self._behindWidgets）：
+            -- Init 已基于出生点尝试生成（可能因装置/资源未就绪失败）；此处（OnModeSelected 已就绪）兜底补一次。
+            -- 仅 tetris 渲染器(有 BuildBehindBoardWidget)挂接；puyo 盘不挂接并销毁已生成的 widget，保持原语义。
+            local bwSupports = ng.renderer and type(ng.renderer.BuildBehindBoardWidget) == "function"
+            if bwSupports then
+                if not self._behindWidgets[i] then
+                    self._behindWidgets[i] = TetrisBehindWidget.Spawn(g.spawnPointKey, g.index)
                 end
-            end)
-            self._behindWidgets[i] = nil
-        end
-        -- 远景背景 3D UI（背景图）：兜底补生成（Init 未就绪时）。纯背景、不挂接 renderer，
-        -- 每个棋盘各 1 个，已生成则跳过（幂等）。
-        if TetrisConfig.BackgroundWidget and TetrisConfig.BackgroundWidget.Enabled then
-            if not self._bgWidgets then self._bgWidgets = {} end
-            if not self._bgWidgets[i] then
-                self._bgWidgets[i] = TetrisBackgroundWidget.Spawn(g.spawnPointKey, g.index)
+                ng.renderer._behindWidgetActor = self._behindWidgets[i] or nil
+            elseif self._behindWidgets[i] then
+                pcall(function()
+                    if type(self._behindWidgets[i].K2_DestroyActor) == "function" then
+                        self._behindWidgets[i]:K2_DestroyActor()
+                    end
+                end)
+                self._behindWidgets[i] = nil
             end
-        end
-        self.list[i] = ng
-        if g.playerKey then self.games[g.playerKey] = ng end
-        local ok = ng:Init(g.spawnPointKey)
-        if not ok then
-            print(string.format("[Tetris][Versus][WARN] 棋盘#%d 玩法=%s 初始化失败（出生点未注入？）",
-                tostring(g.index), tostring(mode)))
+            -- 远景背景 3D UI（背景图）：兜底补生成（Init 未就绪时）。纯背景、不挂接 renderer，
+            -- 每个棋盘各 1 个，已生成则跳过（幂等）。
+            if TetrisConfig.BackgroundWidget and TetrisConfig.BackgroundWidget.Enabled then
+                if not self._bgWidgets then self._bgWidgets = {} end
+                if not self._bgWidgets[i] then
+                    self._bgWidgets[i] = TetrisBackgroundWidget.Spawn(g.spawnPointKey, g.index)
+                end
+            end
+            self.list[i] = ng
+            if g.playerKey then self.games[g.playerKey] = ng end
+            local ok = ng:Init(g.spawnPointKey)
+            if not ok then
+                print(string.format("[Tetris][Versus][WARN] 棋盘#%d 玩法=%s 初始化失败（出生点未注入？）",
+                    tostring(g.index), tostring(mode)))
+            end
         end
     end
-    -- 重新互设对手：上面的重建替换了实例，旧 opponent 链接已指向被替换的对象
+    -- 重新互设对手（环形互指，顺序不变）
     if #self.list > 1 then
         for i, g in ipairs(self.list) do
             g.opponent = self.list[i % #self.list + 1]
         end
     end
-    -- 启动分阶段构建状态机（生成 4*7*2 子块 → 设置 14 整体 → 方框 → 静态池 400）。
-    self._build = { phase = "genChildren", childTarget = 4 * 7 * 2, staticTarget = 400,
-                    childAttempts = 0, borderAttempts = 0, setupTries = 0 }
-    self:StepBuild()
-    print("[Tetris][Versus] 分阶段构建启动")
+    if reusedAll then
+        -- 全部复用既有实例与渲染器：无需分阶段构建，直接标记边框完成并交由 TryStartGameplay 开局
+        self._borderDone = true
+        print("[Tetris][Versus] 复用既有实例与渲染器，跳过分阶段构建（不新建实例）")
+        self:TryStartGameplay()
+    else
+        -- 首次构建：启动分阶段构建状态机（生成 4*7*2 子块 → 设置 14 整体 → 方框 → 静态池 400）。
+        self._build = { phase = "genChildren", childTarget = 4 * 7 * 2, staticTarget = 400,
+                        childAttempts = 0, borderAttempts = 0, setupTries = 0 }
+        self:StepBuild()
+        print("[Tetris][Versus] 分阶段构建启动")
+    end
 end
 
 -- 分阶段构建状态机：genChildren → setupPieces(≤3次) → genBorder → genStatic(0.25s/个)。
@@ -790,38 +855,59 @@ function TetrisMatch:EndMatch(reason, early)
     --     self.winner and tostring(self.winner.playerKey) or "?"))
 end
 
--- 给全体玩家弹出结算面板，分 3 个文本显示：玩家1分数 / 玩家2分数 / 胜者ID
+-- 取某盘面在结算界面应显示的称号：
+-- 玩家盘 → 玩家显示名（PlayerState.PlayerName 只读字段）；AI 盘 → 按难度取 AI 角色名（见 TetrisConfig.AI.DifficultyLevels[lv].Name）。
+function TetrisMatch:GameDisplayName(g)
+    if g and g.playerState then
+        local nm = nil
+        pcall(function() nm = g.playerState.PlayerName end)
+        if type(nm) == "string" and nm ~= "" then return nm end
+        return tostring(g.playerKey or "玩家")
+    end
+    -- AI 盘：按当前难度取角色名（Easy=小白 / Normal=强敌 / Hard=大师）
+    local cfg = TetrisConfig.AI or {}
+    local lv = self.aiDifficulty or cfg.DefaultDifficulty or "Normal"
+    local lvl = cfg.DifficultyLevels or {}
+    return (lvl[lv] and lvl[lv].Name) or lv
+end
+
+-- 给全体玩家弹出结算面板，分 3 个文本显示：玩家A分数 / 玩家B分数 / 胜者
 function TetrisMatch:ShowSettle(reason)
     local cfg = TetrisConfig.Settle
     if not (cfg and cfg.Enabled) then return end
     if type(CustomUIAPI) ~= "table" then return end
 
-    -- 按 index 取玩家1(index=0)/玩家2(index=1) 分数；同时算最高分为兜底胜者
+    -- 按 index 取玩家1(index=0)/玩家2(index=1) 的分数与称号；同时算最高分为兜底胜者
     local p1Score, p2Score = 0, 0
-    local best, bestKey = nil, nil
+    local p1Name, p2Name = "?", "?"
+    local best, bestName = nil, nil
     for _, g in ipairs(self.list) do
         local score = (g.board and g.board.score) or 0
-        if g.index == 1 then p2Score = score
-        else p1Score = score end   -- index 0（或缺失）按玩家1
-        if best == nil or score > best then best, bestKey = score, g.playerKey end
+        local name = self:GameDisplayName(g)
+        if g.index == 1 then
+            p2Score = score; p2Name = name
+        else
+            p1Score = score; p1Name = name   -- index 0（或缺失）按玩家1
+        end
+        if best == nil or score > best then best, bestName = score, name end
     end
-    local winnerKey
+    local winnerName
     if reason == "lose" and self.winner then
-        winnerKey = self.winner.playerKey
+        winnerName = self:GameDisplayName(self.winner)
     else
-        winnerKey = bestKey
+        winnerName = bestName
     end
-    local winnerTxt = "胜者: " .. tostring(winnerKey or "?")
+    local winnerTxt = "胜者: " .. tostring(winnerName or "?")
 
     for _, ps in ipairs(self:AllPlayerStates()) do
         if cfg.PanelKey then
             pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.PanelKey, true) end)
         end
         if cfg.P1Score then
-            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.P1Score, "玩家1 分数: " .. tostring(p1Score)) end)
+            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.P1Score, p1Name .. " 分数: " .. tostring(p1Score)) end)
         end
         if cfg.P2Score then
-            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.P2Score, "玩家2 分数: " .. tostring(p2Score)) end)
+            pcall(function() CustomUIAPI.SetTextContent(ps, cfg.P2Score, p2Name .. " 分数: " .. tostring(p2Score)) end)
         end
         if cfg.WinnerLabel then
             pcall(function() CustomUIAPI.SetTextContent(ps, cfg.WinnerLabel, winnerTxt) end)
@@ -830,12 +916,13 @@ function TetrisMatch:ShowSettle(reason)
             pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.ExitBtn, true) end)
         end
     end
-    self:RegisterExitBtn()   -- 注册「结束游戏」按钮点击（仅一次）
+    self:RegisterResetBtn()   -- 注册「重置游戏」按钮点击（仅一次）
     print("[Tetris][Settle] 结算面板已弹出 reason=" .. tostring(reason))
 end
 
--- 结算界面「结束游戏」按钮：注册一次点击监听，点击执行 GameOutcomeAPI.SetRoundGameEnd(true)
-function TetrisMatch:RegisterExitBtn()
+-- 结算界面「重置游戏」按钮（即原 ExitBtn 控件）：注册一次点击监听，
+-- 点击后不清算/不退出对局，直接重置回「开始游戏」界面（见 ResetGame）。
+function TetrisMatch:RegisterResetBtn()
     local cfg = TetrisConfig.Settle
     if not cfg or not cfg.ExitBtn then return end          -- 未配置按钮则不注册
     if self._exitBtnReg then return end                    -- 防重复注册
@@ -845,20 +932,12 @@ function TetrisMatch:RegisterExitBtn()
     local clickId = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
     local selfRef = self
     owner:AddVPEvent(clickId, function(_self, ps)
-        -- 仅在对局已结束（结算面板已弹）时生效，避免对局中误触提前结束
+        -- 仅在对局已结束（结算面板已弹）时生效，避免对局中误触
         if not selfRef.over then return end
-        print("[Tetris][Settle] 「结束游戏」按钮被点击（" .. tostring(ps) .. "），先上报胜负+分数，再 SetRoundGameEnd")
-        -- 胜负 + 分数上报（之前在 OnPlayerOut 弹窗前执行，现延迟到此处点击结束按钮时）
-        if selfRef.winner then
-            pcall(function() selfRef:ReportOutcome(selfRef.winner, selfRef.winner.opponent) end)
-        end
-        if type(GameOutcomeAPI) == "table" and type(GameOutcomeAPI.SetRoundGameEnd) == "function" then
-            pcall(function() GameOutcomeAPI.SetRoundGameEnd(true) end)
-        else
-            print("[Tetris][Settle][WARN] GameOutcomeAPI.SetRoundGameEnd 不可用")
-        end
+        print("[Tetris][Settle] 「重置游戏」按钮被点击（" .. tostring(ps) .. "），清空盘面并回到开始界面")
+        selfRef:ResetGame()
     end, selfRef, cfg.ExitBtn, nil)
-    print("[Tetris][Settle] 「结束游戏」按钮点击已注册")
+    print("[Tetris][Settle] 「重置游戏」按钮点击已注册")
 end
 
 -- 调用「结束游戏」API（提前触发结算时）。未配置则回退 Match.Stop()
@@ -894,6 +973,39 @@ function TetrisMatch:Stop()
         g:Stop()
     end
     print("[Tetris][Versus] Match.Stop")
+end
+
+-- 结算界面「重置游戏」按钮：不清算/不退出对局，而是清空所有盘面并暂停下落，
+-- 回到「开始游戏」界面，等待玩家点击开始 → 技能选择 → 重新开局。
+function TetrisMatch:ResetGame()
+    local cfg = TetrisConfig.Settle
+    local players = self:AllPlayerStates()
+    if type(CustomUIAPI) == "table" then
+        for _, ps in ipairs(players) do
+            if cfg and cfg.PanelKey then pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.PanelKey, false) end) end
+            if cfg and cfg.ExitBtn  then pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.ExitBtn, false) end) end
+            -- 隐藏上一局的对局内 HUD（随 loading 显示的 HUD），避免堆在开始界面上
+            for _, key in ipairs(TetrisConfig.ShowHudAfterSkill or {}) do
+                local hid = (type(CreativeInstance) == "table" and CreativeInstance[key]) or nil
+                if hid ~= nil then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
+            end
+        end
+    end
+    -- 逐个盘面：清空 / 暂停下落 / 重置能量（立即清屏；重开局时 BuildGames 会重建新实例）
+    for _, g in ipairs(self.list) do
+        if type(g.Reset) == "function" then g:Reset() end
+    end
+    -- 清对局结束态，允许再次结算
+    self.over = false
+    self.winner = nil
+    -- 标记「重开」：下次进入 OnModeSelected 时复用已生成的实例与渲染器，不再新建/重建
+    self._restart = true
+    -- 重新显示「开始游戏」界面（StartPanel + StartBtn），点击开始 → 技能选择 → 重新开局
+    -- 之后流程会再次走 OnModeSelected（重置 _started/_loadingTimeUp/_borderDone），可正常重开局
+    if self.skillSelect then
+        self.skillSelect:Begin(self.assigned or {})
+    end
+    print("[Tetris][Settle] 已重置游戏，回到开始界面")
 end
 
 return TetrisMatch

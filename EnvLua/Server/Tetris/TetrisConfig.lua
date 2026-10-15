@@ -169,7 +169,7 @@ TetrisConfig.Rotation = {
 -- ===================== 手感 / 节奏 =====================
 TetrisConfig.Timing = {
     -- 重力下落间隔（秒），随等级提升而缩短；索引 = 等级，超出取最后一个
-    GravityIntervalByLevel = { 0.80, 0.72, 0.63, 0.55, 0.47, 0.38, 0.30, 0.22, 0.17, 0.13, 0.10, 0.08, 0.07, 0.06, 0.05 },
+    GravityIntervalByLevel = { 0.80, 0.72, 0.63, 0.55, 0.51, 0.48, 0.43, 0.42, 0.37, 0.33, 0.30, 0.28, 0.27, 0.26, 0.25 },
     SoftDropInterval = 0.05,  -- 软降时的下落间隔（秒）
     LockDelay = 0.25,         -- 触底后的锁定延迟（秒）：方块落到底不立刻锁定，给玩家滑动/转身窗口
     LockResetLimit = 15,       -- 落地后「移动/旋转重置」延迟的最大次数（超过后不再重置，防止无限拖延）
@@ -639,11 +639,12 @@ TetrisConfig.AI = {
 
     -- 各难度对应的 AI 落子质量（0~1）：1=始终最优（困难）；越低越常以随机落点代替最优（越弱）。
     -- 影响 AI 强度，不影响下落速度（速度由重力区间决定）。
+    -- Name：该难度 AI 在结算/对局中显示的角色名（玩家盘显示真实玩家名，AI 盘显示此名）。
     DefaultDifficulty = "Normal",
     DifficultyLevels = {
-        Easy   = { Quality = 0.55 },
-        Normal = { Quality = 0.80 },
-        Hard   = { Quality = 1.00 },
+        Easy   = { Quality = 0.55, Name = "小白" },
+        Normal = { Quality = 0.80, Name = "强敌" },
+        Hard   = { Quality = 1.00, Name = "大师" },
     },
 }
 
