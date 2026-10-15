@@ -15,6 +15,7 @@ local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
 local PuyoGame = require("EnvLua.Server.Tetris.PuyoGame")
 local TetrisModeSelect = require("EnvLua.Server.Tetris.TetrisModeSelect")
 local TetrisSkillSelect = require("EnvLua.Server.Tetris.TetrisSkillSelect")
+local TetrisAIDifficulty = require("EnvLua.Server.Tetris.TetrisAIDifficulty")
 local TetrisBehindWidget = require("EnvLua.Server.Tetris.TetrisBehindWidget")
 local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")
 
@@ -185,26 +186,66 @@ end
 
 -- 开局：枚举在场玩家 → 分配棋盘 → 互设对手 → 注册输入 → 玩法选择阶段（选完传送+开局）
 function TetrisMatch:Start()
+    -- 诊断：观察 Start() 调用时机与 CreativeInstance 注入时机（稳定后可删）
+    self._dbgCalls = (self._dbgCalls or 0) + 1
+    print(string.format("[Tetris][AI][时机] Start() 第 %d 次 | CreativeInstance=table?%s | PanelKey=%s BtnEasy=%s BtnNormal=%s BtnHard=%s",
+        self._dbgCalls,
+        tostring(type(CreativeInstance) == "table"),
+        tostring(TetrisConfig.AI and TetrisConfig.AI.PanelKey),
+        tostring(TetrisConfig.AI and TetrisConfig.AI.BtnEasy),
+        tostring(TetrisConfig.AI and TetrisConfig.AI.BtnNormal),
+        tostring(TetrisConfig.AI and TetrisConfig.AI.BtnHard)))
+    -- ===== 第一阶段：玩家枚举/分配/注册输入/隐藏初始界面（仅首次执行一次）=====
+    -- OnRoundStart 可能多次回调 Start，且首次回调时 CreativeInstance 控件可能尚未注入；
+    -- 用 _setupDone 保证分配/注册只做一次，避免重复分配与重复注册输入。
+    if not self._setupDone then
     -- 枚举在场玩家，并配对其 pawn 世界坐标（米），用于按"实际站位"分配棋盘。
     -- GetAllPlayerStates / GetAllPlayerPawns 同序：第 i 个玩家态 ↔ 第 i 个 pawn。
-    local players = {}   -- { ps = PlayerState, locM = {X,Y,Z} 米 | nil }
+    local players = {}   -- { ps = PlayerState, locM = {X,Y,Z} 米 | nil, hasPawn = bool }
     local okS, arr = pcall(function() return Game:GetAllPlayerStates() end)
     local okP, parr = pcall(function() return Game:GetAllPlayerPawns() end)
+    -- 安全取数组长度：GetAllPlayerPawns 等在部分环境会返回空/失效 LuaArray，直接 :Num() 会抛 C++ 错，用 pcall 兜住。
+    local function safeNum(a)
+        if not a then return 0 end
+        local ok, n = pcall(function() return a:Num() end)
+        return (ok and type(n) == "number") and n or 0
+    end
+    local pawnCount = safeNum(parr)   -- 真人 pawn 数（0 表示接口不可用，回退到 PlayerState 计数）
+    local pawnN = pawnCount
+    local stateN = safeNum(arr)
     if okS and arr and arr.Num then
-        for i = 0, arr:Num() - 1 do
+        for i = 0, stateN - 1 do
             local ps = arr:Get(i)
             if ps then
                 local locM = nil
-                local pawn = (okP and parr and parr.Num and parr:Num() > i) and parr:Get(i) or nil
+                local pawn = nil
+                if i < pawnN then
+                    local okG, p = pcall(function() return parr:Get(i) end)
+                    if okG then pawn = p end
+                end
                 if pawn and pawn.K2_GetActorLocation then
                     local okL, lc = pcall(function() return pawn:K2_GetActorLocation() end)
                     if okL and lc and lc.X then
                         locM = { X = lc.X / 100, Y = lc.Y / 100, Z = lc.Z / 100 }  -- 厘米→米
                     end
                 end
-                players[#players + 1] = { ps = ps, locM = locM }
+                players[#players + 1] = { ps = ps, locM = locM, hasPawn = pawn ~= nil }
             end
         end
+    end
+    -- 仅"有 pawn 的真人"参与分配：引擎单人/测试环境会多报一个无 pawn 的 PlayerState，
+    -- 若把它也算进 assigned，会导致：单人被误判为双人（AiPanel 不弹）、且空盘无法变 AI 对手。
+    -- pawn 接口不可用时回退到 PlayerState 计数（原行为，无法剔除幽灵态），避免分配为空导致流程中断。
+    local realPlayers, contenders
+    if pawnCount > 0 then
+        realPlayers = pawnCount
+        contenders = {}
+        for _, p in ipairs(players) do
+            if p.hasPawn then contenders[#contenders + 1] = p end
+        end
+    else
+        realPlayers = #players
+        contenders = players
     end
 
     -- 取每块棋盘的出生装置世界坐标（米），供"最近分配"比对。
@@ -225,7 +266,7 @@ function TetrisMatch:Start()
         if not sl then haveAll = false end
     end
     local allHaveLoc = true
-    for _, p in ipairs(players) do if not p.locM then allHaveLoc = false end end
+    for _, p in ipairs(contenders) do if not p.locM then allHaveLoc = false end end
 
     local function dist2(a, b)
         if not a or not b then return nil end
@@ -234,9 +275,9 @@ function TetrisMatch:Start()
 
     -- 分配：优先按"站在哪个出生装置前 → 控制哪块盘"（解决玩家序与装置序不一致导致的反盘）；
     -- 任一坐标缺失时退化为顺序分配（第 i 个玩家 → 第 i 个棋盘）。
-    if #players > 0 and haveAll and allHaveLoc then
+    if #contenders > 0 and haveAll and allHaveLoc then
         local taken = {}
-        for _, p in ipairs(players) do
+        for _, p in ipairs(contenders) do
             local best, bestD = nil, nil
             for _, g in ipairs(self.list) do
                 if not taken[g] then
@@ -253,7 +294,7 @@ function TetrisMatch:Start()
         end
     else
         for i, g in ipairs(self.list) do
-            local p = players[i]
+            local p = contenders[i]
             if p then
                 g.playerState = p.ps
                 g.playerKey = playerKeyOf(p.ps)
@@ -286,10 +327,40 @@ function TetrisMatch:Start()
     -- 技能/玩法选择界面。
     self._enteredGame = false
 
-    -- 技能选择阶段（开局前置）：先用 UI 选技能 → 选完 → 再进入玩法选择 / 直接开局。
-    -- 选择按钮未放置时（占位/未注入）自动跳过，使用默认技能。
+    -- 开始界面（StartPanel / StartBtn）默认隐藏：在技能选择初始化(Begin)前先强制隐藏，
+    -- 避免编辑器默认设为可见导致 loading 期闪烁；真正的显示由 TetrisSkillSelect:Begin 在初始化时执行。
+    do
+        local scfg = TetrisConfig.SkillSelect or {}
+        local hud = TetrisConfig.ShowHudAfterSkill
+        if type(CustomUIAPI) == "table" then
+            for _, ps in ipairs(assigned) do
+                if scfg.StartPanel then pcall(function() CustomUIAPI.SetWidgetVisible(ps, scfg.StartPanel, false) end) end
+                if scfg.StartBtn   then pcall(function() CustomUIAPI.SetWidgetVisible(ps, scfg.StartBtn, false) end) end
+                -- 游戏内 HUD 默认隐藏（选完技能、显示 loading 时才显示）
+                if type(hud) == "table" and type(CreativeInstance) == "table" then
+                    for _, key in ipairs(hud) do
+                        local hid = CreativeInstance[key]
+                        if hid ~= nil then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
+                    end
+                end
+            end
+        end
+    end
+
+        self.realPlayers = realPlayers
+        print(string.format("[Tetris][AI][时机] 玩家枚举 realPlayers=%s pawnCount=%s #players=%s #assigned=%s",
+            tostring(realPlayers), tostring(pawnCount), tostring(#players), tostring(#assigned)))
+    end  -- _setupDone
+
+    -- ===== 第二阶段：开局前置阶段 =====
+    -- init 只显示「开始游戏」界面（StartPanel + StartBtn）；单击 StartBtn 后，
+    -- 由 TetrisSkillSelect:OnStartClicked 据单人判定决定是否弹 AiPanel（难度选择），再进入技能选择。
+    -- 这里只负责建立并 Begin 技能选择阶段（显示开始界面）。
+    -- 仅触发一次（_phaseInitiated 守卫），避免 OnRoundStart 多次回调导致重复 Begin。
+    if self._phaseInitiated then return end
+    self._phaseInitiated = true
     self.skillSelect = TetrisSkillSelect:new(self.owner, self)
-    self.skillSelect:Begin(assigned)
+    self.skillSelect:Begin(self.assigned)
 end
 
 -- 技能选择结束（或跳过）：按各玩家所选技能记录后，进入玩法选择（若启用）或直接开局。
@@ -461,9 +532,15 @@ function TetrisMatch:TryStartGameplay()
     -- >=2 => 双人（正常对战）。盘面恒为 2（spawnKeys 配 2 个出生点）。
     local stateCount, pawnCount = 0, 0
     local okS, pstates = pcall(function() return Game:GetAllPlayerStates() end)
-    if okS and pstates and type(pstates.Num) == "function" then stateCount = pstates:Num() end
+    if okS and pstates then
+        local okN, n = pcall(function() return pstates:Num() end)
+        if okN and type(n) == "number" then stateCount = n end
+    end
     local okP, parrs = pcall(function() return Game:GetAllPlayerPawns() end)
-    if okP and parrs and type(parrs.Num) == "function" then pawnCount = parrs:Num() end
+    if okP and parrs then
+        local okN, n = pcall(function() return parrs:Num() end)
+        if okN and type(n) == "number" then pawnCount = n end
+    end
     local realPlayers = (pawnCount > 0) and pawnCount or stateCount
     local isSingle = realPlayers < 2
     print(string.format("[Tetris][Versus] 模式=%s（盘面数=%d）",
@@ -475,6 +552,10 @@ function TetrisMatch:TryStartGameplay()
         else
             -- 无真人分配：单人模式下作为 AI 对手（双人模式两盘都已分配真人，不会走到这）
             g.isAI = true
+            -- 应用玩家在 AiPanel 选的难度（缺省回退 DefaultDifficulty），落到 AI 盘落子质量
+            local lv = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+            local lvl = (TetrisConfig.AI and TetrisConfig.AI.DifficultyLevels) or {}
+            g.aiQuality = (lvl[lv] and lvl[lv].Quality) or 1.0
             g:Start()
         end
     end
@@ -508,6 +589,18 @@ function TetrisMatch:ShowLoading(visible)
     -- 进度条：显示时先归零，延迟 0.5s 再启动 LoadingTime 秒填充动画（让 loading 先渲染出来）；隐藏时停止动画并归零。
     -- 幂等：已在显示中则不打断/不重启动画，避免 Start()/OnModeSelected() 被重复触发时进度动画启动多次。
     if visible then
+        -- 选完技能后显示的 HUD：与 loading 一并显示给全体真人（幂等；仅控制显示，不在隐藏 loading 时关闭）
+        local hud = TetrisConfig.ShowHudAfterSkill
+        if type(hud) == "table" and type(CreativeInstance) == "table" then
+            for _, key in ipairs(hud) do
+                local hid = CreativeInstance[key]
+                if hid ~= nil then
+                    for _, ps in ipairs(list) do
+                        pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, true) end)
+                    end
+                end
+            end
+        end
         if self._loadingVisible then return end
         self._loadingVisible = true
         for _, ps in ipairs(list) do self:SetLoadingProgress(ps, 0) end

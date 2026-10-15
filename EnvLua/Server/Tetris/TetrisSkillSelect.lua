@@ -34,6 +34,7 @@ function TetrisSkillSelect:new(owner, match)
     o._started = false         -- 「开始游戏」是否已点击（仅一次）
     o.registered = false
     o._startReg = false
+    o._sceneHidden = false     -- 选完技能隐藏场景对象是否已执行（仅一次）
     o.clickEventId = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
     return o
 end
@@ -126,6 +127,7 @@ function TetrisSkillSelect:Begin(players)
 
     if #self.players == 0 or not self:Available() then
         print("[Tetris][Skill] 跳过技能选择（未启用/未放置按钮/无玩家），使用默认技能")
+        self:HideSceneObjectsOnce()   -- 技能选择被跳过时同样兜底隐藏场景对象（仅一次）
         self:ShowAll(false)
         self:Finish()
         return
@@ -165,6 +167,15 @@ function TetrisSkillSelect:RegisterStart()
     print("[Tetris][Skill] 「开始游戏」按钮已注册")
 end
 
+-- 直接显示技能选择面板 + 3 个按键并注册（跳过「开始游戏」界面）；供 AiPanel 选完难度后调用
+function TetrisSkillSelect:ShowSkillPanel()
+    for _, p in ipairs(self.players) do
+        self:ShowPanelFor(p, true)
+    end
+    self:RegisterSkills()
+    print("[Tetris][Skill] 进入技能选择界面")
+end
+
 function TetrisSkillSelect:OnStartClicked(ps)
     if self.done or self._started then return end
     self._started = true
@@ -175,11 +186,21 @@ function TetrisSkillSelect:OnStartClicked(ps)
     end
     self:ShowForAll(cfg.StartPanel, false)        -- 隐藏开始界面（整体）
     self:ShowForAll(cfg.StartBtn, false)          -- 隐藏开始按钮（冗余保险）
-    for _, p in ipairs(self.players) do
-        self:ShowPanelFor(p, true)                -- 显示技能选择面板 + 3 个按键
+
+    -- 单击 StartBtn 后才据单人判定：单人 + AI 难度面板可用 → 先弹 AiPanel（选完难度再出技能面板）；
+    -- 否则（双人 / 面板未配置）直接出技能面板。
+    -- 惰性 require：避免与 TetrisAIDifficulty 形成加载期循环依赖（其顶部 require 了本模块）。
+    local m = self.match
+    local isSingle = (m and m.realPlayers or 0) < 2
+    local TetrisAIDifficulty = require("EnvLua.Server.Tetris.TetrisAIDifficulty")
+    if isSingle and TetrisAIDifficulty and TetrisAIDifficulty:Available() then
+        local ai = TetrisAIDifficulty:new(self.owner, m)
+        m.aiSelect = ai
+        ai:Begin(self.players)
+        print(string.format("[Tetris][Skill] 单人模式：进入 AI 难度选择（realPlayers=%s）", tostring(m and m.realPlayers)))
+    else
+        self:ShowSkillPanel()
     end
-    self:RegisterSkills()
-    print("[Tetris][Skill] 点击「开始游戏」，进入技能选择界面")
 end
 
 -- 注册 3 个技能按键的点击事件（点击者 PlayerState 由引擎回传）
@@ -203,6 +224,7 @@ function TetrisSkillSelect:OnPick(ps, key)
     if self.choices[ps] then return end   -- 已选过，忽略重复点击
 
     self.choices[ps] = key
+    self:HideSceneObjectsOnce()   -- 任意玩家点完技能即隐藏场景对象（全程只执行一次）
 
     -- 该玩家选完：其 3 个技能按钮全部失效（禁用交互）；面板暂不隐藏，
     -- 待 loading 隐藏时由 TetrisMatch 统一隐藏选择界面。
@@ -223,6 +245,22 @@ function TetrisSkillSelect:OnPick(ps, key)
 end
 
 -- ---------------- 收尾 ----------------
+-- 选完技能后隐藏指定场景对象：任意玩家点完即触发，全程只执行一次。
+-- 场景对象为共享世界对象，用 InstanceAPI.ToggleInstanceVisible(uuid, false) 隐藏，影响全体玩家。
+function TetrisSkillSelect:HideSceneObjectsOnce()
+    if self._sceneHidden then return end
+    self._sceneHidden = true
+    local list = TetrisConfig.HideAfterSkill
+    if type(list) ~= "table" or type(InstanceAPI) ~= "table" then return end
+    for _, key in ipairs(list) do
+        local id = (type(CreativeInstance) == "table" and CreativeInstance[key]) or nil
+        if id ~= nil then
+            pcall(function() InstanceAPI.ToggleInstanceVisible(id, false) end)
+        end
+    end
+    print("[Tetris][Skill] 已隐藏选技能阶段场景对象（一次性）")
+end
+
 function TetrisSkillSelect:Finish()
     if self.done then return end
     self.done = true

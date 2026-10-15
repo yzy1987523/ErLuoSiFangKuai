@@ -48,8 +48,9 @@ local function evaluate(g, rows, cols)
     return lines * 100 - holes * 60 - bump * 3 - agg * 2
 end
 
--- 计算当前下落方块的最优落点。返回 {rot=旋转态, x=列} 或 nil（无合法落点=即将顶出）
-function TetrisAI.bestMove(board)
+-- 计算当前下落方块的最优落点。返回 {rot=旋转态, x=列} 或 nil（无合法落点=即将顶出）。
+-- quality(0~1, 可选)：落子质量。1=始终最优；<1 时以 (1-quality) 概率改用随机合法落点（AI 变弱，对应难度选择）。
+function TetrisAI.bestMove(board, quality)
     local cols = board.cols
     local rows = board.rows
     local active = board:getActive()
@@ -58,6 +59,7 @@ function TetrisAI.bestMove(board)
 
     local best = nil
     local bestScore = -1e9
+    local candidates = {}   -- 全部合法落点，供低质量时随机退化（弱 AI）
     for rot = 1, 4 do
         local cells = board:getPieceCells(type, rot)
         for x = 1, cols do
@@ -76,11 +78,20 @@ function TetrisAI.bestMove(board)
                     end
                 end
                 local sc = evaluate(g, rows, cols)
+                candidates[#candidates + 1] = { rot = rot, x = x }
                 if sc > bestScore then
                     bestScore = sc
                     best = { rot = rot, x = x }
                 end
             end
+        end
+    end
+    if not best then return nil end
+
+    -- 难度退化：quality<1 且随机命中时，从全部合法落点里随机选一个（较弱）
+    if quality and quality < 1 and #candidates > 0 then
+        if math.random() > quality then
+            return candidates[math.random(#candidates)]
         end
     end
     return best

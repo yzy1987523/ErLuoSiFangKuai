@@ -595,6 +595,21 @@ TetrisConfig.SkillSelect = {
     BtnSK06   = ci("1_CreativeInstance_23643898051465510"),  -- 技能按钮：SK-06 攻势
 }
 
+-- ===================== 选完技能后隐藏的场景对象 =====================
+-- 任意玩家点完技能即隐藏这些「场景对象」（CreativeInstance key），全程只执行一次。
+-- 与 UI 控件不同，场景对象用 InstanceAPI.ToggleInstanceVisible(uuid, false) 隐藏（影响全体玩家，无需按玩家重复）。
+TetrisConfig.HideAfterSkill = {
+    "1_CreativeInstance_23643899057135203",
+    "1_CreativeInstance_23643900034986535",
+}
+
+-- ===================== 选完技能后显示的 HUD =====================
+-- 与 HideAfterSkill 相反：这些 UI 实例（CreativeInstance key）在「选完技能、显示 loading 时」
+-- 一并 SetWidgetVisible(true) 给全体真人，作为游戏内 HUD。游戏开始后保持显示，不在隐藏 loading 时关闭。
+TetrisConfig.ShowHudAfterSkill = {
+    "1_CreativeInstance_23643901302086725",
+}
+
 -- ===================== 游戏提示文本（通用飘字） =====================
 -- 任意提示（扔垃圾 / 被扔垃圾 / 技能就绪等）写入该文本，显示 HintDuration 秒后自动隐藏。
 TetrisConfig.HintText = ci("1_CreativeInstance_23643899752970406")
@@ -610,9 +625,26 @@ TetrisConfig.HintDuration = 2   -- 提示显示时长（秒），到点自动隐
 -- ===================== AI 对手（单人模式） =====================
 -- 单人时：第 2 块盘（无人类玩家的旁观盘）改为 AI 自动对战。
 -- AI 自动选最优落点（朝向 + 列）、让方块自然下落、蓄满后自动放技能，并与人类互发垃圾。
+-- 单人开局先弹「AI 难度选择面板」(PanelKey + 3 个难度按钮)，选完写入 match.aiDifficulty，
+-- 落到 AI 盘 g.aiQuality（见 TetrisAI.bestMove 的 quality 参数：越低越易乱下、越弱）。
 TetrisConfig.AI = {
     Enabled = true,        -- 单人模式把空盘变成自动机器人对手
     FreeLook = true,       -- AI 在场时人类不锁定相机，便于观察双方盘面
+
+    -- 单人 AI 难度选择界面（控件需在编辑器 UI Editor 预放置，UUID 填这里）
+    PanelKey = ci("1_CreativeInstance_23643900886574000"),  -- AiPanel：AI 难度选择容器面板
+    BtnEasy   = ci("1_CreativeInstance_23643900012158637"),  -- 难度按钮：简单
+    BtnNormal = ci("1_CreativeInstance_23643899828974623"),  -- 难度按钮：普通
+    BtnHard   = ci("1_CreativeInstance_23643901829603942"),  -- 难度按钮：困难
+
+    -- 各难度对应的 AI 落子质量（0~1）：1=始终最优（困难）；越低越常以随机落点代替最优（越弱）。
+    -- 影响 AI 强度，不影响下落速度（速度由重力区间决定）。
+    DefaultDifficulty = "Normal",
+    DifficultyLevels = {
+        Easy   = { Quality = 0.55 },
+        Normal = { Quality = 0.80 },
+        Hard   = { Quality = 1.00 },
+    },
 }
 
 -- ===================== 结算界面 =====================

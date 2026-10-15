@@ -28,6 +28,7 @@ function TetrisGame:new(owner, opts)
     o.skillBars = 0          -- 当前 bar 数（0~NeedBars-1）；集满 NeedBars 兑换 1 power 后清零
     o.skillPower = 0         -- 当前 power 数（0~MaxPower）；释放技能消耗 1 个
     o.isAI = false           -- 是否 AI 托管（对手盘自动对战）
+    o.aiQuality = nil        -- AI 落子质量（0~1，由 AiPanel 难度写入；nil 时视为 1=最优）
     o.aiSeq = 0              -- AI 已规划到的 spawnSeq（避免同一块重复规划）
     o.selectedSkill = nil    -- 本盘所选技能 key（"SK01"/"SK02"/"SK06"），由 Match 在开局前赋值
     o._shownHold = false     -- 当前 Hold 组件显隐状态：false=隐藏，数字=已显示的方块类型
@@ -916,7 +917,7 @@ function TetrisGame:aiStep()
     local a = b:getActive()
     if not a then return end
     if self.aiSeq == b.spawnSeq then return end   -- 本块已规划，不再动
-    local plan = TetrisAI.bestMove(b)
+    local plan = TetrisAI.bestMove(b, self.aiQuality)
     self.aiSeq = b.spawnSeq
     if not plan then return end
 
