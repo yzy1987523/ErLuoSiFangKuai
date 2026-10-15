@@ -186,15 +186,6 @@ end
 
 -- 开局：枚举在场玩家 → 分配棋盘 → 互设对手 → 注册输入 → 玩法选择阶段（选完传送+开局）
 function TetrisMatch:Start()
-    -- 诊断：观察 Start() 调用时机与 CreativeInstance 注入时机（稳定后可删）
-    self._dbgCalls = (self._dbgCalls or 0) + 1
-    print(string.format("[Tetris][AI][时机] Start() 第 %d 次 | CreativeInstance=table?%s | PanelKey=%s BtnEasy=%s BtnNormal=%s BtnHard=%s",
-        self._dbgCalls,
-        tostring(type(CreativeInstance) == "table"),
-        tostring(TetrisConfig.AI and TetrisConfig.AI.PanelKey),
-        tostring(TetrisConfig.AI and TetrisConfig.AI.BtnEasy),
-        tostring(TetrisConfig.AI and TetrisConfig.AI.BtnNormal),
-        tostring(TetrisConfig.AI and TetrisConfig.AI.BtnHard)))
     -- ===== 第一阶段：玩家枚举/分配/注册输入/隐藏初始界面（仅首次执行一次）=====
     -- OnRoundStart 可能多次回调 Start，且首次回调时 CreativeInstance 控件可能尚未注入；
     -- 用 _setupDone 保证分配/注册只做一次，避免重复分配与重复注册输入。
@@ -348,8 +339,6 @@ function TetrisMatch:Start()
     end
 
         self.realPlayers = realPlayers
-        print(string.format("[Tetris][AI][时机] 玩家枚举 realPlayers=%s pawnCount=%s #players=%s #assigned=%s",
-            tostring(realPlayers), tostring(pawnCount), tostring(#players), tostring(#assigned)))
     end  -- _setupDone
 
     -- ===== 第二阶段：开局前置阶段 =====

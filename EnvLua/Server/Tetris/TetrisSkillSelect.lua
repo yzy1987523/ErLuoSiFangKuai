@@ -197,7 +197,6 @@ function TetrisSkillSelect:OnStartClicked(ps)
         local ai = TetrisAIDifficulty:new(self.owner, m)
         m.aiSelect = ai
         ai:Begin(self.players)
-        print(string.format("[Tetris][Skill] 单人模式：进入 AI 难度选择（realPlayers=%s）", tostring(m and m.realPlayers)))
     else
         self:ShowSkillPanel()
     end
