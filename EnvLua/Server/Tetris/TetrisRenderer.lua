@@ -2262,6 +2262,10 @@ function TetrisRenderer:ReconcileBoard(board)
             elseif not filled and a then
                 self:ReleaseActor(a)
                 self.occ[r][c] = nil
+            else
+                -- 占位且已有演员：内容可能已变（如垃圾行上移后该格变成垃圾/其它方块），
+                -- 按当前格类型重绘，避免沿用旧色（升起前该位置的旧方块颜色）。
+                self:PaintCell(a, board:getCell(r, c))
             end
         end
     end

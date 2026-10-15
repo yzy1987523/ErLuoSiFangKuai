@@ -554,6 +554,7 @@ function TetrisBoard:applyGarbage()
     self.pendingGarbageMoved = true   -- 垃圾行上移会改变方块位置，渲染层应退化为逐格重排
     self.lastAppliedGarbage = count  -- 供 Game 层判断「本盘被扔垃圾」并弹提示（独立于渲染消费标记）
 
+    local gap = math.random(1, self.cols)   -- 整批垃圾共用同一缺口列（多行对齐）
     for _ = 1, count do
         -- 整体上移一行，顶行被挤出（若顶行非空则游戏结束）
         for r = 1, self.rows - 1 do
@@ -561,7 +562,6 @@ function TetrisBoard:applyGarbage()
                 self.grid[r][c] = self.grid[r + 1][c]
             end
         end
-        local gap = math.random(1, self.cols)
         for c = 1, self.cols do
             self.grid[self.rows][c] = (c == gap) and 0 or 8  -- 8 = 垃圾块颜色
         end
