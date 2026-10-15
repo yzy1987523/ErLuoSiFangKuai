@@ -517,6 +517,7 @@ TetrisConfig.SkillEnabled = true
 TetrisConfig.Skill = {
     NeedBars = 3,                                       -- 集满几个 bar 兑换 1 个 power
     MaxPower = 3,                                       -- 最多持有几个 power
+    InitBars = 2,                                       -- 开局默认预填几条蓄能条（0=不送；< NeedBars，故开局不自动产生 power）
     DescText = ci("1_CreativeInstance_23643899335684710"),   -- 技能说明文本控件
     Desc     = "消除 1 行得 1 bar，集满 3 bar 得 1 power；释放技能消耗 1 power",
     IconImage = ci("1_CreativeInstance_23643899882881827"),   -- 局内技能 icon 图片控件（Image 控件）
@@ -536,6 +537,13 @@ TetrisConfig.Skill = {
     },
     PowerEmptyImg = "23_ImagePreset_181443179020119",    -- 无 power 时显示
     PowerFullImg  = "23_ImagePreset_181443890598929",    -- 有 power 时显示
+
+    -- 技能不可用（power=0）时，把技能按钮 BtnSkill 图片调暗（opacity 0~1，越小越暗）；
+    -- 引擎 Button 控件无 tint/灰度接口，此为「置灰/不可用」近似。有 power 时恢复 1（不透明）。
+    -- 若需真·灰度，改走 SetButtonNormalImage 切换灰图（见 BtnDisabledImg）。
+    DisabledOpacity = 0.4,
+    BtnNormalImg    = nil,   -- 可用态按钮图资源 Key（ImagePreset）；与 BtnDisabledImg 同时填才走切图方案
+    BtnDisabledImg  = nil,   -- 不可用态灰图资源 Key（ImagePreset）；与 BtnNormalImg 同时填才走切图方案
 }
 
 -- ===================== 技能库（开局由玩家三选一，见 doc/技能.xls） =====================

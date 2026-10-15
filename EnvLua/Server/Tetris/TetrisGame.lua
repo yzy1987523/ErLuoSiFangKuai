@@ -734,7 +734,7 @@ end
 function TetrisGame:InitSkillUI()
     local cfg = TetrisConfig.Skill
     if not cfg then return end
-    self.skillBars = 0
+    self.skillBars = math.min(cfg.InitBars or 0, cfg.NeedBars or 3)
     self.skillPower = 0
     local ps = self:GetPlayerState()
     if ps and type(CustomUIAPI) == "table" then
@@ -798,10 +798,21 @@ function TetrisGame:UpdateSkillUI()
         pcall(function() CustomUIAPI.SetImageWidgetContent(ps, id, imgID) end)
     end
 
-    -- 技能按钮：有 power 才可交互，无 power 禁用（避免玩家空点）
+    -- 技能按钮 BtnSkill：有 power 才可交互，无 power 禁用（避免玩家空点）
     local btn = TetrisConfig.UI.BtnSkill
     if btn then
-        pcall(function() CustomUIAPI.SetWidgetInteraction(ps, btn, self.skillPower > 0) end)
+        local enabled = self.skillPower > 0
+        pcall(function() CustomUIAPI.SetWidgetInteraction(ps, btn, enabled) end)
+        -- 按钮置灰：引擎 Button 控件无 tint/灰度接口。
+        --   方案 B（真·灰度）：同时配了 BtnNormalImg + BtnDisabledImg 两张图则切整图；
+        --   否则方案 A 用图片透明度调暗近似（无需资源，power 恢复时透明度和交互都复原）。
+        if cfg.BtnNormalImg and cfg.BtnDisabledImg then
+            local imgKey = enabled and cfg.BtnNormalImg or cfg.BtnDisabledImg
+            local id = (type(AssetRef) == "table" and AssetRef[imgKey]) or imgKey
+            pcall(function() CustomUIAPI.SetButtonNormalImage(ps, btn, id) end)
+        else
+            pcall(function() CustomUIAPI.SetWidgetImageOpacity(ps, btn, enabled and 1 or (cfg.DisabledOpacity or 0.4)) end)
+        end
     end
 end
 
