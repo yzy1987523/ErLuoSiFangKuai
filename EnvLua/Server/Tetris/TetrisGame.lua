@@ -431,6 +431,7 @@ function TetrisGame:UpdateHoldNextUI()
     local ui = TetrisConfig.UI
     if not (ui and (ui.HoldImg or ui.NextImg)) then return end
     local imgs = TetrisConfig.PieceImages
+    local tints = TetrisConfig.PieceTint
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
 
@@ -439,6 +440,16 @@ function TetrisGame:UpdateHoldNextUI()
         local key = (t and imgs) and imgs[t] or nil
         if not key then return nil end
         return (type(AssetRef) == "table" and AssetRef[key]) or key
+    end
+
+    -- 把底色（白图）叠加 tint 成对应方块色；t 不在 1..8 则不染色（保持白）。
+    local function tintImg(widget, t)
+        local c = (t and tints) and tints[t] or nil
+        if not c then return end
+        pcall(function()
+            CustomUIAPI.SetImageWidgetColor(ps, widget,
+                Game:ConstructFVectorByLuaTable({ X = c.X, Y = c.Y, Z = c.Z }))
+        end)
     end
 
     -- Hold（board.holdType：1..7 或 nil）
@@ -451,6 +462,7 @@ function TetrisGame:UpdateHoldNextUI()
                     CustomUIAPI.SetImageWidgetContent(ps, ui.HoldImg, imgID)
                     CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, true)
                 end)
+                tintImg(ui.HoldImg, ht)
                 self._shownHold = ht
             end
         elseif self._shownHold ~= false then
@@ -470,6 +482,7 @@ function TetrisGame:UpdateHoldNextUI()
                     CustomUIAPI.SetImageWidgetContent(ps, ui.NextImg, imgID)
                     CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, true)
                 end)
+                tintImg(ui.NextImg, nt)
                 self._shownNext = nt
             end
         elseif self._shownNext ~= false then

@@ -21,6 +21,42 @@ local function atan2compat(y, x)
     return 0
 end
 
+-- 从单元 Actor 取出可用于换色的 StaticMeshComponent（或本身支持 SetStaticMesh 的封装 Actor）。
+-- 与 PuyoRenderer 同策略：多策略探测并缓存结果（按 actor 弱引用），避免每帧重复探测。
+-- 引擎无运行时改材质 API，故换色只能走 SetStaticMesh（已验证可用；不支持时 pcall 兜底保持单色）。
+local function getMeshComp(self, actor)
+    if not actor then return nil end
+    if self._compCache == nil then self._compCache = setmetatable({}, { __mode = "k" }) end
+    local cached = self._compCache[actor]
+    if cached ~= nil then return cached or nil end   -- 缓存可能为 false（未找到）
+    local comp
+    -- 1) RootComponent 若为 StaticMeshComponent
+    local ok, rc = pcall(function() return actor.RootComponent end)
+    if ok and rc and type(rc.SetStaticMesh) == "function" then comp = rc end
+    -- 2) 按类名取组件
+    if not comp then
+        for _, cls in ipairs({ "StaticMeshComponent", "WoWStaticMeshComponentBase", "WoWCustomStaticMeshComponentBase" }) do
+            local ok2, c = pcall(function() return actor:GetComponentByClass(cls) end)
+            if ok2 and c and type(c.SetStaticMesh) == "function" then comp = c; break end
+        end
+    end
+    -- 3) 按组件名取
+    if not comp then
+        for _, nm in ipairs({ "StaticMesh", "StaticMeshComponent", "Mesh", "Cube" }) do
+            local ok3, c = pcall(function() return actor:GetComponentByName(nm) end)
+            if ok3 and c and type(c.SetStaticMesh) == "function" then comp = c; break end
+        end
+    end
+    -- 4) 兜底：actor 自身直接转发了 SetStaticMesh（部分封装 Actor）
+    if not comp and type(actor.SetStaticMesh) == "function" then comp = actor end
+    self._compCache[actor] = comp or false
+    if not comp and not self._meshApiWarned then
+        self._meshApiWarned = true
+        print("[Tetris][WARN] 无法取得 StaticMeshComponent，换色将失败（保持单色）")
+    end
+    return comp
+end
+
 -- 方块旋转绕“盘面法线(forward)”旋转（而非固定的世界 Y 轴）。
 -- 注意：盘面偏航必须按「每个棋盘实例」取（self.boardYaw），绝不能写成模块级全局——
 -- 否则多盘时后初始化的一方会覆盖前者的 yaw，导致另一盘的方块绕错轴旋转（表现为旋转/落地方向相反）。
@@ -755,6 +791,45 @@ function TetrisRenderer:placeActor(a, row, col)
     pcall(function() a:K2_TeleportTo(cmVec(self:cellLocation(row, col)), self.rot) end)
 end
 
+-- ---------------- 方块换色（按类型/垃圾） ----------------
+-- 解析 8 种彩色模型引用（1..7 = 方块颜色，8 = 垃圾灰），缓存到 self.colorMesh。
+-- 任一未注册（AssetRef 解析为 nil）→ 该类型回退默认单色（不换色）。幂等，仅解析一次。
+function TetrisRenderer:PrepareColorRefs()
+    if self._colorRefsReady then return end
+    self._colorRefsReady = true
+    self.colorMesh = {}
+    local ids = TetrisConfig.Render.ColorModelIDs
+    if type(ids) == "table" then
+        for t = 1, 8 do
+            local key = ids[t]
+            local ref = (type(AssetRef) == "table" and key) and AssetRef[key] or nil
+            self.colorMesh[t] = ref
+            if key and not ref and TetrisConfig.Debug then
+                print(string.format("[Tetris][Color][WARN] ColorModelIDs[%d] 资源未注册 AssetRef[\"%s\"]，回退单色",
+                    t, tostring(key)))
+            end
+        end
+    end
+    if TetrisConfig.Debug then
+        local n = 0
+        for t = 1, 8 do if self.colorMesh[t] then n = n + 1 end end
+        print(string.format("[Tetris][Color] 彩色模型解析完成: %d/8（其余回退单色）", n))
+    end
+end
+
+-- 把单元方块 Actor 换成指定类型的彩色模型（cellType: 1..7 方块 / 8 垃圾）。
+-- 未解析到对应模型（占位 Key 未替换）→ 不换色，保持默认单色。失败 pcall 兜底。
+function TetrisRenderer:PaintCell(a, cellType)
+    if not a or not cellType or cellType < 1 or cellType > 8 then return end
+    if not self.colorMesh then self:PrepareColorRefs() end
+    local ref = self.colorMesh and self.colorMesh[cellType]
+    if not ref then return end  -- 回退单色
+    local comp = getMeshComp(self, a)
+    if comp then
+        pcall(function() comp:SetStaticMesh(ref) end)
+    end
+end
+
 -- 在指定格位置播放消行特效。Domain API 坐标用米，cellLocation 返回值即米，直接构造 FVector 传入。
 -- 资源走 AssetRef（需 VSCode 插件注册并 update preset）；失败静默，不影响消行主流程。
 -- 在指定“行”的消行位置播放特效。位置只依赖行号：
@@ -935,7 +1010,10 @@ function TetrisRenderer:GenPieceChildren()
             for _, o in ipairs(offs) do
                 local cw = Game:ConstructFVectorByLuaTable({ X = park.X + right.X * o.dx, Y = park.Y + right.Y * o.dx, Z = park.Z + o.dz })
                 local child = CreativeGameAPI.CreateActor(childRef, cw, self.rot, scale, nil)
-                if child then kids[#kids + 1] = child end
+                if child then
+                    self:PaintCell(child, t)  -- 按类型换彩色模型（未解析则回退单色）
+                    kids[#kids + 1] = child
+                end
             end
             self._pieceChildren[t] = kids
             self._pieceChildrenOffsets[t] = offs
@@ -1053,7 +1131,10 @@ function TetrisRenderer:BuildActivePiecesV1()
             for _, o in ipairs(offs) do
                 local wloc = Game:ConstructFVectorByLuaTable({ X = park.X + o.dx, Y = park.Y, Z = park.Z + o.dz })
                 local child = CreativeGameAPI.CreateActor(ref, wloc, self.rot, scale, nil)
-                if child then kids[#kids + 1] = child end
+                if child then
+                    self:PaintCell(child, t)  -- 按类型换彩色模型（未解析则回退单色）
+                    kids[#kids + 1] = child
+                end
             end
             self.pieces[t] = { cells = kids, offsets = offs }
         end
@@ -1225,6 +1306,7 @@ function TetrisRenderer:ProcessPoolBuild()
             local cw = Game:ConstructFVectorByLuaTable({ X = park.X + right.X * o.dx, Y = park.Y + right.Y * o.dx, Z = park.Z + o.dz })
             local child = CreativeGameAPI.CreateActor(childRef, cw, rot0, scale, nil)
             if not child then okAll = false break end
+            self:PaintCell(child, t)  -- 按类型换彩色模型（未解析则回退单色）
             children[#children + 1] = child
         end
         if not okAll then
@@ -1904,6 +1986,9 @@ function TetrisRenderer:Build(spawnPointKey)
     self.mode = mode
     self.refTop = refTop
 
+    -- 解析 8 种彩色模型引用（供落定方块 / 活动方块换色），缺失则回退单色。
+    self:PrepareColorRefs()
+
     -- 对象池占位（occ 必须先建好，供运行时“取出/归还”落定使用）
     self.occ = {}
     for row = 1, rows do
@@ -2171,6 +2256,7 @@ function TetrisRenderer:ReconcileBoard(board)
                 local na = self:AcquireActor()
                 if na then
                     self:placeActor(na, r, c)
+                    self:PaintCell(na, board:getCell(r, c))  -- 按格内类型换色（1..7 方块 / 8 垃圾）
                     self.occ[r][c] = na
                 end
             elseif not filled and a then
@@ -2252,6 +2338,7 @@ function TetrisRenderer:ReconcileClear(board, clearedRows)
         local a = self:AcquireActor()
         if a then
             self:placeActor(a, nl.r, nl.c)
+            self:PaintCell(a, board:getCell(nl.r, nl.c))  -- 按格内类型换色（1..7 方块 / 8 垃圾）
             self.occ[nl.r][nl.c] = a
         end
     end
@@ -2415,6 +2502,7 @@ function TetrisRenderer:Update(board)
                     a = self:AcquireActor()
                     if a then
                         self:placeActor(a, lc.row, lc.col)
+                        self:PaintCell(a, board:getCell(lc.row, lc.col))  -- 按格内类型换色（1..7 方块 / 8 垃圾）
                         self.occ[lc.row] = self.occ[lc.row] or {}
                         self.occ[lc.row][lc.col] = a
                     end

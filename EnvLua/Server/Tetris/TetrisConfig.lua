@@ -203,7 +203,7 @@ TetrisConfig.Render = {
     -- 因此必须是 CreativeAsset（44_CreativeAsset_*），不能传 ActorPreset。
     BorderAssetRefKey = "44_CreativeAsset_3400003",
 
-    BlockScale = 1.0,        -- 方块模型缩放，按模型实际尺寸调整
+    BlockScale = 1,        -- 方块模型缩放，按模型实际尺寸调整
 
     -- 兜底隐藏方式：ToggleInstanceVisible 对部分动态实例无效时开启，
     -- 改为把不需要显示的格子缩放设为 0（需先确认 SetInstanceScale 对实例有效）。
@@ -291,16 +291,22 @@ TetrisConfig.Render = {
     -- X 正 = 东 / Y 正 = 北 / Z 正 = 上。棋盘是平行于 XZ 的竖直面。
     AnchorOffset = { X = 0.0, Y = 8.0, Z = 21.0 },  -- 抬高锚点：盘面总高 ≈(20-1)*1.02≈19.4m，须保证底行在地面之上（Z=12 时底行没入地下，约 7 行看不见）
 
-    -- 每种方块颜色对应的模型 ID。引擎无运行时改材质接口，颜色必须烘焙进模型。
-    -- 未准备好的颜色回退到 BlockModelID（表现为单色）。
+    -- 每种方块（子方块）对应的「彩色模型」AssetRef Key（网格资源，形如 "44_CreativeAsset_*" / "50_CreativeAsset_*"）。
+    -- 引擎无运行时改材质接口，颜色必须烘焙进模型；渲染层用 SetStaticMesh 把单元方块换成对应彩色网格。
+    -- 数值 1..7 对应 TetrisConfig.PieceType（I/O/T/J/L/S/Z），8 = 垃圾块（灰色）。
+    -- 未填 / 未注册（AssetRef 解析为 nil）→ 回退默认单色模型（BlockActorPresetKey / PieceChildPresetKey）。
+    -- 用法：把 7 个着色方块模型（与现有盘面方块同规格的立方体）在编辑器注册 → 执行 update preset →
+    --       把生成的 7 个 Key 填到下面（替换 PLACEHOLDER_x）。垃圾块单独用灰色模型。当前为占位，待替换真实 Key。
+    -- 8 个模型按编号顺序（1=I 2=O 3=T 4=J 5=L 6=S 7=Z 8=垃圾）；各模型已烘焙好对应颜色。
     ColorModelIDs = {
-        [1] = nil,  -- I 青色
-        [2] = nil,  -- O 黄色
-        [3] = nil,  -- T 紫色
-        [4] = nil,  -- J 蓝色
-        [5] = nil,  -- L 橙色
-        [6] = nil,  -- S 绿色
-        [7] = nil,  -- Z 红色
+        [1] = "50_CreativeAsset_114280860",        -- I 青色（Cyan）
+        [2] = "50_CreativeAsset_114956395",        -- O 黄色（Yellow）
+        [3] = "50_CreativeAsset_116336317",        -- T 紫色（Purple）
+        [4] = "50_CreativeAsset_119832590",        -- J 蓝色（Blue）
+        [5] = "50_CreativeAsset_114505299",        -- L 橙色（Orange）
+        [6] = "50_CreativeAsset_115828003",        -- S 绿色（Green）
+        [7] = "50_CreativeAsset_110257472",        -- Z 红色（Red）
+        [8] = "50_CreativeAsset_115324270",        -- 垃圾块 灰色（Gray）
     },
 }
 
@@ -447,6 +453,30 @@ TetrisConfig.PieceImages = {
     [5] = "23_ImagePreset_181441618721512",  -- L
     [6] = "23_ImagePreset_181443114759746",  -- S
     [7] = "23_ImagePreset_181444179307978",  -- Z
+}
+
+-- Hold / Next 图片底色（白色底图，由 SetImageWidgetColor 叠加 tint 出各色）。
+-- 分量 R/G/B ∈ [0,1]（不是 0~255），由下方 HEX 换算而来；改色直接改 PieceTintHex 即可。
+-- 8 = 垃圾块（灰色），Next/Hold 通常不显示垃圾，预留以防复用。
+TetrisConfig.PieceTintHex = {
+    [1] = "1bdef2",  -- I 青
+    [2] = "ffff3f",  -- O 黄
+    [3] = "ae3dfd",  -- T 紫
+    [4] = "016afe",  -- J 蓝
+    [5] = "ffa700",  -- L 橙
+    [6] = "18ed6f",  -- S 绿
+    [7] = "fa2827",  -- Z 红
+    [8] = "a0abb3",  -- 垃圾 灰
+}
+TetrisConfig.PieceTint = {
+    [1] = { X = 0.10588, Y = 0.87059, Z = 0.94902 },  -- I 青 1bdef2
+    [2] = { X = 1.00000, Y = 1.00000, Z = 0.24706 },  -- O 黄 ffff3f
+    [3] = { X = 0.68235, Y = 0.23922, Z = 0.99216 },  -- T 紫 ae3dfd
+    [4] = { X = 0.00392, Y = 0.41569, Z = 0.99608 },  -- J 蓝 016afe
+    [5] = { X = 1.00000, Y = 0.65490, Z = 0.00000 },  -- L 橙 ffa700
+    [6] = { X = 0.09412, Y = 0.92941, Z = 0.43529 },  -- S 绿 18ed6f
+    [7] = { X = 0.98039, Y = 0.15686, Z = 0.15294 },  -- Z 红 fa2827
+    [8] = { X = 0.62745, Y = 0.67059, Z = 0.70196 },  -- 垃圾 灰 a0abb3
 }
 
 -- ===================== 玩法枚举 =====================
@@ -608,7 +638,7 @@ TetrisConfig.Versus = {
     Enabled = true,
     -- 消 N 行 → 给对手发几行垃圾（按 cleared 行数索引；无对应档位按 0）。
     --   经典规则：1 行=0、2 行=1、3 行=2、4 行(Tetris)=4。
-    GarbageTable = { [1] = 0, [2] = 1, [3] = 2, [4] = 4 },
+    GarbageTable = { [1] = 1, [2] = 3, [3] = 5, [4] = 7 },
     MaxPending = 30,   -- 待注入垃圾行上限（防止无限堆叠）
 }
 
