@@ -426,6 +426,15 @@ TetrisConfig.UI = {
     HoldImg = ci("1_CreativeInstance_23643900748630271"),   -- Hold 槽图片组件
     NextImg = ci("1_CreativeInstance_23643898717166573"),   -- Next 槽图片组件
 
+    -- Combo 图片组件：出现 2/3/4 行消除时显示 1 秒后自动隐藏（见 TetrisGame:ShowComboImage）。
+    ComboImg = ci("1_CreativeInstance_23643901081703507"),
+
+    -- 垃圾行提示框（对战 / 人机）：根据双方 board.pendingGarbage 显示「即将发 / 即将收垃圾」。
+    -- 即将给对手扔垃圾：对手盘 pendingGarbage>0（我刚发起的攻击尚未在对手盘落地）。
+    GarbageSendHint = ci("1_CreativeInstance_23643899752970406"),
+    -- 即将被对手扔垃圾：本盘 pendingGarbage>0（对手发的垃圾将在我下次落子时落入）。
+    GarbageRecvHint = ci("1_CreativeInstance_23643901821514970"),
+
     -- 对手分数文本控件：显示 self.opponent.board.score（对战 / 人机通用）
     OpponentScoreLabel = ci("1_CreativeInstance_23643899615395720"),
 }
@@ -612,7 +621,7 @@ TetrisConfig.ShowHudAfterSkill = {
 
 -- ===================== 游戏提示文本（通用飘字） =====================
 -- 任意提示（扔垃圾 / 被扔垃圾 / 技能就绪等）写入该文本，显示 HintDuration 秒后自动隐藏。
-TetrisConfig.HintText = ci("1_CreativeInstance_23643899752970406")
+TetrisConfig.HintText = ci("1_CreativeInstance_23643900239436700")
 -- Loading 加载界面：开局与「选技能后对象生成」期间显示的遮罩控件
 TetrisConfig.LoadingScreen = ci("1_CreativeInstance_23643899809238462")
 -- Loading 进度条：loading 显示期间 LoadingTime 秒内从 0 填充到 100%
@@ -735,7 +744,7 @@ TetrisConfig.Debug = {
     ShowPieceInfo = false,    -- 每次生成新下落方块时上屏（已改由 HUD 显示分数，默认关闭避免刷屏）
     ShowPieceInfoPopup = false, -- false = 聊天框(SendQuickMenuMessage)；true = 屏幕弹窗(SendBattlePopupMessage)
     ShowGameOverInfo = false,  -- 结束时上屏结算
-    PrintGarbage = false,      -- 对战：打印发/收垃圾行日志
+    PrintGarbage = true,      -- 对战：打印发/收垃圾行日志
     DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
     LockDbg = true,            -- 锁定加分调试：打印哪块盘(玩家/对手)在 lockPiece 加分，以及对手分控件是否写入成功
 }

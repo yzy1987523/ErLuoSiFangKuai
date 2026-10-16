@@ -669,7 +669,7 @@ function TetrisRenderer:SetWidgetOpponentScore(score)
     local uuid = self._behindWidgetTextUUID
     if uuid and type(CustomUIAPI) == "table" and CustomUIAPI.SetAllPlayerTextContent then
         pcall(function() CustomUIAPI.SetAllPlayerTextContent(uuid, txt) end)
-        if dbg then print(string.format("[Tetris][LockDbg] 对手分经 CustomUIAPI 写入 uuid=%s score=%s", tostring(uuid), txt)) end
+        -- if dbg then print(string.format("[Tetris][LockDbg] 对手分经 CustomUIAPI 写入 uuid=%s score=%s", tostring(uuid), txt)) end
     else
         -- 兜底：该文本控件是挂件 Widget 资源内部的子控件，无独立 CreativeInstance UUID，
         -- 直接对运行时拿到的控件对象 SetText/SetTextContent（世界空间挂件内容共享，对所有玩家生效）。
@@ -678,8 +678,8 @@ function TetrisRenderer:SetWidgetOpponentScore(score)
         elseif type(comp.SetText) == "function" then
             pcall(function() comp:SetText(txt) end)
         end
-        if dbg then print(string.format("[Tetris][LockDbg] 对手分经控件对象写入 board=%s score=%s 路径=%s",
-            tostring(self.boardIndex), txt, tostring(self._behindWidgetTextCompPath))) end
+        -- if dbg then print(string.format("[Tetris][LockDbg] 对手分经控件对象写入 board=%s score=%s 路径=%s",
+        --     tostring(self.boardIndex), txt, tostring(self._behindWidgetTextCompPath))) end
     end
 end
 
@@ -804,16 +804,16 @@ function TetrisRenderer:PrepareColorRefs()
             local key = ids[t]
             local ref = (type(AssetRef) == "table" and key) and AssetRef[key] or nil
             self.colorMesh[t] = ref
-            if key and not ref and TetrisConfig.Debug then
-                print(string.format("[Tetris][Color][WARN] ColorModelIDs[%d] 资源未注册 AssetRef[\"%s\"]，回退单色",
-                    t, tostring(key)))
-            end
+            -- if key and not ref and TetrisConfig.Debug then
+            --     print(string.format("[Tetris][Color][WARN] ColorModelIDs[%d] 资源未注册 AssetRef[\"%s\"]，回退单色",
+            --         t, tostring(key)))
+            -- end
         end
     end
     if TetrisConfig.Debug then
         local n = 0
         for t = 1, 8 do if self.colorMesh[t] then n = n + 1 end end
-        print(string.format("[Tetris][Color] 彩色模型解析完成: %d/8（其余回退单色）", n))
+        -- print(string.format("[Tetris][Color] 彩色模型解析完成: %d/8（其余回退单色）", n))
     end
 end
 

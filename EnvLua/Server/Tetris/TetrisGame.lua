@@ -66,12 +66,28 @@ function TetrisGame:Start()
         if ui and ps and type(CustomUIAPI) == "table" then
             pcall(function() if ui.HoldImg then CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, false) end end)
             pcall(function() if ui.NextImg then CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, false) end end)
+            -- Combo 图片：开局先隐藏，避免上局残留的 combo 提示在开局瞬间闪现
+            pcall(function() if ui.ComboImg then CustomUIAPI.SetWidgetVisible(ps, ui.ComboImg, false) end end)
+            -- 垃圾行提示框：开局先隐藏（暂停期间 UpdateHUD 不跑，需主动清，避免上局残留）
+            pcall(function() if ui.GarbageSendHint then CustomUIAPI.SetWidgetVisible(ps, ui.GarbageSendHint, false) end end)
+            pcall(function() if ui.GarbageRecvHint then CustomUIAPI.SetWidgetVisible(ps, ui.GarbageRecvHint, false) end end)
         end
+        -- 取消可能未到期的 combo 隐藏定时器，避免重开后用旧定时器误隐藏新局提示
+        if self._comboHideTimer then
+            pcall(function() self.owner:RemoveTimer(self._comboHideTimer) end)
+            self._comboHideTimer = nil
+        end
+        -- 复位垃圾提示"RECV 正在显示"标记（提示无定时器，仅由垃圾升起触发隐藏）
+        self._recvShowing = false
         -- 同时复位「已显示类型」标记：重开复用实例时 self._shownHold/_shownNext 残留上一局的值，
         -- 若新抽到的首块类型恰等于旧标记，UpdateHoldNextUI 会误判"已在显示"而不重新 SetVisible(true)，
         -- 导致 Hold/Next 一直隐藏。归位为 false 后，下一帧 UpdateHoldNextUI 必重新显示。
         self._shownHold = false
         self._shownNext = false
+        -- 复位垃圾提示的 pendingGarbage 边沿跟踪，避免上局残留的 >0 值在新局误触发"升起隐藏"
+        self._prevMyPend = 0
+        self._prevOppPend = 0
+        self._recvHintLabel = nil
     end
 
     -- 开局预览：把 7 种方块摆在面前排成一排，暂停下落 N 秒供肉眼核对形状，再正式开始。
@@ -344,6 +360,7 @@ function TetrisGame:OnTick()
     self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
     self:CheckPieceSpawned()        -- 产出新方块则上屏
     self:CheckReceivedGarbage()    -- 本步是否被对手扔了垃圾（无满行→lockPiece 内已注入）
+    self:UpdateGarbageHints()       -- 垃圾提示：排队时显示、垃圾升起(pending→0)时隐藏
     if self.isAI then self:aiStep() end   -- AI：定位本块 + 蓄满放技能
     if board:isOver() then
         self:OnGameOver()
@@ -447,6 +464,36 @@ function TetrisGame:UpdateHUD()
     set(ui.ScoreLabel, "分数: " .. tostring(b.score))
     set(ui.LinesLabel, "消行: " .. tostring(b.lines))
     set(ui.LevelLabel, "等级: " .. tostring(b.level))
+end
+
+-- 垃圾行提示框：显示由事件/排队触发，隐藏完全由"垃圾升起(pending→0)"触发（见 UpdateGarbageHints），
+-- 不再有任何自动隐藏定时器（去掉计时）：
+--   SEND：我消行攻击、把垃圾写入对手盘瞬间（flushOutgoingGarbage → FlashGarbageHint）；
+--   RECV：我盘 incoming 垃圾排队瞬间（UpdateGarbageHints 内 → FlashGarbageHint）。
+
+-- 点亮某个垃圾提示框（key 取 TetrisConfig.UI 的 GarbageSendHint / GarbageRecvHint），仅显示、不计时：
+-- 隐藏由 UpdateGarbageHints 按垃圾升起触发，故此处不安排任何定时器。
+function TetrisGame:FlashGarbageHint(key, count)
+    local ui = TetrisConfig.UI
+    local id = ui and ui[key]
+    local ps = self:GetPlayerState()
+    if not id or not ps or type(CustomUIAPI) ~= "table" then
+        if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
+            print(string.format("[Tetris][DBG] FlashGarbageHint 跳过: key=%s id=%s ps=%s",
+                tostring(key), tostring(id), tostring(ps)))
+        end
+        return
+    end
+    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
+    -- 该控件若为文本控件（如原 HintText 复用），需同时写文案；若为图片控件则 SetTextContent 为空操作，无副作用
+    local label = (key == "GarbageSendHint")
+        and ("即将给对手扔出 " .. tostring(count or 0) .. " 行垃圾！")
+        or  ("即将被对手扔来 " .. tostring(count or 0) .. " 行垃圾！")
+    pcall(function() CustomUIAPI.SetTextContent(ps, id, label) end)
+    if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
+        print(string.format("[Tetris][DBG] FlashGarbageHint 显示: key=%s id=%s label=%s",
+            tostring(key), tostring(id), label))
+    end
 end
 
 -- 2D UI：把 Hold / Next 方块显示到图片组件（SetImageWidgetContent 换图）。
@@ -564,7 +611,7 @@ function TetrisGame:flushOutgoingGarbage()
     if self.match and self.match.over then return end
     if self.opponent and self.opponent.board and not self.opponent.board:isOver() then
         self.opponent.board:addGarbage(n)
-        self:ShowHint("即将给对手扔出 " .. tostring(n) .. " 行垃圾！")   -- 消行攻击提示
+        self:FlashGarbageHint("GarbageSendHint", n)   -- 消行攻击：点亮「即将给对手扔出 N 行垃圾」（事件触发，避免轮询漏显）
         if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
             print(string.format("[Tetris][Versus] 玩家 %s 消行 → 给对手发 %d 行垃圾", tostring(self.playerKey), n))
         end
@@ -788,6 +835,10 @@ end
 --   每消除 1 行得 1 个 bar；集满 NeedBars 个 bar 兑换 1 个 power（bar 清零）；最多持有 MaxPower 个 power。
 function TetrisGame:onLinesCleared(cleared)
     if not cleared or cleared <= 0 then return end
+    -- Combo 图片：2/3/4 行消除时显示 1 秒后自动隐藏（1 行不显示；>4 理论上不会出现）
+    if cleared >= 2 and cleared <= 4 then
+        self:ShowComboImage()
+    end
     local cfg = TetrisConfig.Skill
     if not cfg then return end
     local needBars = cfg.NeedBars or 3
@@ -801,6 +852,23 @@ function TetrisGame:onLinesCleared(cleared)
         end
     end
     self:UpdateSkillUI()
+end
+
+-- 显示 Combo 图片（2/3/4 行消除）1 秒后自动隐藏；连消时取消上一次未到期的隐藏定时器，
+-- 保证每次消除都把"显示窗口"刷新为满 1 秒，不会提前隐藏。仅对真人盘（有 PlayerState）生效。
+function TetrisGame:ShowComboImage()
+    local id = TetrisConfig.UI and TetrisConfig.UI.ComboImg
+    local ps = self:GetPlayerState()
+    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
+    if self._comboHideTimer then
+        pcall(function() self.owner:RemoveTimer(self._comboHideTimer) end)
+        self._comboHideTimer = nil
+    end
+    self._comboHideTimer = self.owner:AddTimerOnce(1.0, function()
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+        self._comboHideTimer = nil
+    end)
 end
 
 -- 刷新技能 UI：bar 图片按当前 bar 数显隐；power 图片组件按当前 power 数换「有/无」图
@@ -916,14 +984,67 @@ function TetrisGame:ShowHint(text)
     end
 end
 
--- 检测本盘刚被注入的垃圾行数（board.lastAppliedGarbage），有则弹提示并清零
-function TetrisGame:CheckReceivedGarbage()
-    if not self.board or not self.board.lastAppliedGarbage or self.board.lastAppliedGarbage <= 0 then
-        return
+-- 立即隐藏某个垃圾提示框（key 取 GarbageSendHint / GarbageRecvHint）：仅清可见性（已无定时器可取消）。
+function TetrisGame:HideGarbageHint(key)
+    local ui = TetrisConfig.UI
+    local id = ui and ui[key]
+    local ps = self:GetPlayerState()
+    if id and ps and type(CustomUIAPI) == "table" then
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
     end
-    local n = self.board.lastAppliedGarbage
-    self.board.lastAppliedGarbage = 0
-    self:ShowHint("你被对手扔来 " .. tostring(n) .. " 行垃圾！")
+end
+
+-- 垃圾提示框：按"垃圾是否排队(pendingGarbage>0)"显示，按"垃圾升起(pendingGarbage 由 >0 变 0)"隐藏。
+-- 由 OnTick 每重力 tick 调用：
+--   SEND（我攻击对手）：我消行攻击瞬间由 flushOutgoingGarbage 点亮（写入对手盘 pendingGarbage）。
+--        隐藏锚点 = 对手方块落地、我发出的垃圾在对手盘升起：即对手盘 pendingGarbage 由 >0 变 0。
+--   RECV（我被攻击）：我盘 incoming 垃圾排队(pendingGarbage>0)时显示"即将被对手扔来 N 行"；
+--        隐藏锚点 = 我的垃圾在我盘升起：即我盘 pendingGarbage 由 >0 变 0。
+-- 提示仅由垃圾升起触发隐藏，无任何固定时长自动隐藏。
+function TetrisGame:UpdateGarbageHints()
+    local ui = TetrisConfig.UI
+    local ps = self:GetPlayerState()
+    if not ui or not ps or type(CustomUIAPI) ~= "table" then return end
+    local b = self.board
+    local ob = self.opponent and self.opponent.board
+    local myPend = (b and b.pendingGarbage or 0)          -- 我盘 incoming 垃圾（被攻击）
+    local oppPend = (ob and ob.pendingGarbage or 0)        -- 对手盘排队垃圾（我攻击）
+
+    -- RECV：我盘有 incoming 排队 => 显示"即将被对手扔来 N 行"；垃圾升起(myPend >0->0) => 隐藏
+    if ui.GarbageRecvHint then
+        if myPend > 0 then
+            if not self._recvShowing then
+                -- 首次显示：点亮（含数量文案）
+                self:FlashGarbageHint("GarbageRecvHint", myPend)
+                self._recvShowing = true
+            else
+                -- 已在显示：仅更新数量文案（不重置显示）
+                local label = "即将被对手扔来 " .. tostring(myPend) .. " 行垃圾！"
+                if self._recvHintLabel ~= label then
+                    pcall(function() CustomUIAPI.SetTextContent(ps, ui.GarbageRecvHint, label) end)
+                    self._recvHintLabel = label
+                end
+            end
+        elseif self._prevMyPend and self._prevMyPend > 0 then
+            -- 我盘垃圾升起：立即隐藏 RECV
+            self:HideGarbageHint("GarbageRecvHint")
+            self._recvShowing = false
+            self._recvHintLabel = nil
+        end
+    end
+    self._prevMyPend = myPend
+
+    -- SEND：对手盘排队垃圾由 >0 变 0（对手落地、我发出的垃圾升起）=> 隐藏我的 SEND 提示
+    if ui.GarbageSendHint and self._prevOppPend and self._prevOppPend > 0 and oppPend == 0 then
+        self:HideGarbageHint("GarbageSendHint")
+    end
+    self._prevOppPend = oppPend
+end
+
+-- 检测本盘刚被注入的垃圾行数（board.lastAppliedGarbage），有则清零（原用于弹"被扔垃圾"飘字/事件提示，
+-- 现 RECV 改由 UpdateGarbageHints 按 pendingGarbage 排队状态显示，此处仅保留清零以免字段累积）。
+function TetrisGame:CheckReceivedGarbage()
+    if self.board then self.board.lastAppliedGarbage = 0 end
 end
 
 -- ---------------- AI 决策（对手盘自动对战） ----------------
