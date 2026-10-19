@@ -60,6 +60,10 @@ TetrisConfig.InitialLayout = {
 -- 旋转态由矩阵旋转自动生成，O 型旋转后形态不变。
 TetrisConfig.PieceType = {
     I = 1, O = 2, T = 3, J = 4, L = 5, S = 6, Z = 7,
+    -- 道具方块（单格）：格值 9/10/11，注意避开垃圾块格值 8
+    ITEM_BLAST = 9,   -- 爆破块：消除时清除以本格为中心的 5×5 区域
+    ITEM_SHIFT = 10,  -- 位移块：消除时所有行整体右移 1 列
+    ITEM_CHARGE = 11, -- 充能块：消除时立即 +1 power
 }
 
 TetrisConfig.Pieces = {
@@ -123,6 +127,33 @@ TetrisConfig.Pieces = {
             { 0, 0, 0 },
         },
     },
+    -- 道具方块：1×1 单格（形状即一个占位）。3 种仅在「能力」上不同，外观靠 Next/Hold 图标与 3D 浮空图区分。
+    [TetrisConfig.PieceType.ITEM_BLAST] = { name = "BLAST", shape = { { 1 } } },
+    [TetrisConfig.PieceType.ITEM_SHIFT] = { name = "SHIFT", shape = { { 1 } } },
+    [TetrisConfig.PieceType.ITEM_CHARGE] = { name = "CHARGE", shape = { { 1 } } },
+}
+
+-- ===================== 道具方块（单格 + 3 种道具） =====================
+-- 每个下落方块有 Prob 概率为「道具方块」；是则等概率取 Types 中一种。
+-- 三种道具（格值见 PieceType.ITEM_*，避开垃圾块 8）：
+--   9  = 爆破块：消除含本格的方块时，清除以本格为中心的 (2*BlastRadius+1)×(2*BlastRadius+1) 区域
+--   10 = 位移块：消除含本格的方块时，所有行整体向右平移 1 列（每行从最右格起右移 1，目标格被占/越界则跳过）
+--   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
+TetrisConfig.Item = {
+    Debug = true,                      -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
+    Prob = 0.95,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
+    Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应
+    BlastRadius = 2,                    -- 爆破半径（格）：5×5 = 中心 ±2 格
+
+    -- 3D 浮空图标：活动道具方块上方挂一个 3D UI 图片控件显示对应道具图。
+    -- 图片与 2D Next/Hold 共用 TetrisConfig.PieceImages[9/10/11]（单一图源，不要在此重复定义）。
+    -- 待编辑器提供：① 带 WidgetComponent 的 Actor 预设（PresetKey）；② Widget 内图片组件名（ImageChildName）。
+    Widget3D = {
+        Enabled = true,                -- 资源就绪后改为 true 才生成浮空图标
+        PresetKey = "46_ActorPreset_1822956872",   -- 带 WidgetComponent 的 Actor 预设
+        ImageChildName = "icon",          -- Widget 内图片组件名（运行时按道具切换图）
+        LiftM = 1.2,                            -- 图标悬浮在格子上方的高度（米）
+    },
 }
 
 -- ===================== 旋转（数据层与渲染层共享的唯一真相） =====================
@@ -135,13 +166,15 @@ TetrisConfig.Pieces = {
 -- 渲染层 piecePivot 显式取此轴心，确保两侧永不漂移。
 TetrisConfig.Rotation = {
     -- 旋转框尺寸（格）：I/O 4×4，其余 3×3
-    Box = { [1] = 4, [2] = 4, [3] = 3, [4] = 3, [5] = 3, [6] = 3, [7] = 3 },
+    Box = { [1] = 4, [2] = 4, [3] = 3, [4] = 3, [5] = 3, [6] = 3, [7] = 3, [9] = 1, [10] = 1, [11] = 1 },
     -- 旋转轴心（框内 1-based 坐标 r=行, c=列）
     Pivot = {
         [1] = { r = 2.5, c = 2.5 }, [2] = { r = 2.5, c = 2.5 },
         [3] = { r = 2, c = 2 },     [4] = { r = 2, c = 2 },
         [5] = { r = 2, c = 2 },     [6] = { r = 2, c = 2 },
         [7] = { r = 2, c = 2 },
+        [9] = { r = 1, c = 1 },     [10] = { r = 1, c = 1 },
+        [11] = { r = 1, c = 1 },
     },
     -- SRS 踢墙偏移表。键为 (from, to) 旋转态（0..3 = rot-1）；偏移 (x, y)，y 向上为正。
     -- 数据层棋盘 y 向下为正，应用时 newY = y - ky。
@@ -462,6 +495,10 @@ TetrisConfig.PieceImages = {
     [5] = "23_ImagePreset_181441618721512",  -- L
     [6] = "23_ImagePreset_181443114759746",  -- S
     [7] = "23_ImagePreset_181444179307978",  -- Z
+    -- 道具方块（9/10/11）：Next / Hold 与 3D 浮空图标共用同一套图（单一图源，见下）。
+    [9]  = "23_ImagePreset_40020",   -- 爆破块
+    [10] = "23_ImagePreset_91007",   -- 位移块
+    [11] = "23_ImagePreset_91143",   -- 充能块
 }
 
 -- Hold / Next 图片底色（白色底图，由 SetImageWidgetColor 叠加 tint 出各色）。

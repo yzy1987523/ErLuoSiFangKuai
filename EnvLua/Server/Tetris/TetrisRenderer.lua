@@ -2429,6 +2429,184 @@ end
 -- 按数据层刷新：
 --   1) 棋盘静态层（已落定方块）只在签名变化时全量同步（锁定/消行），平时零流量；
 --   2) 活动方块走整体模式，只传送根 Actor（1 次/帧），不再逐格下发。
+-- ---------------- 道具方块 3D 浮空图标 ----------------
+-- 活动方块为道具块（格值 9/10/11）时，在其正上方显示对应道具图（3D UI WidgetComponent Actor）。
+-- 实现要点（已修正，对照渲染层其它传送）：
+--   * cellLocation 返回「米」；K2_TeleportTo 是 Class API 要「厘米」→ 必须 cmVec() 转换；
+--   * K2_TeleportTo(DestLocation, DestRotation) 的 DestRotation 不能为 nil，否则静默失败；
+--   * CreateActor 必须带位置/旋转/缩放，否则生成在原点(0,0,0) 看不到。
+function TetrisRenderer:UpdateItemWidget(board)
+    local dbg = TetrisConfig.Item and TetrisConfig.Item.Debug
+    local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
+    if dbg and not self._dbgItemCfgLogged then
+        self._dbgItemCfgLogged = true
+        local ref = (type(CreativeAsset) == "table" and cfg and CreativeAsset[cfg.PresetKey])
+                 or (type(AssetRef) == "table" and cfg and AssetRef[cfg.PresetKey])
+        print(string.format("[Tetris][DBG 3D] Enabled=%s PresetKey=%s refResolved=%s LiftM=%s",
+            tostring(cfg and cfg.Enabled), tostring(cfg and cfg.PresetKey), tostring(ref ~= nil), tostring(cfg and cfg.LiftM)))
+    end
+    if not (cfg and cfg.Enabled) then return end
+    if not board or not self.origin then return end
+    self:BuildItemWidget()
+    local a = self._itemWidgetActor
+    if not a then return end
+    local active = board:getActive()
+    local PT = TetrisConfig.PieceType
+    local isItem = active and (active.type == PT.ITEM_BLAST or active.type == PT.ITEM_SHIFT or active.type == PT.ITEM_CHARGE)
+    if not isItem then
+        if not self._itemWidgetHidden then
+            pcall(function() if a.SetActorHiddenInGame then a:SetActorHiddenInGame(true) end end)
+            self._itemWidgetHidden = true
+        end
+        return
+    end
+    -- 道具格位置 = 活动方块单格（1×1）所在行列；盘面上方 = 沿世界 Z 增大（cellLocation 顶行 Z 最大）
+    local loc = self:cellLocation(active.y, active.x)
+    if loc then
+        loc.Z = (loc.Z or 0) + (cfg.LiftM or 1.2)
+        local rot = self:ItemWidgetRot()
+        local ok = pcall(function() a:K2_TeleportTo(cmVec(loc), rot) end)
+        if dbg and (ok or not self._dbgItemTelLogged) then
+            self._dbgItemTelLogged = ok or self._dbgItemTelLogged
+            local al = (type(a.GetActorLocation) == "function") and a:GetActorLocation() or nil
+            local als = al and string.format("(%.1f,%.1f,%.1f)cm", al.X or 0, al.Y or 0, al.Z or 0) or "n/a"
+            print(string.format("[Tetris][DBG 3D] teleport type=%s loc=(%.2f,%.2f,%.2f)m ok=%s actorLoc=%s yaw=%.1f",
+                tostring(active.type), loc.X, loc.Y, loc.Z, tostring(ok), als, (self.boardYaw or 0)))
+        end
+    end
+    -- 每帧尝试取组件 + 按类型换图（pawn 未就绪时取组件会重试；命中后缓存，仅类型变化重设）
+    self:SetItemWidgetImage(active.type)
+    if self._itemWidgetHidden then
+        pcall(function() if a.SetActorHiddenInGame then a:SetActorHiddenInGame(false) end end)
+        self._itemWidgetHidden = false
+        if dbg then print(string.format("[Tetris][DBG 3D] SHOW type=%s", tostring(active.type))) end
+    end
+end
+
+-- 道具浮空图标旋转：与已验证的「背后 3D 挂件」一致，基于盘面偏航 self.boardYaw 让 Widget 平面正面对玩家，
+-- 避免用 self.rot（Build 阶段被 makeZeroRotator() 覆盖为 0，会使 Widget 背对/侧对相机而“看不见”）。
+function TetrisRenderer:ItemWidgetRot()
+    local yaw = self.boardYaw or 0
+    if type(FRotator) == "table" and FRotator.MakeFromEuler then
+        return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = yaw }))
+    end
+    return self.rot or makeZeroRotator()
+end
+
+-- 创建浮空图标 Actor（幂等）。必须带位置/旋转/缩放，否则生成在原点看不到；先停停车场再按帧传送。
+function TetrisRenderer:BuildItemWidget()
+    local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
+    local dbg = TetrisConfig.Item and TetrisConfig.Item.Debug
+    if not (cfg and cfg.Enabled) then return end
+    if self._itemWidgetActor then return end
+    local ref = (type(CreativeAsset) == "table" and CreativeAsset[cfg.PresetKey])
+             or (type(AssetRef) == "table" and AssetRef[cfg.PresetKey])
+    if not ref then
+        if not self._itemWidgetRefLogged then
+            self._itemWidgetRefLogged = true
+            print(string.format("[Tetris][ItemWidget][WARN] 资源键无引用: %s（请确认已在编辑器注册该 ActorPreset）", tostring(cfg.PresetKey)))
+        end
+        return
+    end
+    local pos = cmVec(self.hideLoc)
+    local rot = self:ItemWidgetRot()
+    local scale = Game:ConstructFVectorByLuaTable({ X = 1, Y = 1, Z = 1 })
+    local ok, obj = pcall(function()
+        if type(CreativeGameAPI) == "table" and CreativeGameAPI.CreateActor then
+            return CreativeGameAPI.CreateActor(ref, pos, rot, scale, nil)
+        end
+        return self:CreateOne(pos, scale, ref, rot)
+    end)
+    if ok and obj then
+        self._itemWidgetActor = obj
+        pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(true) end end)
+        self._itemWidgetHidden = true
+        if dbg then print(string.format("[Tetris][DBG 3D] actor 创建成功 PresetKey=%s", tostring(cfg.PresetKey))) end
+    else
+        print("[Tetris][ItemWidget][WARN] 创建失败: " .. tostring(obj))
+    end
+end
+
+-- 切换浮空图标图片（按《3D-UI 组件使用指南》verified 链路）。
+-- 关键：① GetUserWidgetObject 必须传 pawn（非空参，否则返回 nil）；② 取子控件用 GetWidgetFromName；
+--       ③ 换图用 imgComp:SetImageContent(AssetRef 句柄)，控件对象级、世界共享，无需 ps/uuid。
+-- 注意：参数名用 pieceType，避免遮蔽全局 type() 函数。
+function TetrisRenderer:SetItemWidgetImage(pieceType)
+    local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
+    local dbg = TetrisConfig.Item and TetrisConfig.Item.Debug
+    local a = self._itemWidgetActor
+    if not (cfg and a) then return end
+    local key = TetrisConfig.PieceImages and TetrisConfig.PieceImages[pieceType]
+    local imgID = (type(AssetRef) == "table" and key) and AssetRef[key] or nil
+    if dbg then
+        print(string.format("[Tetris][DBG 3D] image pieceType=%s key=%s imgID=%s",
+            tostring(pieceType), tostring(key), tostring(imgID)))
+    end
+    if not imgID then return end
+
+    -- 取图片控件（每帧重试直到命中并缓存：首帧 pawn 可能为空）
+    if not self._itemWidgetImgComp then
+        local wc
+        pcall(function()
+            if type(a.GetComponentByClass) == "function" then
+                wc = a:GetComponentByClass("WidgetComponent")
+            end
+        end)
+        if not wc then
+            for _, nm in ipairs({ "UI", "Widget", "WidgetComp", "WidgetComponent" }) do
+                local ok, c = pcall(function() return a:GetComponentByName(nm) end)
+                if ok and c then wc = c; break end
+            end
+        end
+        if dbg then print(string.format("[Tetris][DBG 3D] WidgetComponent=%s", tostring(wc ~= nil))) end
+        if wc then
+            local plist
+            pcall(function() plist = Game:GetAllPlayerPawns() end)
+            if plist and type(plist.Num) == "function" and plist:Num() > 0 then
+                local uw
+                for i = 0, plist:Num() - 1 do
+                    local pawn = plist:Get(i)
+                    if pawn then
+                        pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
+                        if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
+                        if uw then break end
+                    end
+                end
+                if dbg then print(string.format("[Tetris][DBG 3D] UserWidget=%s", tostring(uw ~= nil))) end
+                if uw and cfg.ImageChildName then
+                    pcall(function()
+                        self._itemWidgetImgComp = uw:GetWidgetFromName(cfg.ImageChildName)
+                    end)
+                    if dbg then print(string.format("[Tetris][DBG 3D] imgComp(%s)=%s", tostring(cfg.ImageChildName), tostring(self._itemWidgetImgComp ~= nil))) end
+                end
+            elseif dbg then
+                print("[Tetris][DBG 3D] GetAllPlayerPawns 为空（首帧？）下一帧重试")
+            end
+        end
+    end
+
+    -- 换图：imgComp:SetImageContent(AssetRef 句柄)。控件就绪且本类型尚未应用时才设置。
+    if self._itemWidgetImgComp and self._itemWidgetImgAppliedFor ~= pieceType then
+        local ok = pcall(function() self._itemWidgetImgComp:SetImageContent(imgID) end)
+        if ok then
+            self._itemWidgetImgAppliedFor = pieceType
+            if dbg then print(string.format("[Tetris][DBG 3D] SetImageContent ok=true type=%s", tostring(pieceType))) end
+        elseif dbg then
+            print(string.format("[Tetris][DBG 3D] SetImageContent ok=false type=%s", tostring(pieceType)))
+        end
+    end
+end
+
+-- 取本地玩家 PlayerState（CustomUI 个性化需要；渲染层无 GetPlayerState，从 Game:GetAllPlayerStates 取首个并缓存）
+function TetrisRenderer:GetLocalPlayerState()
+    if self._localPS then return self._localPS end
+    local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+    if ok and arr and arr.Num and arr:Num() > 0 then
+        self._localPS = arr:Get(0)
+    end
+    return self._localPS
+end
+
 function TetrisRenderer:Update(board)
     if not self.built then return end
     self.frame = self.frame + 1
@@ -2544,6 +2722,9 @@ function TetrisRenderer:Update(board)
 
     -- 活动方块整体层（位移/旋转只传根）
     self:RenderActivePiece(board)
+
+    -- 道具方块 3D 浮空图标（占位，默认关闭）：活动方块为道具块时在其上方显示对应道具图
+    self:UpdateItemWidget(board)
 
     -- 下一/Hold 预览已改用 2D 图片展示（见 TetrisGame:UpdateHoldNextUI），此处不再生成 3D 静态方块。
 

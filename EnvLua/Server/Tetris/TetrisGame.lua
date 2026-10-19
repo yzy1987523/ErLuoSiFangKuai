@@ -361,6 +361,7 @@ function TetrisGame:OnTick()
     self:CheckPieceSpawned()        -- 产出新方块则上屏
     self:CheckReceivedGarbage()    -- 本步是否被对手扔了垃圾（无满行→lockPiece 内已注入）
     self:UpdateGarbageHints()       -- 垃圾提示：排队时显示、垃圾升起(pending→0)时隐藏
+    self:ConsumeItemCharge()        -- 道具-充能块：把 board 累计的 power 加进技能能量
     if self.isAI then self:aiStep() end   -- AI：定位本块 + 蓄满放技能
     if board:isOver() then
         self:OnGameOver()
@@ -516,6 +517,20 @@ function TetrisGame:UpdateHoldNextUI()
         return (type(AssetRef) == "table" and AssetRef[key]) or key
     end
 
+    -- [调试] 道具图片解析诊断：打印 type→key→AssetRef[key]→imgID，定位 2D 显示 None。
+    local function dbgImg(slot, t, imgID)
+        if not (TetrisConfig.Item and TetrisConfig.Item.Debug) then return end
+        local key = (t and imgs) and imgs[t] or nil
+        local refVal = (type(AssetRef) == "table" and key) and AssetRef[key] or nil
+        local ck = tostring(slot) .. "_" .. tostring(t)
+        if not self._dbgImgLogged then self._dbgImgLogged = {} end
+        if self._dbgImgLogged[ck] then return end
+        self._dbgImgLogged[ck] = true
+        print(string.format(
+            "[Tetris][DBG 2D] slot=%s type=%s key=%s AssetRef[key]=%s imgID=%s",
+            tostring(slot), tostring(t), tostring(key), tostring(refVal), tostring(imgID)))
+    end
+
     -- 把底色（白图）叠加 tint 成对应方块色；t 不在 1..8 则不染色（保持白）。
     local function tintImg(widget, t)
         local c = (t and tints) and tints[t] or nil
@@ -530,6 +545,7 @@ function TetrisGame:UpdateHoldNextUI()
     if ui.HoldImg then
         local ht = b:getHoldType()
         local imgID = resolveImg(ht)
+        dbgImg("Hold", ht, imgID)
         if imgID then
             if self._shownHold ~= ht then
                 pcall(function()
@@ -550,6 +566,7 @@ function TetrisGame:UpdateHoldNextUI()
         local nq = b:getNextQueue()
         local nt = (nq and nq[1]) or nil
         local imgID = resolveImg(nt)
+        dbgImg("Next", nt, imgID)
         if imgID then
             if self._shownNext ~= nt then
                 pcall(function()
@@ -1045,6 +1062,23 @@ end
 -- 现 RECV 改由 UpdateGarbageHints 按 pendingGarbage 排队状态显示，此处仅保留清零以免字段累积）。
 function TetrisGame:CheckReceivedGarbage()
     if self.board then self.board.lastAppliedGarbage = 0 end
+end
+
+-- 道具-充能块：board 在消行时把充能累计到 pendingItemCharge，这里取走并加进技能能量(power)。
+-- 受 Skill.MaxPower 上限约束；加完后刷新技能 UI。
+function TetrisGame:ConsumeItemCharge()
+    local b = self.board
+    if not b or not b.pendingItemCharge or b.pendingItemCharge <= 0 then return end
+    local n = b.pendingItemCharge
+    b.pendingItemCharge = 0
+    local scfg = TetrisConfig.Skill
+    if not scfg then return end
+    local maxPower = scfg.MaxPower or 3
+    self.skillPower = math.min(self.skillPower + n, maxPower)
+    self:UpdateSkillUI()
+    if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
+        print(string.format("[Tetris][Item] 充能块 +%d power（当前 %d）", n, self.skillPower))
+    end
 end
 
 -- ---------------- AI 决策（对手盘自动对战） ----------------

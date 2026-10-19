@@ -77,6 +77,7 @@ function TetrisBoard:reset()
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
     self.lastAppliedGarbage = 0   -- 最近一次被注入的垃圾行数（Game 层弹提示用，取后清零）
     self.outgoingGarbage = 0      -- 本次 lock 应发给对手的垃圾行数（对战用，外层消费）
+    self.pendingItemCharge = 0     -- 道具-充能块累计的待消费 power 数（由 TetrisGame 取走）
     self.noRotateNext = 0         -- 待生效「禁止转动」减益层数（对手 SK-01 注入，下一块起生效）
     self.attackBonusNext = 0      -- 待生效「攻势」加成次数（本盘 SK-06，下次消行攻击 +1）
     self.lastClearRows = 0        -- 最近一次 clearBottomRows 清除的行数（Game 层提示用）
@@ -141,6 +142,13 @@ function TetrisBoard:refillBag()
 end
 
 function TetrisBoard:nextPieceType()
+    -- 道具方块：以 Item.Prob 概率产出（等概率取 Types 中一种），否则走 7-bag
+    local icfg = TetrisConfig.Item
+    if icfg and icfg.Prob and icfg.Prob > 0 and icfg.Types and #icfg.Types > 0 then
+        if math.random() < icfg.Prob then
+            return icfg.Types[math.random(1, #icfg.Types)]
+        end
+    end
     if #self.bag == 0 then
         self:refillBag()
     end
@@ -411,6 +419,44 @@ function TetrisBoard:clearLines(countScore)
     local cleared = 0
     local writeRow = self.rows
 
+    -- 道具方块特效：在正式消行前，先扫描满行收集其中的道具格（爆破/位移/充能），并对爆破格做区域清零。
+    -- 注意：本扫描不改变网格结构，仅收集效果；爆破清零在收集后进行，随后由下方正式消行循环按新网格重判满行。
+    local PT = TetrisConfig.PieceType
+    local itemEffects = { blast = {}, shift = false, charge = 0 }
+    for r = self.rows, 1, -1 do
+        local full = true
+        for c = 1, self.cols do
+            if self.grid[r][c] == 0 then full = false; break end
+        end
+        if full then
+            for c = 1, self.cols do
+                local v = self.grid[r][c]
+                if v == PT.ITEM_BLAST then
+                    itemEffects.blast[#itemEffects.blast + 1] = { r = r, c = c }
+                elseif v == PT.ITEM_SHIFT then
+                    itemEffects.shift = true
+                elseif v == PT.ITEM_CHARGE then
+                    itemEffects.charge = itemEffects.charge + 1
+                end
+            end
+        end
+    end
+    -- 爆破：以每个爆破格为中心清除 (2R+1)×(2R+1) 区域（仅删格，不会造满行，故下方重判满行结果 ⊆ 原满行）
+    if #itemEffects.blast > 0 then
+        local rad = (TetrisConfig.Item and TetrisConfig.Item.BlastRadius) or 2
+        for _, bc in ipairs(itemEffects.blast) do
+            for dr = -rad, rad do
+                for dc = -rad, rad do
+                    local rr = bc.r + dr
+                    local cc = bc.c + dc
+                    if rr >= 1 and rr <= self.rows and cc >= 1 and cc <= self.cols then
+                        self.grid[rr][cc] = 0
+                    end
+                end
+            end
+        end
+    end
+
     local clearedRows = {}
     for r = self.rows, 1, -1 do
         local full = true
@@ -440,6 +486,23 @@ function TetrisBoard:clearLines(countScore)
         for c = 1, self.cols do
             self.grid[r][c] = 0
         end
+    end
+
+    -- 位移块特效：消除含位移块的方块后，所有行整体向右平移 1 列。
+    -- 每行从最右格起向左遍历，当前格非空且右侧格为空(且未越界)则右移 1 格；右侧被占/越界则跳过（保持原位）。
+    if itemEffects.shift then
+        for r = 1, self.rows do
+            for c = self.cols, 1, -1 do
+                if self.grid[r][c] ~= 0 and c + 1 <= self.cols and self.grid[r][c + 1] == 0 then
+                    self.grid[r][c + 1] = self.grid[r][c]
+                    self.grid[r][c] = 0
+                end
+            end
+        end
+    end
+    -- 充能块特效：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量
+    if itemEffects.charge > 0 then
+        self.pendingItemCharge = (self.pendingItemCharge or 0) + itemEffects.charge
     end
 
     if cleared > 0 then
