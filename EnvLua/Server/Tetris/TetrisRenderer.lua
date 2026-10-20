@@ -779,10 +779,48 @@ end
 -- 归还方块 Actor 到对象池（停回停车场，保持可见但脱离盘面）。
 function TetrisRenderer:ReleaseActor(a)
     if a then
+        -- 道具 3D UI 回收：方块归还池时，摘除其附加的 UI 子级（附加到子级方式 + 回收时移除）
+        local reg = self._itemUIByBlock
+        local e = reg and reg[a]
+        if e then
+            pcall(function() e.actor:K2_DetachFromActor(1, 1, 1) end)
+            pcall(function() if e.actor.SetActorHiddenInGame then e.actor:SetActorHiddenInGame(true) end end)
+            e.attachedTo = nil
+            e.appliedFor = nil
+            e.imgComp = nil
+            e.hidden = true
+            reg[a] = nil
+            local pool = self._itemWidgetPool or {}
+            self._itemWidgetPool = pool
+            pool[#pool + 1] = e
+        end
         if self._occUsed then self._occUsed[a] = nil end
         pcall(function() a:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
         self.pool[#self.pool + 1] = a
     end
+end
+
+-- 为静态格提供一个方块 Actor（数据驱动）：读格子 {color,item}；若该格是道具(item~=nil)且当前正有
+-- 掉落道具块 self._itemBlockActor，则复用它（落锁不回收替换，直接登记进 occ，保留其附加的 3D UI 子级）；
+-- 否则从对象池取。复用后把 self._itemBlockActor 置空，UpdateItemBlock 不再回收它；
+-- 后续消除由 ReleaseActor（occ 回收）统一回收（含摘除 UI 子级）。
+function TetrisRenderer:ProvideStaticBlock(board, row, col)
+    local cell = board and board:getCell(row, col)   -- {color,item} 或 nil
+    if not cell then return nil end
+    if cell.item and self._itemBlockActor then
+        local a = self._itemBlockActor
+        self._itemBlockActor = nil
+        self._itemBlockHidden = true
+        self:placeActor(a, row, col)
+        self:PaintCell(a, cell.color)
+        return a
+    end
+    local a = self:AcquireActor()
+    if a then
+        self:placeActor(a, row, col)
+        self:PaintCell(a, cell.color)
+    end
+    return a
 end
 
 -- 把独立方块 Actor 放到 (row,col) 的世界坐标（静态摆放，不依赖附着）。
@@ -810,6 +848,9 @@ function TetrisRenderer:PrepareColorRefs()
             -- end
         end
     end
+    -- 道具方块本体：灰色立方（与类型无关，复用垃圾块灰模 key）
+    local ibk = TetrisConfig.Item and TetrisConfig.Item.BlockModelKey
+    self.itemBlockRef = (type(ibk) == "string" and type(AssetRef) == "table" and AssetRef[ibk]) or nil
     if TetrisConfig.Debug then
         local n = 0
         for t = 1, 8 do if self.colorMesh[t] then n = n + 1 end end
@@ -817,12 +858,13 @@ function TetrisRenderer:PrepareColorRefs()
     end
 end
 
--- 把单元方块 Actor 换成指定类型的彩色模型（cellType: 1..7 方块 / 8 垃圾）。
--- 未解析到对应模型（占位 Key 未替换）→ 不换色，保持默认单色。失败 pcall 兜底。
-function TetrisRenderer:PaintCell(a, cellType)
-    if not a or not cellType or cellType < 1 or cellType > 8 then return end
+-- 把单元方块 Actor 换成指定颜色的模型（color: 1..7 方块色 / 8 垃圾与道具灰）。
+-- 未解析到对应模型 → 不换色，保持默认单色。失败 pcall 兜底。
+function TetrisRenderer:PaintCell(a, color)
+    if not a or not color or color < 1 then return end
+    if color > 8 then color = 8 end   -- 容错：道具类别号(9..11)等一律按灰，避免越界
     if not self.colorMesh then self:PrepareColorRefs() end
-    local ref = self.colorMesh and self.colorMesh[cellType]
+    local ref = self.colorMesh and self.colorMesh[color]
     if not ref then return end  -- 回退单色
     local comp = getMeshComp(self, a)
     if comp then
@@ -837,6 +879,58 @@ end
 --     不再依赖列——消行特效本就该横跨整行居中，列方向偏移在旋转盘面下正是之前偏位的根因。
 --   · 竖直按行：与 cellLocation 的 Z = o.Z - (row-1)*step 一致（行方向永远是世界 -Z，不受盘面 yaw 影响，故行很准）。
 -- 资源走 AssetRef（需 VSCode 插件注册并 update preset）；失败静默，不影响消行主流程。
+-- 爆破竖版特效：道具爆破消除一整列，在该列【最下方块】由下往上播放竖版光束。
+-- 位置：水平取该列 cellLocation(col) 的 X/Y，竖直取该列已消除区间(bottom..top)的中点，使光束覆盖整段；
+-- 朝向：SetSceneEffectRotation 立为竖版（默认 Pitch=90）+ yaw 叠 boardYaw 正对玩家；长度由 BlastEffectScale.X 控制。
+function TetrisRenderer:PlayBlastEffectAt(col, bottomRow, topRow)
+    if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
+    local cl = TetrisConfig.Clear or {}
+    local key = cl.BlastEffectPresetKey or cl.EffectPresetKey or "13_EffectPreset_100032"
+    local ref = AssetRef and AssetRef[key]
+    if not ref then
+        if TetrisConfig.Debug then
+            print(string.format("[Tetris][Blast][WARN] 特效资源未注册 AssetRef[%s]，跳过", tostring(key)))
+        end
+        return
+    end
+    local r = TetrisConfig.Render
+    local step = r.CellSize + r.CellGap
+    topRow = math.min(topRow or bottomRow, bottomRow)   -- topRow <= bottomRow
+    local bot = self:cellLocation(bottomRow, col)        -- 该列最下方块
+    local top = self:cellLocation(topRow, col)           -- 该列已消除区间最上方块
+    -- 列中心：水平取该列(bot.X/Y，同列所有行一致)，竖直取区间中点
+    local midZ = bot.Z + (top.Z - bot.Z) * 0.5
+    local off = cl.BlastEffectOffset or { X = 0, Y = 0, Z = 0 }
+    local pos = { X = bot.X + (off.X or 0), Y = bot.Y + (off.Y or 0), Z = midZ + (off.Z or 0) }
+    local dur = cl.EffectDuration or 0.5
+    local ok, id = pcall(function()
+        return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), dur)
+    end)
+    if not ok or not id or id == 0 then
+        if TetrisConfig.Debug then
+            print(string.format("[Tetris][Blast][WARN] 特效创建失败 col=%d id=%s", col, tostring(id)))
+        end
+        return
+    end
+    -- 立为竖版：额外旋转(Pitch=90 等) + yaw 叠 boardYaw 正对玩家
+    local erot = cl.BlastEffectRot or { X = 90, Y = 0, Z = 0 }
+    pcall(function()
+        if type(FRotator) == "table" and FRotator.MakeFromEuler then
+            local rot = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({
+                X = erot.X or 0, Y = erot.Y or 0, Z = (self.boardYaw or 0) + (erot.Z or 0) }))
+            SceneEffectAPI.SetSceneEffectRotation(id, rot)
+        end
+    end)
+    -- 缩放：X=光束长度(≈列高)，用区间高度按比例给出建议值（仍以配置为基准，可用 SetSceneEffectScale 覆盖）
+    local sc = cl.BlastEffectScale or { X = 10, Y = 1.5, Z = 1 }
+    local heightM = (bottomRow - topRow) * step
+    local base = sc.X or 10
+    local scaleX = heightM > 0.1 and math.max(2, (base / 10) * heightM) or base
+    pcall(function()
+        SceneEffectAPI.SetSceneEffectScale(id, Game:ConstructFVectorByLuaTable({ X = scaleX, Y = sc.Y or 1.5, Z = sc.Z or 1 }))
+    end)
+end
+
 function TetrisRenderer:PlayClearEffectAt(row)
     if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
     local key = (TetrisConfig.Clear and TetrisConfig.Clear.EffectPresetKey) or "13_EffectPreset_100032"
@@ -2227,7 +2321,7 @@ function TetrisRenderer:PrintGrid(want)
     end
 end
 
--- 棋盘静态层签名：仅统计已落定（grid!=0）的格子坐标和，用于检测锁定/消行引起的变化。
+-- 棋盘静态层签名：仅统计已落定（占位）的格子坐标和，用于检测锁定/消行引起的变化。
 -- 返回相同值表示静态层无变化，可完全跳过棋盘刷新（零流量）。
 function TetrisRenderer:boardSignature(board)
     local rows = TetrisConfig.Board.Rows
@@ -2235,7 +2329,7 @@ function TetrisRenderer:boardSignature(board)
     local s = 0
     for r = 1, rows do
         for c = 1, cols do
-            if board:getCell(r, c) ~= 0 then
+            if board:getCell(r, c) ~= nil then
                 s = s + r * 73856093 + c * 19349663
             end
         end
@@ -2243,244 +2337,114 @@ function TetrisRenderer:boardSignature(board)
     return s
 end
 
--- 朴素重排：与数据层逐格 diff，缺失的从对象池取 Actor 摆放，多余的归还池。
--- 用于「普通锁定（无消行）」与「垃圾行上移」等无需 grouped 位移的场景。
+-- 数据驱动刷新：与数据层逐格 diff（读每格 {color,item}），缺失取 Actor 摆放、多余归还池。
+-- 下落锁定 / 消除过程 / 消除后 / 垃圾上移 全部走此路：渲染层只把数据层渲染成对应颜色块 + 道具 3D 图。
 function TetrisRenderer:ReconcileBoard(board)
     local rows = TetrisConfig.Board.Rows
     local cols = TetrisConfig.Board.Cols
     for r = 1, rows do
         for c = 1, cols do
-            local filled = board:getCell(r, c) ~= 0
+            local cell = board:getCell(r, c)   -- {color,item} 或 nil(空)
             local a = self.occ[r] and self.occ[r][c]
-            if filled and not a then
-                local na = self:AcquireActor()
+            if cell and not a then
+                local na = self:ProvideStaticBlock(board, r, c)
                 if na then
-                    self:placeActor(na, r, c)
-                    self:PaintCell(na, board:getCell(r, c))  -- 按格内类型换色（1..7 方块 / 8 垃圾）
                     self.occ[r][c] = na
                 end
-            elseif not filled and a then
-                self:ReleaseActor(a)
+            elseif not cell and a then
+                self:ReleaseActor(a)      -- 消除/挖空/移位后此格已空 → 回收（含摘除道具 3D UI 子级）
                 self.occ[r][c] = nil
             else
-                -- 占位且已有演员：内容可能已变（如垃圾行上移后该格变成垃圾/其它方块），
-                -- 按当前格类型重绘，避免沿用旧色（升起前该位置的旧方块颜色）。
-                self:PaintCell(a, board:getCell(r, c))
+                -- 已有块：按当前格颜色重绘（垃圾上升/位移后该格内容可能已变，避免沿用旧色）
+                self:PaintCell(a, cell and cell.color or 0)
             end
         end
     end
 end
 
--- 消行重排（两阶段）：
---   阶段A（立即/本帧）：被消行的方块直接归还对象池（立即消失）；本帧锁定的新增格立即摆放；
---                 其余需要下落的块按下移行数 delta 分组，延迟 ClearDelay 秒后再整体下移（阶段B）。
---   阶段B（延迟）：用现存 parent-shift 方式把下移块整体下移填补空缺，移完拆父还原独立 Actor。
--- 这样视觉上：被消行先瞬间清空 → 停顿 ClearDelay 秒 → 上方方块再整块落下（而非原版一次性同步完成）。
-function TetrisRenderer:ReconcileClear(board, clearedRows)
-    if TetrisConfig.Debug then
-        print(string.format("[Tetris][DBG] ReconcileClear 进入: 行数=%d _clearFallPending=%s -> %s",
-            #(clearedRows or {}), tostring(self._clearFallPending ~= nil),
-            self._clearFallPending and "先同步flush上一次下落(立即)" or "无pending"))
-    end
-    -- 若上一次消行的下落尚未执行（0.5s 窗口内又发生锁定），先同步 flush 上一次，
-    -- 保证 occ 与数据层一致，避免叠加错位。
-    if self._clearFallPending then self:ReconcileClearFall() end
+-- 消行已由「两阶段 parent-shift」改为「全数据驱动刷新」：数据层消行(clearLines)改完 grid 后，
+-- 渲染层统一走 ReconcileBoard 逐格 diff（释放消除格、补放/重绘/位移幸存格），消除瞬间由 Update
+-- 调 PlayClearEffectAt 播特效。原 ReconcileClear/ReconcileClearFall（delta/group/parent-shift 下落动画）
+-- 已删除——它们无法跟踪道具爆破打洞、位移右移等单元格/列级改动，是不同步根源。
 
-    local rows = TetrisConfig.Board.Rows
-    local cols = TetrisConfig.Board.Cols
-    local delay = (TetrisConfig.Clear and TetrisConfig.Clear.ClearDelay) or 0.5
 
-    -- 1) 快照旧占用表；被消行的方块直接归还池（立即消失，不等延迟）
-    local oldOcc = self.occ
-    self.occ = {}
-    for r = 1, rows do
-        self.occ[r] = {}
-        for c = 1, cols do self.occ[r][c] = nil end
-    end
-    local clearedSet = {}
-    for _, cr in ipairs(clearedRows) do clearedSet[cr] = true end
-    for _, cr in ipairs(clearedRows) do
-        for c = 1, cols do
-            local a = oldOcc[cr] and oldOcc[cr][c]
-            if a then self:ReleaseActor(a) end
-        end
-        self:PlayClearEffectAt(cr)   -- 在待消除行（盘面居中）播放特效
-    end
-
-    -- 2) 计算每个最终格的来源旧行：clearLines 从底向上紧凑堆叠保留行，被消行上方的行整体下落填补。
-    --    映射：从底往上数保留行，第 m 个保留行落到新行号 rows-m+1（m = rows-r+1），oldRow = kept[m]。
-    --    delta = r - oldRow；delta>0 的方块走 parent-shift；delta==0（未动）保留原位；无对应旧 Actor 的=本次锁定的新增格。
-    local groups = {}        -- groups[delta] = { {a, nr, c}, ... }
-    local newlyLocked = {}   -- { {r, c} }
-    local kept = {}          -- kept[m] = 原行号（从底往上第 m 个保留行）
-    for oldR = rows, 1, -1 do
-        if not clearedSet[oldR] then kept[#kept + 1] = oldR end
-    end
-    for r = 1, rows do
-        for c = 1, cols do
-            if board:getCell(r, c) ~= 0 then
-                local m = rows - r + 1
-                local oldRow = kept[m]
-                local delta = r - oldRow
-                local a = oldOcc[oldRow] and oldOcc[oldRow][c]
-                if a then
-                    if delta > 0 then
-                        groups[delta] = groups[delta] or {}
-                        groups[delta][#groups[delta] + 1] = { a = a, nr = r, c = c }
-                    else
-                        self.occ[r][c] = a   -- 静止方块：保持原位置
-                    end
-                else
-                    newlyLocked[#newlyLocked + 1] = { r = r, c = c }
-                end
-            end
-        end
-    end
-
-    -- 3) 本帧锁定的新增格：立即从池取 Actor 静态摆放（与下落解耦，无需等延迟）
-    for _, nl in ipairs(newlyLocked) do
-        local a = self:AcquireActor()
-        if a then
-            self:placeActor(a, nl.r, nl.c)
-            self:PaintCell(a, board:getCell(nl.r, nl.c))  -- 按格内类型换色（1..7 方块 / 8 垃圾）
-            self.occ[nl.r][nl.c] = a
-        end
-    end
-
-    -- 4) 需要下落的块：延迟 ClearDelay 秒后整体下移（现存 parent-shift 方式，见 ReconcileClearFall）
-    local groupCount = 0
-    for _ in pairs(groups) do groupCount = groupCount + 1 end
-    if groupCount > 0 then
-        self._clearFallPending = { groups = groups }
-        if TetrisConfig.Debug then
-            print(string.format("[Tetris][DBG] 阶段B调度: groupCount=%d ownerHasTimer=%s delay=%.2f -> %s",
-                groupCount, tostring(self.owner and self.owner.AddTimerOnce ~= nil), delay,
-                (self.owner and self.owner.AddTimerOnce) and "定时器延迟" or "SYNC同步兜底"))
-        end
-        if self.owner and self.owner.AddTimerOnce then
-            self.owner:AddTimerOnce(delay, function()
-                if self and self.ReconcileClearFall then self:ReconcileClearFall() end
-            end)
-        else
-            self:ReconcileClearFall()   -- 无定时器能力：同步兜底，行为回退到原版
-        end
-    end
-
-    if TetrisConfig.Debug then
-        print(string.format(
-            "[Tetris][Clear] 阶段A 回收消%d行（新增格=%d 待下落组=%d 池余=%d 延迟=%.2fs）",
-            #clearedRows, #newlyLocked, groupCount, #self.pool, delay))
-    end
-end
-
--- 阶段B：执行之前记录的 parent-shift 下落（被消行上方的块整体下移填补空缺）。
--- 在 ClearDelay 秒后由定时器触发；若期间又发生锁定，ReconcileClear 开头会先同步 flush 本函数。
-function TetrisRenderer:ReconcileClearFall()
-    local pending = self._clearFallPending
-    self._clearFallPending = nil
-    if TetrisConfig.Debug then
-        print(string.format("[Tetris][DBG] 阶段B触发: ReconcileClearFall 执行 pending=%s", tostring(pending ~= nil)))
-    end
-    if not pending then return end
-    local groups = pending.groups
-    local step = TetrisConfig.Render.CellSize + TetrisConfig.Render.CellGap
-
-    if self.shiftRoot then
-        for delta, list in pairs(groups) do
-            -- 根先归位到停车场，确保子 Actor 以 KeepWorld 挂上时相对偏移正确
-            pcall(function() self.shiftRoot:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
-            for _, it in ipairs(list) do
-                self:attachChildToRoot(it.a, self.shiftRoot)
-            end
-            -- 移动根：下移 delta*step（Z 减小）
-            pcall(function()
-                self.shiftRoot:K2_TeleportTo(
-                    cmVec({ X = self.hideLoc.X, Y = self.hideLoc.Y, Z = self.hideLoc.Z - delta * step }),
-                    self.rot)
-            end)
-            -- 拆父还原（KeepWorld），写回占用表
-            for _, it in ipairs(list) do
-                local okDet = pcall(function() it.a:K2_DetachFromActor(1, 1, 1) end)
-                if not okDet then
-                    self:placeActor(it.a, it.nr, it.c)   -- 兜底：直接设到最终格
-                end
-                self.occ[it.nr][it.c] = it.a
-            end
-            -- 根归位（已拆父的子 Actor 不受影响）
-            pcall(function() self.shiftRoot:K2_TeleportTo(cmVec(self.hideLoc), self.rot) end)
-        end
-    else
-        -- 无 shiftRoot：退化为逐格传送
-        for _, list in pairs(groups) do
-            for _, it in ipairs(list) do
-                self:placeActor(it.a, it.nr, it.c)
-                self.occ[it.nr][it.c] = it.a
-            end
-        end
-    end
-
-    if TetrisConfig.Debug then
-        local n = 0
-        for _ in pairs(groups) do n = n + 1 end
-        print(string.format("[Tetris][Clear] 阶段B 下落完成（动态组=%d 池余=%d）", n, #self.pool))
-    end
-end
 
 -- 按数据层刷新：
 --   1) 棋盘静态层（已落定方块）只在签名变化时全量同步（锁定/消行），平时零流量；
 --   2) 活动方块走整体模式，只传送根 Actor（1 次/帧），不再逐格下发。
--- ---------------- 道具方块 3D 浮空图标 ----------------
--- 活动方块为道具块（格值 9/10/11）时，在其正上方显示对应道具图（3D UI WidgetComponent Actor）。
--- 实现要点（已修正，对照渲染层其它传送）：
---   * cellLocation 返回「米」；K2_TeleportTo 是 Class API 要「厘米」→ 必须 cmVec() 转换；
---   * K2_TeleportTo(DestLocation, DestRotation) 的 DestRotation 不能为 nil，否则静默失败；
---   * CreateActor 必须带位置/旋转/缩放，否则生成在原点(0,0,0) 看不到。
-function TetrisRenderer:UpdateItemWidget(board)
+-- ---------------- 道具方块：灰色 1×1 方块本体 + 按类型的 3D 浮空图 ----------------
+-- 设计：道具作为「单一类别」——方块本体永远是同一个灰色 1×1（与类型无关、可无限扩充），
+--       只有头顶的 3D 图按类型区分（PieceImages[type]，新增类型只加一行配置）。
+--   1) 方块本体：复用静态方块对象池（AcquireActor/placeActor/PaintCell），外观灰色；
+--      活动(掉落)道具用 self._itemBlockActor（从池取一个、按帧摆到活动格），落地后归还池、改由网格 occ 渲染。
+--   2) 3D 图：UI Actor 池（_itemWidgetPool）覆盖「所有道具格」（活动格 + 网格内道具格），
+--      定位在格子上方针向玩家、按类型换图；落地道具因此也自带 3D 图。
+-- 实现要点：cellLocation 返回米；K2_TeleportTo 要厘米(cmVec())+旋转；CreateActor 必须带位置/旋转/缩放。
+
+-- 方块本体：活动(掉落)道具显示为灰色 1×1 块（复用静态方块池）。
+function TetrisRenderer:UpdateItemBlock(board)
+    local cfg = TetrisConfig.Item
+    if not cfg then return end
+    if not board or not self.origin then return end
+    local active = board:getActive()
+    local isItem = active and TetrisConfig.IsItemType(active.type)
+    if isItem then
+        if not self._itemBlockActor then
+            local a = self:AcquireActor()
+            if a then self._itemBlockActor = a; self._itemBlockHidden = true end
+        end
+        if self._itemBlockActor then
+            self:placeActor(self._itemBlockActor, active.y, active.x)
+            self:PaintCell(self._itemBlockActor, active.type)  -- 道具→灰色
+            if self._itemBlockHidden then
+                pcall(function() self._itemBlockActor:SetActorHiddenInGame(false) end)
+                self._itemBlockHidden = false
+            end
+        end
+    elseif self._itemBlockActor then
+        self:ReleaseActor(self._itemBlockActor)  -- 归还池，落地后由网格 occ 接手灰块
+        self._itemBlockActor = nil
+        self._itemBlockHidden = true
+    end
+end
+
+-- 3D 浮空图：UI Actor 池，覆盖「所有道具格」（活动格 + 网格内道具格）。
+function TetrisRenderer:UpdateItemWidgets(board)
     local dbg = TetrisConfig.Item and TetrisConfig.Item.Debug
     local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
     if dbg and not self._dbgItemCfgLogged then
         self._dbgItemCfgLogged = true
         local ref = (type(CreativeAsset) == "table" and cfg and CreativeAsset[cfg.PresetKey])
                  or (type(AssetRef) == "table" and cfg and AssetRef[cfg.PresetKey])
-        print(string.format("[Tetris][DBG 3D] Enabled=%s PresetKey=%s refResolved=%s LiftM=%s",
-            tostring(cfg and cfg.Enabled), tostring(cfg and cfg.PresetKey), tostring(ref ~= nil), tostring(cfg and cfg.LiftM)))
+        print(string.format("[Tetris][DBG 3D] Enabled=%s PresetKey=%s refResolved=%s LiftM=%s FrontOffsetM=%s",
+            tostring(cfg and cfg.Enabled), tostring(cfg and cfg.PresetKey), tostring(ref ~= nil), tostring(cfg and cfg.LiftM), tostring(cfg and cfg.FrontOffsetM)))
     end
     if not (cfg and cfg.Enabled) then return end
     if not board or not self.origin then return end
-    self:BuildItemWidget()
-    local a = self._itemWidgetActor
-    if not a then return end
+    -- 1) 收集所有道具格及其方块 Actor：活动格→self._itemBlockActor；落地格→self.occ[r][c]（二者不重叠）
+    local cells = {}
     local active = board:getActive()
-    local PT = TetrisConfig.PieceType
-    local isItem = active and (active.type == PT.ITEM_BLAST or active.type == PT.ITEM_SHIFT or active.type == PT.ITEM_CHARGE)
-    if not isItem then
-        if not self._itemWidgetHidden then
-            pcall(function() if a.SetActorHiddenInGame then a:SetActorHiddenInGame(true) end end)
-            self._itemWidgetHidden = true
-        end
-        return
+    if active and TetrisConfig.IsItemType(active.type) and self._itemBlockActor then
+        local loc = self:cellLocation(active.y, active.x)
+        if loc then cells[#cells + 1] = { block = self._itemBlockActor, loc = loc, type = active.type } end
     end
-    -- 道具格位置 = 活动方块单格（1×1）所在行列；盘面上方 = 沿世界 Z 增大（cellLocation 顶行 Z 最大）
-    local loc = self:cellLocation(active.y, active.x)
-    if loc then
-        loc.Z = (loc.Z or 0) + (cfg.LiftM or 1.2)
-        local rot = self:ItemWidgetRot()
-        local ok = pcall(function() a:K2_TeleportTo(cmVec(loc), rot) end)
-        if dbg and (ok or not self._dbgItemTelLogged) then
-            self._dbgItemTelLogged = ok or self._dbgItemTelLogged
-            local al = (type(a.GetActorLocation) == "function") and a:GetActorLocation() or nil
-            local als = al and string.format("(%.1f,%.1f,%.1f)cm", al.X or 0, al.Y or 0, al.Z or 0) or "n/a"
-            print(string.format("[Tetris][DBG 3D] teleport type=%s loc=(%.2f,%.2f,%.2f)m ok=%s actorLoc=%s yaw=%.1f",
-                tostring(active.type), loc.X, loc.Y, loc.Z, tostring(ok), als, (self.boardYaw or 0)))
+    for r = 1, (board.rows or 0) do
+        for c = 1, (board.cols or 0) do
+            local v = board:getCell(r, c)
+            if TetrisConfig.IsItemType(v) then
+                local b = self.occ and self.occ[r] and self.occ[r][c]
+                if b then
+                    local loc = self:cellLocation(r, c)
+                    if loc then cells[#cells + 1] = { block = b, loc = loc, type = v.item } end
+                end
+            end
         end
     end
-    -- 每帧尝试取组件 + 按类型换图（pawn 未就绪时取组件会重试；命中后缓存，仅类型变化重设）
-    self:SetItemWidgetImage(active.type)
-    if self._itemWidgetHidden then
-        pcall(function() if a.SetActorHiddenInGame then a:SetActorHiddenInGame(false) end end)
-        self._itemWidgetHidden = false
-        if dbg then print(string.format("[Tetris][DBG 3D] SHOW type=%s", tostring(active.type))) end
+    -- 2) 逐个把 3D UI 附加到对应方块（附加到子级；回收时由 ReleaseActor 摘除）
+    for i = 1, #cells do
+        self:AttachItemUIToBlock(cells[i].block, cells[i].loc, cells[i].type)
     end
+    -- 注：本帧不在 cells 的 UI 必随其方块被 ReleaseActor 回收而摘除（见 ReleaseActor）
 end
 
 -- 道具浮空图标旋转：与已验证的「背后 3D 挂件」一致，基于盘面偏航 self.boardYaw 让 Widget 平面正面对玩家，
@@ -2493,12 +2457,15 @@ function TetrisRenderer:ItemWidgetRot()
     return self.rot or makeZeroRotator()
 end
 
--- 创建浮空图标 Actor（幂等）。必须带位置/旋转/缩放，否则生成在原点看不到；先停停车场再按帧传送。
-function TetrisRenderer:BuildItemWidget()
+-- 取一个空闲的 UI 池条目（已 detach + 隐藏）；池空则新建一个（停停车场、隐藏）。
+-- 返回条目 {actor,imgComp,appliedFor,hidden,attachedTo} 或 nil（资源缺失）。
+function TetrisRenderer:EnsureFreeItemUI()
     local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
-    local dbg = TetrisConfig.Item and TetrisConfig.Item.Debug
-    if not (cfg and cfg.Enabled) then return end
-    if self._itemWidgetActor then return end
+    if not (cfg and cfg.Enabled) then return nil end
+    local pool = self._itemWidgetPool or {}
+    self._itemWidgetPool = pool
+    local e = table.remove(pool)  -- 取一个空闲（已 detach + 隐藏）条目
+    if e and e.actor then return e end
     local ref = (type(CreativeAsset) == "table" and CreativeAsset[cfg.PresetKey])
              or (type(AssetRef) == "table" and AssetRef[cfg.PresetKey])
     if not ref then
@@ -2506,7 +2473,7 @@ function TetrisRenderer:BuildItemWidget()
             self._itemWidgetRefLogged = true
             print(string.format("[Tetris][ItemWidget][WARN] 资源键无引用: %s（请确认已在编辑器注册该 ActorPreset）", tostring(cfg.PresetKey)))
         end
-        return
+        return nil
     end
     local pos = cmVec(self.hideLoc)
     local rot = self:ItemWidgetRot()
@@ -2518,34 +2485,68 @@ function TetrisRenderer:BuildItemWidget()
         return self:CreateOne(pos, scale, ref, rot)
     end)
     if ok and obj then
-        self._itemWidgetActor = obj
         pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(true) end end)
-        self._itemWidgetHidden = true
-        if dbg then print(string.format("[Tetris][DBG 3D] actor 创建成功 PresetKey=%s", tostring(cfg.PresetKey))) end
+        e = { actor = obj, imgComp = nil, appliedFor = nil, hidden = true, attachedTo = nil }
     else
         print("[Tetris][ItemWidget][WARN] 创建失败: " .. tostring(obj))
     end
+    return e
 end
 
--- 切换浮空图标图片（按《3D-UI 组件使用指南》verified 链路）。
--- 关键：① GetUserWidgetObject 必须传 pawn（非空参，否则返回 nil）；② 取子控件用 GetWidgetFromName；
---       ③ 换图用 imgComp:SetImageContent(AssetRef 句柄)，控件对象级、世界共享，无需 ps/uuid。
--- 注意：参数名用 pieceType，避免遮蔽全局 type() 函数。
-function TetrisRenderer:SetItemWidgetImage(pieceType)
+-- 把 3D UI 附加为「方块 block 的子级」（K2_AttachToActor），并每帧传送到方块正前方（朝玩家）。
+-- 仅做幂等附件一次；定位/朝向/换图每帧刷新（项目经验：挂载跟随不可靠，故每帧传送兜底）。
+-- 回收：方块被 ReleaseActor 时自动 K2_DetachFromActor 摘除（见 ReleaseActor）。
+function TetrisRenderer:AttachItemUIToBlock(block, loc, pieceType)
     local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
     local dbg = TetrisConfig.Item and TetrisConfig.Item.Debug
-    local a = self._itemWidgetActor
+    if not (cfg and block) then return end
+    self._itemUIByBlock = self._itemUIByBlock or {}
+    local e = self._itemUIByBlock[block]
+    if not e then
+        e = self:EnsureFreeItemUI()
+        if not e then return end
+        pcall(function() e.actor:K2_AttachToActor(block, "", 1, 1, 1, false) end)  -- 附加到子级（幂等）
+        e.attachedTo = block
+        self._itemUIByBlock[block] = e
+    end
+    -- 定位：方块「正前方（朝玩家）」+ 垂直偏移（基于 cellLocation，与方块同基准）
+    local fwd = self.boardForward
+    local front = (cfg.FrontOffsetM ~= nil) and cfg.FrontOffsetM or 1.0
+    local lift = (cfg.LiftM ~= nil) and cfg.LiftM or 0.0
+    local tx = (loc.X or 0)
+    local ty = (loc.Y or 0)
+    local tz = (loc.Z or 0)
+    if fwd then
+        tx = tx - (fwd.X or 0) * front
+        ty = ty - (fwd.Y or 0) * front
+    end
+    tz = tz + lift
+    local rot = self:ItemWidgetRot()
+    pcall(function() e.actor:K2_TeleportTo(cmVec({ X = tx, Y = ty, Z = tz }), rot) end)
+    self:SetItemWidgetImageFor(e, pieceType)
+    if e.hidden then
+        pcall(function() e.actor:SetActorHiddenInGame(false) end)
+        e.hidden = false
+    end
+end
+
+-- 按《3D-UI 组件使用指南》verified 链路，给某个 UI 池条目换图。
+-- 控件对象级 imgComp:SetImageContent(AssetRef 句柄)，无 UUID/ps；取组件在 pawn 就绪前每帧重试、命中后缓存。
+-- 注意：参数名用 pieceType，避免遮蔽全局 type() 函数。
+function TetrisRenderer:SetItemWidgetImageFor(e, pieceType)
+    local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
+    local dbg = TetrisConfig.Item and TetrisConfig.Item.Debug
+    local a = e and e.actor
     if not (cfg and a) then return end
     local key = TetrisConfig.PieceImages and TetrisConfig.PieceImages[pieceType]
     local imgID = (type(AssetRef) == "table" and key) and AssetRef[key] or nil
-    if dbg then
-        print(string.format("[Tetris][DBG 3D] image pieceType=%s key=%s imgID=%s",
-            tostring(pieceType), tostring(key), tostring(imgID)))
+    if dbg and not e._dbgImgLogged then
+        e._dbgImgLogged = true
+        print(string.format("[Tetris][DBG 3D] image(idx=%s) pieceType=%s key=%s imgID=%s",
+            tostring(e.idx), tostring(pieceType), tostring(key), tostring(imgID)))
     end
     if not imgID then return end
-
-    -- 取图片控件（每帧重试直到命中并缓存：首帧 pawn 可能为空）
-    if not self._itemWidgetImgComp then
+    if not e.imgComp and cfg.ImageChildName then
         local wc
         pcall(function()
             if type(a.GetComponentByClass) == "function" then
@@ -2554,46 +2555,42 @@ function TetrisRenderer:SetItemWidgetImage(pieceType)
         end)
         if not wc then
             for _, nm in ipairs({ "UI", "Widget", "WidgetComp", "WidgetComponent" }) do
-                local ok, c = pcall(function() return a:GetComponentByName(nm) end)
-                if ok and c then wc = c; break end
+                local ok2, c = pcall(function() return a:GetComponentByName(nm) end)
+                if ok2 and c then wc = c; break end
             end
         end
-        if dbg then print(string.format("[Tetris][DBG 3D] WidgetComponent=%s", tostring(wc ~= nil))) end
+        if dbg and not e._dbgWC then e._dbgWC = true
+            print(string.format("[Tetris][DBG 3D] pool WidgetComponent(idx=%s)=%s", tostring(e.idx), tostring(wc ~= nil))) end
         if wc then
             local plist
             pcall(function() plist = Game:GetAllPlayerPawns() end)
             if plist and type(plist.Num) == "function" and plist:Num() > 0 then
                 local uw
-                for i = 0, plist:Num() - 1 do
-                    local pawn = plist:Get(i)
+                for j = 0, plist:Num() - 1 do
+                    local pawn = plist:Get(j)
                     if pawn then
                         pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
                         if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
                         if uw then break end
                     end
                 end
-                if dbg then print(string.format("[Tetris][DBG 3D] UserWidget=%s", tostring(uw ~= nil))) end
+                if dbg then print(string.format("[Tetris][DBG 3D] UserWidget(idx=%s)=%s", tostring(e.idx), tostring(uw ~= nil))) end
                 if uw and cfg.ImageChildName then
-                    pcall(function()
-                        self._itemWidgetImgComp = uw:GetWidgetFromName(cfg.ImageChildName)
-                    end)
-                    if dbg then print(string.format("[Tetris][DBG 3D] imgComp(%s)=%s", tostring(cfg.ImageChildName), tostring(self._itemWidgetImgComp ~= nil))) end
+                    pcall(function() e.imgComp = uw:GetWidgetFromName(cfg.ImageChildName) end)
+                    if dbg and not e._dbgIC then e._dbgIC = true
+                        print(string.format("[Tetris][DBG 3D] pool imgComp(idx=%s, %s)=%s", tostring(e.idx), tostring(cfg.ImageChildName), tostring(e.imgComp ~= nil))) end
                 end
             elseif dbg then
                 print("[Tetris][DBG 3D] GetAllPlayerPawns 为空（首帧？）下一帧重试")
             end
         end
     end
-
     -- 换图：imgComp:SetImageContent(AssetRef 句柄)。控件就绪且本类型尚未应用时才设置。
-    if self._itemWidgetImgComp and self._itemWidgetImgAppliedFor ~= pieceType then
-        local ok = pcall(function() self._itemWidgetImgComp:SetImageContent(imgID) end)
-        if ok then
-            self._itemWidgetImgAppliedFor = pieceType
-            if dbg then print(string.format("[Tetris][DBG 3D] SetImageContent ok=true type=%s", tostring(pieceType))) end
-        elseif dbg then
-            print(string.format("[Tetris][DBG 3D] SetImageContent ok=false type=%s", tostring(pieceType)))
-        end
+    if e.imgComp and e.appliedFor ~= pieceType then
+        local ok = pcall(function() e.imgComp:SetImageContent(imgID) end)
+        if ok then e.appliedFor = pieceType end
+        if dbg and not e._dbgSetLogged then e._dbgSetLogged = true
+            print(string.format("[Tetris][DBG 3D] pool SetImageContent(idx=%s) ok=%s type=%s", tostring(e.idx), tostring(ok), tostring(pieceType))) end
     end
 end
 
@@ -2672,59 +2669,36 @@ function TetrisRenderer:Update(board)
     local rows = TetrisConfig.Board.Rows
     local cols = TetrisConfig.Board.Cols
 
-    -- 提交刚锁定的方块为静态块（按锁定前行号摆位）：必须在消行重排之前完成，
-    -- 使其进入 occ 成为“旧块”；若位于被消行上方，ReconcileClear 的 delta 计算会把它归入
-    -- groups 参与延迟下落。活动块整体 actor 由随后的 RenderActivePiece 回收（先放置后回收，无闪烁）。
-    if self.poolReady then
-        local locked = board:consumeLockedCells()
-        if locked then
-            for _, lc in ipairs(locked) do
-                local a = self.occ[lc.row] and self.occ[lc.row][lc.col]
-                if not a then
-                    a = self:AcquireActor()
-                    if a then
-                        self:placeActor(a, lc.row, lc.col)
-                        self:PaintCell(a, board:getCell(lc.row, lc.col))  -- 按格内类型换色（1..7 方块 / 8 垃圾）
-                        self.occ[lc.row] = self.occ[lc.row] or {}
-                        self.occ[lc.row][lc.col] = a
-                    end
-                end
-            end
-        end
-    end
-
-    -- 静态层：仅在盘面数据变化（锁定/消行）时重排；且仅在对象池就绪后
+    -- 静态层：数据驱动刷新。仅在盘面数据变化（锁定/消除/垃圾，boardSignature 变化）时全量 diff。
+    -- 三阶段（board.stage）：fall(下落) / clearing(消除过程) / settle(消除后)——消除过程与消除后均由数据层驱动渲染。
+    -- 消除瞬间（clearing→settle，数据层已改完 grid）按消除行播消行特效；下落块由下方 RenderActivePiece 单独渲染。
     if self.poolReady then
         local sig = self:boardSignature(board)
         if sig ~= self.lastBoardSig then
             local cleared = board:consumeClearedRows()
-            local garbageMoved = board:consumedGarbageMoved()
+            if cleared and #cleared > 0 then
+                for _, cr in ipairs(cleared) do self:PlayClearEffectAt(cr) end
+            end
+            -- 爆破竖版特效：在该列最下方块处由下往上播放竖版光束
+            local blastFx = board:consumeBlastFx()
+            if blastFx then
+                for _, bf in ipairs(blastFx) do self:PlayBlastEffectAt(bf.col, bf.bottom, bf.top) end
+            end
             if TetrisConfig.Debug then
-                print(string.format(
-                    "[Tetris][DBG] Update重排: sig变化 cleared=%s garbageMoved=%s 等待下落中=%s UseParentShift=%s -> %s",
-                    tostring(cleared and #cleared or 0), tostring(garbageMoved),
-                    tostring(self._clearFallPending ~= nil), tostring(TetrisConfig.Render.UseParentShiftOnClear),
-                    (cleared and #cleared > 0 and not garbageMoved and TetrisConfig.Render.UseParentShiftOnClear) and "ReconcileClear" or "ReconcileBoard"))
+                print(string.format("[Tetris][DBG] Update刷新: sig变化 stage=%s 消行=%d -> ReconcileBoard(数据驱动)",
+                    tostring(board:getStage()), cleared and #cleared or 0))
             end
-            if cleared and #cleared > 0 and not garbageMoved and TetrisConfig.Render.UseParentShiftOnClear then
-                self:ReconcileClear(board, cleared)
-            else
-                self:ReconcileBoard(board)
-            end
+            self:ReconcileBoard(board)   -- 全数据驱动：释放消除格、补放/重绘/位移幸存格
             self.lastBoardSig = sig
-        else
-            if TetrisConfig.Debug and self._clearFallPending then
-                print(string.format("[Tetris][DBG] Update: 处于0.5s等待窗口，本次 sig 未变(active piece 未动) pendingFall=%s",
-                    tostring(self._clearFallPending ~= nil)))
-            end
         end
     end
 
     -- 活动方块整体层（位移/旋转只传根）
     self:RenderActivePiece(board)
 
-    -- 道具方块 3D 浮空图标（占位，默认关闭）：活动方块为道具块时在其上方显示对应道具图
-    self:UpdateItemWidget(board)
+    -- 道具方块：灰色 1×1 方块本体（活动掉落块，复用静态方块池）+ 头顶 3D 浮空图（池，覆盖活动格与落地格）
+    self:UpdateItemBlock(board)
+    self:UpdateItemWidgets(board)
 
     -- 下一/Hold 预览已改用 2D 图片展示（见 TetrisGame:UpdateHoldNextUI），此处不再生成 3D 静态方块。
 
@@ -2733,7 +2707,7 @@ function TetrisRenderer:Update(board)
         for r = 1, rows do
             want[r] = {}
             for c = 1, cols do
-                want[r][c] = (board:getCell(r, c) ~= 0)
+                want[r][c] = (board:getCell(r, c) ~= nil)
             end
         end
         self:PrintGrid(want)
@@ -2743,7 +2717,7 @@ function TetrisRenderer:Update(board)
         for r = 1, rows do
             want[r] = {}
             for c = 1, cols do
-                want[r][c] = (board:getCell(r, c) ~= 0)
+                want[r][c] = (board:getCell(r, c) ~= nil)
             end
         end
         self:DumpCells(want)
@@ -2763,6 +2737,12 @@ function TetrisRenderer:Clear()
                 end
             end
         end
+    end
+    -- 活动道具方块（不在 occ 内）：归还并摘除其附加的 3D UI 子级
+    if self._itemBlockActor then
+        self:ReleaseActor(self._itemBlockActor)
+        self._itemBlockActor = nil
+        self._itemBlockHidden = true
     end
     -- 活动方块整体层归位
     if self.shownPieceType and self.pieces[self.shownPieceType] then

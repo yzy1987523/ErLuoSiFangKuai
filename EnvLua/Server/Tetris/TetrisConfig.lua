@@ -26,7 +26,11 @@ TetrisConfig.Clear = {
     -- 注意：水平（X/Y）已由 LeftOffsetM 接管（沿盘面本地左向，保证多盘一致）；
     -- 此处仅保留竖直分量 Z 作上下微调（沿世界 -Z，与行方向一致），X/Y 不再参与水平定位。
     EffectPositionOffset = { X = 0.0, Y = -5.25, Z = 0.0 },
-   
+    -- 爆破道具竖版消除特效：道具爆破改为一整列消除，在该列「最下方块」处由下往上播放竖版光束。
+    BlastEffectPresetKey = nil,  -- 竖版特效资源 Key；nil = 复用上面的 EffectPresetKey（若有专用竖向 VFX，填其 Key 并将 BlastEffectRot 设为 0）
+    BlastEffectScale = { X = 10.0, Y = 1.5, Z = 1.0 },  -- 竖版缩放：X=光束长度(≈列高)，按实际特效微调
+    BlastEffectRot = { X = -90.0, Y = 0.0, Z = 0.0 },    -- 将横版特效立为竖版的额外旋转(Pitch=-90 朝上)；yaw 自动叠 boardYaw 正对玩家
+    BlastEffectOffset = { X = 0.0, Y = 0.0, Z = 0.0 },    -- 位置微调（米）
 }
 
 -- ===================== 初始预填版面（开局即存在的方块） =====================
@@ -47,11 +51,11 @@ TetrisConfig.InitialLayout = {
     Rows = nil,
     ByRow = {
         -- 取消下行注释 = 底行填满，开局立刻消除（演示「初始就能消除」）：
-        -- [20] = "1111111111",
+        --[20] = "1111.11111",
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
-        -- [19] = "1.......11",
+         --[19] = "1.......11",
         -- 多行同消（四连消）示例：
-        -- [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111111",
+         [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
     },
 }
 
@@ -136,14 +140,16 @@ TetrisConfig.Pieces = {
 -- ===================== 道具方块（单格 + 3 种道具） =====================
 -- 每个下落方块有 Prob 概率为「道具方块」；是则等概率取 Types 中一种。
 -- 三种道具（格值见 PieceType.ITEM_*，避开垃圾块 8）：
---   9  = 爆破块：消除含本格的方块时，清除以本格为中心的 (2*BlastRadius+1)×(2*BlastRadius+1) 区域
+--   9  = 爆破块：消除含本格的方块时，清除本格所在的【一整列】（跳过本应整体消除的满行），并在该列最下方块处播放竖版消除特效
 --   10 = 位移块：消除含本格的方块时，所有行整体向右平移 1 列（每行从最右格起右移 1，目标格被占/越界则跳过）
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
     Debug = true,                      -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
     Prob = 0.95,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
-    Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应
-    BlastRadius = 2,                    -- 爆破半径（格）：5×5 = 中心 ±2 格
+    Types = { 9, 10, 9 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
+    TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
+    BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
+    BlastRadius = 2,                    -- 【已废弃】爆破改为消除一整列，不再按半径；保留字段仅供参考
 
     -- 3D 浮空图标：活动道具方块上方挂一个 3D UI 图片控件显示对应道具图。
     -- 图片与 2D Next/Hold 共用 TetrisConfig.PieceImages[9/10/11]（单一图源，不要在此重复定义）。
@@ -152,9 +158,18 @@ TetrisConfig.Item = {
         Enabled = true,                -- 资源就绪后改为 true 才生成浮空图标
         PresetKey = "46_ActorPreset_1822956872",   -- 带 WidgetComponent 的 Actor 预设
         ImageChildName = "icon",          -- Widget 内图片组件名（运行时按道具切换图）
-        LiftM = 1.2,                            -- 图标悬浮在格子上方的高度（米）
+        LiftM = 0.0,                             -- 垂直偏移（米，正=抬高 / 负=压低）；默认 0 = 与方块同高。想上下调位置就改这个
+        FrontOffsetM = 0.50,                       -- 沿「盘面正前方（朝玩家）」的偏移距离（米）；= -boardForward * FrontOffsetM。想前后调位置就改这个
+        PoolSize = 24,                           -- 3D 图标池上限（道具同存数量，正常对局难超；超限的道具格不显示图标）
     },
 }
+
+-- 判断格值是否为「道具块」：单一类别，格值 >= Item.TypeMin 即道具（灰色块 + 3D 图，与类型无关、可无限扩充）。
+-- 垃圾块 = 8 已 < TypeMin，普通方块 1..7 也更小的范围，故不会误判。
+TetrisConfig.IsItemType = function(v)
+    if type(v) == "table" then return v.item ~= nil end   -- 格子结构 {color,item}
+    return type(v) == "number" and v >= (TetrisConfig.Item.TypeMin or 9)   -- 方块类别号(active.type)
+end
 
 -- ===================== 旋转（数据层与渲染层共享的唯一真相） =====================
 -- 统一两侧旋转规则：旋转用矩阵 CW 旋转（TetrisBoard.rotateMatrixCW），
@@ -472,7 +487,7 @@ TetrisConfig.UI = {
     OpponentScoreLabel = ci("1_CreativeInstance_23643899615395720"),
 }
 
--- ===================== 输入手感（长按 / 自动横移 DAS-ARR） =====================
+-- ===================== 输入手感（长按 / 自动横移 DAS-）ARR） =====================
 -- 左右键支持「长按连续横移」：短按 = 点一次移一格（CustomUIClicked）；
 -- 长按 = 按住越过引擎长按阈值后进入连发（CustomUILongPressed / CustomUILongPressReleased）。
 -- DAS（Delayed Auto Shift）：按下后到首次连发的延迟；ARR（Auto Repeat Rate）：连发间隔。
@@ -480,7 +495,7 @@ TetrisConfig.UI = {
 TetrisConfig.Input = {
     LongPressEnabled = true,       -- 总开关：false = 左右键只响应短按，不进入长按连发
     DAS = 0.16,                    -- 首次连发延迟（秒）
-    ARR = 0.06,                    -- 连发间隔（秒），越小越快
+    ARR = 0.06,                    -- 连发间隔（秒，越小越快
 }
 
 -- ===================== 方块图片资源（2D UI 显示 Hold / Next） =====================

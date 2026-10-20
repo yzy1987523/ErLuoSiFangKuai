@@ -24,10 +24,10 @@ local function evaluate(g, rows, cols)
         local h = 0
         local seen = false
         for r = 1, rows do
-            if g[r][c] ~= 0 then
+            if g[r][c] ~= nil then
                 if not seen then h = rows - r + 1; seen = true end
             elseif seen then
-                holes = holes + 1   -- 悬空空格 = 空洞
+                holes = holes + 1   -- 悬空空位 = 空洞
             end
         end
         heights[c] = h
@@ -40,7 +40,7 @@ local function evaluate(g, rows, cols)
     for r = 1, rows do
         local full = true
         for c = 1, cols do
-            if g[r][c] == 0 then full = false; break end
+            if g[r][c] == nil then full = false; break end
         end
         if full then lines = lines + 1 end
     end

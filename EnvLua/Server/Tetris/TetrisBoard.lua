@@ -38,6 +38,15 @@ for id, def in pairs(TetrisConfig.Pieces) do
     rotationStates[id] = buildRotationStates(def.shape)
 end
 
+-- ===================== 格子数据模型：{ color, item } =====================
+-- 空 = nil；占位 = { color = 1..8（1..7 颜色 / 8 垃圾灰）, item = nil | 9 | 10 | 11（道具） }
+-- 颜色与道具彻底解耦：普通块 item=nil；道具块 color=8(灰) 且 item=道具类别号。
+local COLOR_GARBAGE = 8
+local function makeCell(color, item)
+    if not color then return nil end
+    return { color = color, item = item }
+end
+
 -- ---------------- 构造 / 重置 ----------------
 function TetrisBoard:new()
     local o = setmetatable({}, self)
@@ -50,13 +59,10 @@ function TetrisBoard:reset()
     self.cols = cfg.Cols
     self.rows = cfg.Rows
 
-    -- grid[row][col] = 0 空，或方块类型 ID（1..7，同时代表颜色）
+    -- grid[row][col] = nil(空) 或 { color=1..8, item=nil|9|10|11 }
     self.grid = {}
     for r = 1, self.rows do
         self.grid[r] = {}
-        for c = 1, self.cols do
-            self.grid[r][c] = 0
-        end
     end
 
     self.bag = {}                 -- 7-bag 随机袋
@@ -84,8 +90,11 @@ function TetrisBoard:reset()
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
     self.lastSpawned = nil
     -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
-    self.pendingClearedRows = nil     -- 本次 lockPiece 被消除的行号列表
-    self.pendingGarbageMoved = nil    -- 本次是否发生过垃圾行上移（会导致普通位移公式失效）
+    self.pendingClearedRows = nil     -- 本次消除的行号列表（渲染层据此播消行特效）
+    self.pendingBlastFx = nil          -- 本次爆破竖版特效列表 { {col, bottom, top}, ... }（渲染层播竖版光束）
+    self.pendingGarbageMoved = nil    -- 保留字段：渲染层已改为全数据驱动刷新，不再据此切换路径
+    -- 三阶段状态机 fall/clearing/settle：游戏层仍以 lockPaused/clearing 布尔推进，stage 为其可读投影，供渲染层只读
+    self.stage = "fall"
     self.clearing = false              -- 消行动画期间置 true：挂起出块与重力，等动画结束后 finishClear()
     self.lockPaused = false             -- 锁定后、消行前的"落地停顿"期间置 true：挂起出块与重力，停顿结束后由 Game 层调用 doClear()
 
@@ -108,7 +117,7 @@ function TetrisBoard:applyInitialLayout()
             if ch ~= "." and ch ~= " " then
                 local v = tonumber(ch)
                 if v and v >= 1 and v <= 8 then
-                    self.grid[r][c] = v
+                    self.grid[r][c] = makeCell(v, nil)
                 end
             end
         end
@@ -209,7 +218,7 @@ function TetrisBoard:canPlace(piece, x, y, rot)
                 if gc < 1 or gc > self.cols then return false end
                 if gr > self.rows then return false end
                 if gr >= 1 then
-                    if self.grid[gr][gc] ~= 0 then return false end
+                    if self.grid[gr][gc] ~= nil then return false end
                 end
                 -- gr < 1 表示还在盘面上方，允许
             end
@@ -361,7 +370,8 @@ function TetrisBoard:lockPiece()
                 local gr = p.y + r - 1
                 local gc = p.x + c - 1
                 if gr >= 1 and gr <= self.rows and gc >= 1 and gc <= self.cols then
-                    self.grid[gr][gc] = p.type
+                    local isItem = TetrisConfig.IsItemType(p.type)
+                    self.grid[gr][gc] = makeCell(isItem and COLOR_GARBAGE or p.type, isItem and p.type or nil)
                     lockedCells[#lockedCells + 1] = { row = gr, col = gc }
                 end
             end
@@ -376,9 +386,11 @@ function TetrisBoard:lockPiece()
     -- 渲染层会把这一帧画出来，玩家能看到"方块落定 + 满行完成"的一瞬；停顿结束后由 Game 层调用 doClear() 再消行。
     if self:hasFullRows() then
         self.lockPaused = true
+        self.stage = "clearing"
         return 0
     end
 
+    self.stage = "fall"
     self:applyGarbage()
     self:spawn()
     return 0
@@ -389,7 +401,7 @@ function TetrisBoard:hasFullRows()
     for r = self.rows, 1, -1 do
         local full = true
         for c = 1, self.cols do
-            if self.grid[r][c] == 0 then full = false break end
+            if self.grid[r][c] == nil then full = false break end
         end
         if full then return true end
     end
@@ -401,108 +413,123 @@ end
 function TetrisBoard:doClear()
     if not self.lockPaused then return false end
     self.lockPaused = false
-    local cleared = self:clearLines(true)
-    self:applyGarbage()
+    local cleared = self:clearLines(true)   -- 1) 先判定消行 → 生成本次要扔出的垃圾 outgoingGarbage
+    self:resolveGarbageOffset()             -- 2) 抵消：要扔出的 outgoing ←→ 即将升起的 incoming(pendingGarbage)
+    self:applyGarbage()                     -- 3) 升起抵消后仍有剩余的 incoming
     if cleared > 0 then
-        -- 消行：动画(渲染层 ClearDelay 秒)未结束前不出块。active 保持 nil、clearing 置位，
-        -- 由 Game 层在动画结束后调用 finishClear() 重新出块，避免新块在消除未完成时就出现/下落。
+        -- 消行：数据层已改完（消除/坍塌/道具效果），转 settle 阶段；渲染层按数据刷新并在切换点播特效。
         self.clearing = true
+        self.stage = "settle"
     else
         self:spawn()
+        self.stage = "fall"
     end
     return cleared
 end
 
--- 消除满行，返回消除行数。
+-- 消除满行并结算道具，返回消除行数。
+-- 道具结算三阶段顺序：1) 先消除（扫描收道具 → 移除满行，暂不坍塌）；
+--   2) 再执行道具（爆破清列 / 位移右移 / 充能）；3) 最后其他再落下（正常坍塌：消多少行，上方方块下落多少行）。
 -- countScore：默认 true（正常锁定消除，计分/连击/升级）；false 用于开局初始消除，仅清网格、不污染分数。
 function TetrisBoard:clearLines(countScore)
     local cleared = 0
-    local writeRow = self.rows
 
-    -- 道具方块特效：在正式消行前，先扫描满行收集其中的道具格（爆破/位移/充能），并对爆破格做区域清零。
-    -- 注意：本扫描不改变网格结构，仅收集效果；爆破清零在收集后进行，随后由下方正式消行循环按新网格重判满行。
+    -- ===================== STEP 1：消除 =====================
     local PT = TetrisConfig.PieceType
     local itemEffects = { blast = {}, shift = false, charge = 0 }
+    -- 扫描满行：此时满行仍在盘面上，道具格就位于满行内，先收集其所在列号供 STEP2 使用（本步不改网格）。
+    local fullRows = {}
+    local clearedRows = {}
     for r = self.rows, 1, -1 do
         local full = true
         for c = 1, self.cols do
-            if self.grid[r][c] == 0 then full = false; break end
+            if self.grid[r][c] == nil then full = false; break end
         end
         if full then
+            fullRows[r] = true
+            cleared = cleared + 1
+            clearedRows[#clearedRows + 1] = r
             for c = 1, self.cols do
-                local v = self.grid[r][c]
-                if v == PT.ITEM_BLAST then
+                local it = self.grid[r][c] and self.grid[r][c].item
+                if it == PT.ITEM_BLAST then
                     itemEffects.blast[#itemEffects.blast + 1] = { r = r, c = c }
-                elseif v == PT.ITEM_SHIFT then
+                elseif it == PT.ITEM_SHIFT then
                     itemEffects.shift = true
-                elseif v == PT.ITEM_CHARGE then
+                elseif it == PT.ITEM_CHARGE then
                     itemEffects.charge = itemEffects.charge + 1
                 end
             end
         end
     end
-    -- 爆破：以每个爆破格为中心清除 (2R+1)×(2R+1) 区域（仅删格，不会造满行，故下方重判满行结果 ⊆ 原满行）
+    -- 移除满行（仅消除：把满行格子清空；下落坍塌放到 STEP3，保证「先消除→再道具→最后下落」顺序）
+    for _, r in ipairs(clearedRows) do
+        for c = 1, self.cols do self.grid[r][c] = nil end
+    end
+    -- 记录本次被消除的行，供渲染层做消除特效
+    self.pendingClearedRows = (#clearedRows > 0) and clearedRows or nil
+
+    -- ===================== STEP 2：道具（在「消除+坍塌」后的盘面状态上执行） =====================
+    -- 爆破：清除爆破格所在的一整列（满行已移除，此处直接清整列）；记录该列上下方块位置供竖版特效。
     if #itemEffects.blast > 0 then
-        local rad = (TetrisConfig.Item and TetrisConfig.Item.BlastRadius) or 2
+        local blastFx = {}
         for _, bc in ipairs(itemEffects.blast) do
-            for dr = -rad, rad do
-                for dc = -rad, rad do
-                    local rr = bc.r + dr
-                    local cc = bc.c + dc
-                    if rr >= 1 and rr <= self.rows and cc >= 1 and cc <= self.cols then
-                        self.grid[rr][cc] = 0
+            local col = bc.c
+            if col >= 1 and col <= self.cols then
+                -- 记录该列最上(topRow)/最下(bottomRow)占位格（竖版特效覆盖区间；清列前的快照）
+                local topRow, bottomRow
+                for rr = 1, self.rows do
+                    if self.grid[rr] and self.grid[rr][col] ~= nil then
+                        topRow = topRow or rr   -- 自上而下首个 = 最上方
+                        bottomRow = rr           -- 持续更新 = 最下方
                     end
                 end
+                -- 清除整列
+                for rr = 1, self.rows do self.grid[rr][col] = nil end
+                if bottomRow then
+                    blastFx[#blastFx + 1] = { col = col, bottom = bottomRow, top = topRow or bottomRow }
+                end
             end
         end
+        if #blastFx > 0 then self.pendingBlastFx = blastFx end
+    end
+    -- 位移：消除后所有行整体向右平移 1 列（每行从最右格起向左遍历，当前格非空且右为空则右移 1 格）
+    if itemEffects.shift then
+        local moved = false
+        for r = 1, self.rows do
+            for c = self.cols, 1, -1 do
+                if self.grid[r][c] ~= nil and c + 1 <= self.cols and self.grid[r][c + 1] == nil then
+                    self.grid[r][c + 1] = self.grid[r][c]
+                    self.grid[r][c] = nil
+                    moved = true
+                end
+            end
+        end
+        if moved then self.pendingGarbageMoved = true end
+    end
+    -- 充能：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量
+    if itemEffects.charge > 0 then
+        self.pendingItemCharge = (self.pendingItemCharge or 0) + itemEffects.charge
     end
 
-    local clearedRows = {}
+    -- ===================== STEP 3：其他再落下（正常坍塌：消多少行，上方方块下落多少行） =====================
+    -- 保留行（非满行）整体下移填补被消除满行留下的空缺；即标准消行坍塌——消除 N 行，其上所有方块下落 N 行。
+    local writeRow = self.rows
     for r = self.rows, 1, -1 do
-        local full = true
-        for c = 1, self.cols do
-            if self.grid[r][c] == 0 then
-                full = false
-                break
-            end
-        end
-        if full then
-            cleared = cleared + 1
-            clearedRows[#clearedRows + 1] = r
-        else
+        if not fullRows[r] then
             if writeRow ~= r then
-                -- 把当前行下移到 writeRow
-                for c = 1, self.cols do
-                    self.grid[writeRow][c] = self.grid[r][c]
-                end
+                for c = 1, self.cols do self.grid[writeRow][c] = self.grid[r][c] end
             end
             writeRow = writeRow - 1
         end
     end
-    -- 记录本次被消除的行，供渲染层做 parent-shift（方块整体下落动画）
-    self.pendingClearedRows = (#clearedRows > 0) and clearedRows or nil
     -- 顶部剩余行清空
     for r = writeRow, 1, -1 do
-        for c = 1, self.cols do
-            self.grid[r][c] = 0
-        end
+        for c = 1, self.cols do self.grid[r][c] = nil end
     end
 
-    -- 位移块特效：消除含位移块的方块后，所有行整体向右平移 1 列。
-    -- 每行从最右格起向左遍历，当前格非空且右侧格为空(且未越界)则右移 1 格；右侧被占/越界则跳过（保持原位）。
-    if itemEffects.shift then
-        for r = 1, self.rows do
-            for c = self.cols, 1, -1 do
-                if self.grid[r][c] ~= 0 and c + 1 <= self.cols and self.grid[r][c + 1] == 0 then
-                    self.grid[r][c + 1] = self.grid[r][c]
-                    self.grid[r][c] = 0
-                end
-            end
-        end
-    end
-    -- 充能块特效：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量
-    if itemEffects.charge > 0 then
-        self.pendingItemCharge = (self.pendingItemCharge or 0) + itemEffects.charge
+    -- 道具爆破/位移改动了非整体行移动的格子（爆破清列打洞 / 位移整行右移），渲染层需走逐格全量重排
+    if #itemEffects.blast > 0 or itemEffects.shift then
+        self.pendingItemFx = true
     end
 
     if cleared > 0 then
@@ -552,7 +579,7 @@ function TetrisBoard:clearBottomRows(n)
         if src >= 1 then
             for c = 1, self.cols do self.grid[r][c] = self.grid[src][c] end
         else
-            for c = 1, self.cols do self.grid[r][c] = 0 end
+            for c = 1, self.cols do self.grid[r][c] = nil end
         end
     end
     -- 当前下落方块随场地下移（逐格尝试，避免穿过障碍 / 越界）
@@ -575,6 +602,21 @@ function TetrisBoard:consumeClearedRows()
     local r = self.pendingClearedRows
     self.pendingClearedRows = nil
     return r
+end
+
+-- 渲染层消费：取走本次爆破竖版特效列表 { {col, bottom, top}, ... }（取后清空）
+function TetrisBoard:consumeBlastFx()
+    local v = self.pendingBlastFx
+    self.pendingBlastFx = nil
+    return v
+end
+
+-- 渲染层消费：取走"本帧是否发生过道具单元格级改动（爆破打洞/位移右移）"（取后清空）。
+-- 为 true 时渲染层不能用 parent-shift，须走逐格全量重排以正确反映这些格子变化。
+function TetrisBoard:consumeItemFx()
+    local v = self.pendingItemFx
+    self.pendingItemFx = nil
+    return v
 end
 
 -- 渲染层消费：取走本次锁定方块的原始格位置（取后清空，避免重复提交）
@@ -609,6 +651,27 @@ function TetrisBoard:consumeOutgoingGarbage()
     return g
 end
 
+-- 垃圾抵消：落地后先判定消行(见 doClear → clearLines 生成 outgoingGarbage)，
+-- 再检测「是否即将有垃圾升起」(pendingGarbage > 0)；若即将升起，则与「要扔出的垃圾」
+-- outgoing 进行抵消计算：抵消数 = min(outgoing, incoming)，二者同时扣减。
+--   抵消后 pendingGarbage 仍有剩余 → 随后的 applyGarbage() 照常升起为垃圾行；
+--   outgoing 仍有剩余 → 由 Game 层 flushOutgoingGarbage() 发给对手。
+-- 返回本次实际抵消的行数（调试/提示用）。任何一侧 <=0 则无需抵消，返回 0。
+function TetrisBoard:resolveGarbageOffset()
+    local out = self.outgoingGarbage or 0
+    local inc = self.pendingGarbage or 0
+    if out <= 0 or inc <= 0 then return 0 end
+    local off = (out < inc) and out or inc
+    self.outgoingGarbage = out - off
+    self.pendingGarbage = inc - off
+    if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
+        print(string.format(
+            "[Tetris][Versus] 垃圾抵消: 要扔出 outgoing=%d ←→ 即将升起 incoming=%d → 抵消 %d（剩余 扔出=%d, 升起=%d）",
+            out, inc, off, self.outgoingGarbage, self.pendingGarbage))
+    end
+    return off
+end
+
 -- 从底部注入垃圾行：整行填充，随机留一个缺口
 function TetrisBoard:applyGarbage()
     local count = self.pendingGarbage
@@ -626,13 +689,13 @@ function TetrisBoard:applyGarbage()
             end
         end
         for c = 1, self.cols do
-            self.grid[self.rows][c] = (c == gap) and 0 or 8  -- 8 = 垃圾块颜色
+            self.grid[self.rows][c] = (c ~= gap) and makeCell(COLOR_GARBAGE, nil) or nil  -- 8 = 垃圾块颜色(灰)
         end
     end
 
     -- 上移导致方块越顶即结束
     for c = 1, self.cols do
-        if self.grid[1][c] ~= 0 then
+        if self.grid[1][c] ~= nil then
             self.isGameOver = true
             break
         end
@@ -678,15 +741,21 @@ end
 function TetrisBoard:finishClear()
     if not self.clearing then return false end
     self.clearing = false
+    self.stage = "fall"
     self:spawn()
     return true
 end
 
 -- ---------------- 供渲染层读取 ----------------
--- 返回 grid[row][col]：0 空，1..7 方块颜色，8 垃圾块
+-- 返回 grid[row][col]：{ color=1..8, item=nil|9|10|11 } 或 nil(空/越界)
 function TetrisBoard:getCell(row, col)
-    if row < 1 or row > self.rows or col < 1 or col > self.cols then return 0 end
+    if row < 1 or row > self.rows or col < 1 or col > self.cols then return nil end
     return self.grid[row][col]
+end
+
+-- 当前阶段：fall(下落) / clearing(消除过程) / settle(消除后)。渲染层只读，不写。
+function TetrisBoard:getStage()
+    return self.stage or "fall"
 end
 
 -- 当前下落方块整体状态 {type, rot, x, y}（或 nil），供渲染层整体方块使用
@@ -775,7 +844,8 @@ function TetrisBoard:dump()
     local s = ""
     for r = 1, self.rows do
         for c = 1, self.cols do
-            s = s .. (self.grid[r][c] == 0 and "." or tostring(self.grid[r][c]))
+            local cell = self.grid[r][c]
+            s = s .. (cell and (cell.item and ("i" .. cell.item) or tostring(cell.color)) or ".")
         end
         s = s .. "\n"
     end
