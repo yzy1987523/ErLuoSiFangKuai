@@ -93,6 +93,7 @@ function TetrisBoard:reset()
     self.pendingClearedRows = nil     -- 本次消除的行号列表（渲染层据此播消行特效）
     self.pendingBlastFx = nil          -- 本次爆破竖版特效列表 { {col, bottom, top}, ... }（渲染层播竖版光束）
     self.pendingGarbageMoved = nil    -- 保留字段：渲染层已改为全数据驱动刷新，不再据此切换路径
+    self._clearFullRows = nil         -- 被消除满行集合（clearLines 暂存，applyClearCollapse 消费；延迟坍塌用）
     -- 三阶段状态机 fall/clearing/settle：游戏层仍以 lockPaused/clearing 布尔推进，stage 为其可读投影，供渲染层只读
     self.stage = "fall"
     self.clearing = false              -- 消行动画期间置 true：挂起出块与重力，等动画结束后 finishClear()
@@ -413,14 +414,17 @@ end
 function TetrisBoard:doClear()
     if not self.lockPaused then return false end
     self.lockPaused = false
-    local cleared = self:clearLines(true)   -- 1) 先判定消行 → 生成本次要扔出的垃圾 outgoingGarbage
+    local cleared = self:clearLines(true)   -- 1) 消行+道具：只「消除+道具」，不坍塌（坍塌延迟到特效播完后）
     self:resolveGarbageOffset()             -- 2) 抵消：要扔出的 outgoing ←→ 即将升起的 incoming(pendingGarbage)
-    self:applyGarbage()                     -- 3) 升起抵消后仍有剩余的 incoming
     if cleared > 0 then
-        -- 消行：数据层已改完（消除/坍塌/道具效果），转 settle 阶段；渲染层按数据刷新并在切换点播特效。
+        -- 消除阶段：数据层已「消除+道具」完成（尚未坍塌），转 clearing 阶段；
+        -- 渲染层按数据刷新（回收整行/整列、播特效、位移），特效播完后由 Game 层 applyClearCollapse 执行下落。
+        -- 注意：垃圾升起(applyGarbage)也延迟到特效播完后、坍塌之后执行（避免上移整盘破坏坍塌行号）。
         self.clearing = true
-        self.stage = "settle"
+        self.stage = "clearing"
     else
+        -- 无消行：垃圾仍照常升起，直接出下一块（无消除特效，无需等待）
+        self:applyGarbage()
         self:spawn()
         self.stage = "fall"
     end
@@ -511,21 +515,11 @@ function TetrisBoard:clearLines(countScore)
         self.pendingItemCharge = (self.pendingItemCharge or 0) + itemEffects.charge
     end
 
-    -- ===================== STEP 3：其他再落下（正常坍塌：消多少行，上方方块下落多少行） =====================
-    -- 保留行（非满行）整体下移填补被消除满行留下的空缺；即标准消行坍塌——消除 N 行，其上所有方块下落 N 行。
-    local writeRow = self.rows
-    for r = self.rows, 1, -1 do
-        if not fullRows[r] then
-            if writeRow ~= r then
-                for c = 1, self.cols do self.grid[writeRow][c] = self.grid[r][c] end
-            end
-            writeRow = writeRow - 1
-        end
-    end
-    -- 顶部剩余行清空
-    for r = writeRow, 1, -1 do
-        for c = 1, self.cols do self.grid[r][c] = nil end
-    end
+    -- ===================== STEP 3（下落）已拆出，不在本函数执行 =====================
+    -- 正常坍塌（消多少行、上方方块下落多少行）延迟到「特效播放完」后，由 Game 层调用 applyClearCollapse() 执行，
+    -- 实现「先播特效/回收整行(整列)/位移，播完特效后方块正常落下」的分阶段时序（对齐 Puyo BeginResolve）。
+    -- 这里仅暂存被消除满行集合，供 applyClearCollapse 跳过这些行做压缩。
+    self._clearFullRows = fullRows
 
     -- 道具爆破/位移改动了非整体行移动的格子（爆破清列打洞 / 位移整行右移），渲染层需走逐格全量重排
     if #itemEffects.blast > 0 or itemEffects.shift then
@@ -563,6 +557,30 @@ function TetrisBoard:clearLines(countScore)
         self.outgoingGarbage = 0
     end
     return cleared
+end
+
+-- 消行坍塌（下落）：在消行特效播放完成后由 Game 层调用（见 TetrisGame:ScheduleClearResume）。
+-- 把消除后剩下的方块整体下移填补被消除满行留下的空缺——标准消行坍塌：消 N 行，其上所有方块下落 N 行。
+-- 与 clearLines 拆分：clearLines 只「消除+道具」（不坍塌），本函数负责「最后其他再落下」；
+-- 因 doClear 在 clearLines 之后还会 applyGarbage 上移整盘，故坍塌必须在垃圾升起之前执行，被消除行号才正确。
+function TetrisBoard:applyClearCollapse()
+    local fullRows = self._clearFullRows
+    self._clearFullRows = nil
+    if not fullRows then return end
+    local writeRow = self.rows
+    for r = self.rows, 1, -1 do
+        if not fullRows[r] then
+            if writeRow ~= r then
+                for c = 1, self.cols do self.grid[writeRow][c] = self.grid[r][c] end
+            end
+            writeRow = writeRow - 1
+        end
+    end
+    -- 顶部剩余行清空
+    for r = writeRow, 1, -1 do
+        for c = 1, self.cols do self.grid[r][c] = nil end
+    end
+    self.stage = "settle"
 end
 
 -- 清除最下方 n 行（SK-02「清除最下方两行」）：

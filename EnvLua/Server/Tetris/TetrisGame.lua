@@ -382,7 +382,7 @@ function TetrisGame:maybeScheduleLockFlash()
         local cleared = self.board:doClear()
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
-        self:CheckReceivedGarbage()    -- 有满行→doClear 内 applyGarbage 已注入垃圾，弹提示
+        self:CheckReceivedGarbage()    -- 仅清零 lastAppliedGarbage（垃圾升起已延迟到特效播完后，由 UpdateGarbageHints 显示）
         if self.renderer and self.board then self.renderer:Update(self.board) end
         self:maybeScheduleClearResume() -- clearing=true → 等 ClearDelay 后 finishClear
         self:UpdateHUD()
@@ -391,13 +391,26 @@ function TetrisGame:maybeScheduleLockFlash()
     end)
 end
 
--- 消行期间（board.clearing）在动画时长 ClearDelay 后调用 finishClear() 出下一个块。
+-- 消行期间（board.clearing）分阶段调度：
+--   1) EffectDuration 后：先 applyClearCollapse（方块下落），再 applyGarbage（升起剩余垃圾，必须在坍塌之后）；
+--   2) ClearDelay 后：finishClear() 出下一个块。
 -- 用 _clearResumeScheduled 防重入：多个 tick 帧只调度一次。
 function TetrisGame:ScheduleClearResume()
     if self._clearResumeScheduled then return end
     self._clearResumeScheduled = true
-    local delay = (TetrisConfig.Clear and TetrisConfig.Clear.ClearDelay) or 0.5
-    self.owner:AddTimerOnce(delay, function()
+    local cfg = TetrisConfig.Clear or {}
+    local effectDur = cfg.EffectDuration or 0.5
+    local clearDelay = cfg.ClearDelay or 0.65
+    -- 特效播完后：坍塌（下落）→ 升起垃圾（行号依赖坍塌结果，必须在后）
+    self.owner:AddTimerOnce(effectDur, function()
+        if not self.running or not self.board then return end
+        self.board:applyClearCollapse()
+        self.board:applyGarbage()
+        if self.renderer and self.board then self.renderer:Update(self.board) end
+        if self.board:isOver() then self:OnGameOver() end
+    end)
+    -- ClearDelay 后结束消除、出下一个块
+    self.owner:AddTimerOnce(clearDelay, function()
         self._clearResumeScheduled = false
         if not self.running or not self.board then return end
         self.board:finishClear()
