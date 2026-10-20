@@ -92,6 +92,7 @@ function TetrisBoard:reset()
     -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
     self.pendingClearedRows = nil     -- 本次消除的行号列表（渲染层据此播消行特效）
     self.pendingBlastFx = nil          -- 本次爆破竖版特效列表 { {col, bottom, top}, ... }（渲染层播竖版光束）
+    self.pendingShiftFx = nil          -- 本次位移特效行号列表（渲染层在位移块所在行播横向特效）
     self.pendingGarbageMoved = nil    -- 保留字段：渲染层已改为全数据驱动刷新，不再据此切换路径
     self._clearFullRows = nil         -- 被消除满行集合（clearLines 暂存，applyClearCollapse 消费；延迟坍塌用）
     -- 三阶段状态机 fall/clearing/settle：游戏层仍以 lockPaused/clearing 布尔推进，stage 为其可读投影，供渲染层只读
@@ -440,7 +441,7 @@ function TetrisBoard:clearLines(countScore)
 
     -- ===================== STEP 1：消除 =====================
     local PT = TetrisConfig.PieceType
-    local itemEffects = { blast = {}, shift = false, charge = 0 }
+    local itemEffects = { blast = {}, shift = false, charge = 0, shiftRows = {} }
     -- 扫描满行：此时满行仍在盘面上，道具格就位于满行内，先收集其所在列号供 STEP2 使用（本步不改网格）。
     local fullRows = {}
     local clearedRows = {}
@@ -459,6 +460,7 @@ function TetrisBoard:clearLines(countScore)
                     itemEffects.blast[#itemEffects.blast + 1] = { r = r, c = c }
                 elseif it == PT.ITEM_SHIFT then
                     itemEffects.shift = true
+                    itemEffects.shiftRows[#itemEffects.shiftRows + 1] = r   -- 记录位移块所在行（数据层坐标）
                 elseif it == PT.ITEM_CHARGE then
                     itemEffects.charge = itemEffects.charge + 1
                 end
@@ -473,25 +475,19 @@ function TetrisBoard:clearLines(countScore)
     self.pendingClearedRows = (#clearedRows > 0) and clearedRows or nil
 
     -- ===================== STEP 2：道具（在「消除+坍塌」后的盘面状态上执行） =====================
-    -- 爆破：清除爆破格所在的一整列（满行已移除，此处直接清整列）；记录该列上下方块位置供竖版特效。
+    -- 爆破：清除爆破格所在的一整列（满行已移除，此处直接清整列）。
+    -- 竖版特效必须按「数据层爆破块坐标（bc.c 列）」锚定，与列内是否还残留方块无关——
+    -- 满行可能在 STEP1 已被移除、使该列暂无方块，但不能因此漏播特效。故按整列覆盖记录特效。
+    -- 约定（对齐 PlayBlastEffectAt）：bottom=较大行号(盘底 self.rows)，top=较小行号(盘顶 1)，整列高度=(rows-1)*step。
     if #itemEffects.blast > 0 then
         local blastFx = {}
         for _, bc in ipairs(itemEffects.blast) do
             local col = bc.c
             if col >= 1 and col <= self.cols then
-                -- 记录该列最上(topRow)/最下(bottomRow)占位格（竖版特效覆盖区间；清列前的快照）
-                local topRow, bottomRow
-                for rr = 1, self.rows do
-                    if self.grid[rr] and self.grid[rr][col] ~= nil then
-                        topRow = topRow or rr   -- 自上而下首个 = 最上方
-                        bottomRow = rr           -- 持续更新 = 最下方
-                    end
-                end
                 -- 清除整列
                 for rr = 1, self.rows do self.grid[rr][col] = nil end
-                if bottomRow then
-                    blastFx[#blastFx + 1] = { col = col, bottom = bottomRow, top = topRow or bottomRow }
-                end
+                -- 始终记录整列特效：以爆破块所在列(bc.c)锚定、覆盖整列，不再依赖列内是否有方块
+                blastFx[#blastFx + 1] = { col = col, bottom = self.rows, top = 1 }
             end
         end
         if #blastFx > 0 then self.pendingBlastFx = blastFx end
@@ -509,6 +505,10 @@ function TetrisBoard:clearLines(countScore)
             end
         end
         if moved then self.pendingGarbageMoved = true end
+        -- 位移特效：记录位移块所在行（数据层行号，不依赖列内是否有方块）
+        if #itemEffects.shiftRows > 0 then
+            self.pendingShiftFx = itemEffects.shiftRows
+        end
     end
     -- 充能：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量
     if itemEffects.charge > 0 then
@@ -626,6 +626,13 @@ end
 function TetrisBoard:consumeBlastFx()
     local v = self.pendingBlastFx
     self.pendingBlastFx = nil
+    return v
+end
+
+-- 渲染层消费：取走本次位移特效的行号列表（取后清空，避免重复处理）
+function TetrisBoard:consumeShiftFx()
+    local v = self.pendingShiftFx
+    self.pendingShiftFx = nil
     return v
 end
 

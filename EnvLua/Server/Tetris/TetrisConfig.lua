@@ -28,9 +28,14 @@ TetrisConfig.Clear = {
     EffectPositionOffset = { X = 0.0, Y = -5.25, Z = 0.0 },
     -- 爆破道具竖版消除特效：道具爆破改为一整列消除，在该列「最下方块」处由下往上播放竖版光束。
     BlastEffectPresetKey = nil,  -- 竖版特效资源 Key；nil = 复用上面的 EffectPresetKey（若有专用竖向 VFX，填其 Key 并将 BlastEffectRot 设为 0）
-    BlastEffectScale = { X = 10.0, Y = 1.5, Z = 1.0 },  -- 竖版缩放：X=光束长度(≈列高)，按实际特效微调
+    BlastEffectScale = { X = 7, Y = 2.5, Z = 1.0 },  -- 竖版缩放（绝对倍数，1.0=原始大小）：X=水平宽度，Y=竖直长度，Z=深度厚度；按需微调，代码不限制尺寸。
     BlastEffectRot = { X = -90.0, Y = 0.0, Z = 0.0 },    -- 将横版特效立为竖版的额外旋转(Pitch=-90 朝上)；yaw 自动叠 boardYaw 正对玩家
     BlastEffectOffset = { X = 0.0, Y = 0.0, Z = 0.0 },    -- 位置微调（米）
+    -- 位移道具特效：位移块消除→整行右移时，在位移块所在行播放横向特效。
+    ShiftEffectPresetKey = "13_EffectPreset_100043",  -- 位移特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
+    ShiftEffectScale = { X = 3.0, Y = 3.0, Z = 3.0 },  -- 位移特效缩放（按需微调）
+    ShiftEffectRot = { X = 0.0, Y = 0.0, Z = -90.0 },    -- 看预览窗口，上面有坐标轴
+    ShiftEffectOffset = { X = -2.0, Y = 0.0, Z = 0.0 }, -- 位移特效位置微调（米）
 }
 
 -- ===================== 初始预填版面（开局即存在的方块） =====================
