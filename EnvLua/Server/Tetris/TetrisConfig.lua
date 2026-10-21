@@ -164,7 +164,7 @@ TetrisConfig.Item = {
         PresetKey = "46_ActorPreset_1822956872",   -- 带 WidgetComponent 的 Actor 预设
         ImageChildName = "icon",          -- Widget 内图片组件名（运行时按道具切换图）
         LiftM = 0.0,                             -- 垂直偏移（米，正=抬高 / 负=压低）；默认 0 = 与方块同高。想上下调位置就改这个
-        FrontOffsetM = 0.50,                       -- 沿「盘面正前方（朝玩家）」的偏移距离（米）；= -boardForward * FrontOffsetM。想前后调位置就改这个
+        FrontOffsetM = 0.51,                       -- 沿「盘面正前方（朝玩家）」的偏移距离（米）；= -boardForward * FrontOffsetM。想前后调位置就改这个
         PoolSize = 24,                           -- 3D 图标池上限（道具同存数量，正常对局难超；超限的道具格不显示图标）
     },
 }
@@ -301,6 +301,14 @@ TetrisConfig.Render = {
     -- 暂停下落 PreviewSeconds 秒供肉眼核对形状，再正式开始下落。仅整体模式(方案3)有效。
     PreviewBeforeStart = true,
     PreviewSeconds = 3,
+    -- 开局展示区（7 种方块停车场）布局参数。每块棋盘在自身盘面上方并排摆出 7 种方块（双方共 14 个）。
+    -- 偏移全部在此控制；单位：HeightCells / GapCells 为「格」（格距 = CellSize + CellGap），NormalOffsetM 为「米」。
+    Showcase = {
+        HeightCells = 13,    -- 盘面上方多少格（沿世界 Z 抬高）
+        GapCells = 4,        -- 相邻方块间隔多少格（沿盘面 right 居中展开 7 列）
+        NormalOffsetM = 5, -- 沿盘面显示法线(由 boardRight 推导，含 BoardFlipAxis180 翻转)偏移米；
+                             --   正 = 朝玩家方向弹出盘面、负 = 贴回盘面（仅改 X/Y，不影响高度）
+    },
     -- 消行动画：把会下落的方块临时挂到 parent-shift 根整体下移，移完拆父还原为独立 Actor。
     -- 关闭则消行退化为逐格传送（更安全但流量大、可能出现逐格延迟）。
     UseParentShiftOnClear = true,
@@ -382,7 +390,7 @@ TetrisConfig.NativeUI = {
 -- X 与 N 均为运行后手调参数（直接改这里重跑即可）。
 TetrisConfig.BackgroundWall = {
     Enabled = true,         -- 是否生成远景背景墙
-    DistanceX = 40,         -- 墙心位于盘心沿视线方向再前 X 米（盘面背后距离，调此值）
+    DistanceX = 30,         -- 墙心位于盘心沿视线方向再前 X 米（盘面背后距离，调此值）
     ScaleN = 10,            -- 每个块放大倍数（模型原生尺寸 × N）
     Cols = 4,               -- 横向块数（沿盘面 right）
     Rows = 3,               -- 纵向块数（沿世界 +Z）
@@ -440,7 +448,7 @@ TetrisConfig.BehindBoardWidget = {
 TetrisConfig.BackgroundWidget = {
     Enabled = true,                                   -- 是否生成远景背景 3D UI 挂件（双盘 → 2 个 Actor）
     PresetKey = "46_ActorPreset_830160950",           -- 带 WidgetComponent 的远景背景 Actor 预设键（AssetRef）
-    DistanceBehindM = -6,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
+    DistanceBehindM = -1,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
     Scale = { X = 23, Y = 23, Z = 23 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
     SideOffsetM = -45,                                  -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
     HeightOffsetM = 0,                                -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
@@ -510,7 +518,7 @@ TetrisConfig.Input = {
 TetrisConfig.PieceImages = {
     [1] = "23_ImagePreset_181443043387535",  -- I
     [2] = "23_ImagePreset_181443578873772",  -- O
-    [3] = "23_ImagePreset_181444509092659",  -- T
+    [3] = "23_ImagePreset_181441571605653",  -- T
     [4] = "23_ImagePreset_181442020947558",  -- J
     [5] = "23_ImagePreset_181441618721512",  -- L
     [6] = "23_ImagePreset_181443114759746",  -- S

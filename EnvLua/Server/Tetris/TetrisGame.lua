@@ -96,10 +96,6 @@ function TetrisGame:Start()
     if cfg.PreviewBeforeStart and self.renderer and self.renderer.wholePieceAttach then
         local secs = cfg.PreviewSeconds or 1
         self.renderer:ShowcasePieces(secs)
-        -- 预览过半时让 7 个方块演示一次旋转（90°），与下落同源，便于肉眼核对旋转是否正确。
-        self.owner:AddTimerOnce(secs * 0.5, function()
-            if self.renderer then self.renderer:PreviewRotateDemo() end
-        end)
         self.owner:AddTimerOnce(secs, function()
             if not self.running then return end
             self.renderer:EndShowcase()

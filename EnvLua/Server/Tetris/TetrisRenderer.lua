@@ -1801,18 +1801,26 @@ end
 
 -- 调试用：停车场移到视线内，并按 type 横向分散 7 个块，便于肉眼区分、观察回收块是否隐藏/缺子块。
 -- 仅移动根；子块随根一起到可见位。正常下落不受影响（活动块由 place 摆到盘面）。
+-- 整体模式(V3)停车：把单个方块停回「预览区/停车场」（盘面上方可见区）。
+-- 停车场即开局预览区(Showcase)：7 个方块并排始终可见，仅「当前活动方块」临时离场下落、锁定后归位。
+-- 位置与 LayoutShowcasePieces 同源：用 Showcase 配置 + boardRight 计算，保证与预览排布完全对齐。
 function TetrisRenderer:parkWholePieceV3(p)
     if not p or not p.root then return end
     local r = TetrisConfig.Render
+    local sc = r.Showcase or {}
     local step = r.CellSize + r.CellGap
-    local gap = step * 3                        -- 每种间隔 1 格
+    local gap = step * (sc.GapCells or 5)          -- 与 LayoutShowcasePieces 一致
+    local height = step * (sc.HeightCells or 13)
+    local nf = sc.NormalOffsetM or 0
     local o = self.origin or r.BoardOrigin
-    local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2
-    local zShow = o.Z + step * 13         -- 盘面上方 8 行（视线内，非 hideLoc 暗处）
-    -- 排列朝向沿水平面旋转 90°：原沿 X 轴排开，现改为 X 居中、沿 Y 轴排开。
-    local xCenter = midX
-    local y = o.Y + (p.type - 4) * gap
-    pcall(function() p.root:K2_TeleportTo(cmVec({ X = xCenter, Y = y, Z = zShow }), self.rot) end)
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local nrm = { X = -right.Y, Y = right.X, Z = 0 }   -- 显示法线 = right 逆时针转 90°
+    local zShow = o.Z + height
+    local t = p.type or 1
+    local along = (t - 1 - 3) * gap                 -- 沿 right 居中展开，与预览同一列
+    local x = o.X + right.X * along + nrm.X * nf
+    local y = o.Y + right.Y * along + nrm.Y * nf
+    pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = y, Z = zShow }), self.rot) end)
 end
 
 -- 方案1：用统一变换把 4 个子 Actor 定位到当前位置
@@ -1954,109 +1962,52 @@ end
 -- 把 7 种方块（整体模式模板）摆在盘面前方正上方一排，供肉眼核对形状。
 -- 仅整体模式(wholePieceAttach)有效；其余模式直接回调（无预览）。
 function TetrisRenderer:ShowcasePieces(seconds)
-    -- 版本标记：确认新代码是否真的加载进运行实例。重启后若看不到本行，说明仍在跑旧实例。
-    -- pcall 捕获测试：确认 pcall 能否捕获报错；并验证 Log 是否真未定义（之前 DiagRot 用 Log.Info 被吞的元凶）
-    do
-        local ok1, r1 = pcall(function() return 1 + 1 end)
-        local ok2, err2 = pcall(function() return Log.Info("若看到此说明 Log 可用") end)
-    end
-    if not self.wholePieceAttach or next(self.pieces) == nil then return end
+    if not self.wholePieceAttach then return end
     self.previewing = true
     self.shownPieceType = nil
-    self._showcaseDiagDone = false
-    self._previewForceRot = false               -- 半程演示旋转由 Game 在 PreviewSeconds*0.5 调用 PreviewRotateDemo() 置位
-    self._previewRotDone = false
-    self._previewSeconds = seconds or 5
-    self._previewStartFrame = self.frame or 0    -- 预览起始帧（兜底：若 Game flag/os 均不可见，按帧数在预览中期旋转）
-    -- 记录预览起始时钟（os.clock 若被环境禁用则置 nil，回退依赖 Game 的 PreviewRotateDemo 路径）
-    local ok, clk = pcall(function() return os.clock() end)
-    self._previewStartClock = ok and clk or nil
-    -- 立即尝试一次；若 7 个模板的根 Actor 尚未 spawn（CreateActor 异步），附着会失败，
-    -- 由 Update 在预览期每帧调用 LayoutShowcasePieces 重试，直至全部附着成功。
+    self._previewSeconds = seconds or (TetrisConfig.Render.PreviewSeconds or 1)
+    -- 立即摆一次；若 7 个方块的根/子 Actor 尚未 spawn（CreateActor 异步），由 Update 在预览期每帧重试。
     self:LayoutShowcasePieces()
-    print(string.format("[Tetris] 开局预览：7 个活动方块(每型1份)已摆在盘面上方，%.0f 秒后开始下落", seconds or 10))
+    print(string.format("[Tetris] 开局预览：7 种方块已摆在盘面上方，%.0f 秒后开始下落", self._previewSeconds))
 end
 
--- 预览半程触发：让 7 个展示方块整体旋转 90° 一次（与下落同源 makePieceRotator + rotateOffset），供肉眼核对旋转跟随。
-function TetrisRenderer:PreviewRotateDemo()
-    if not self.previewing then return end
-    self._previewForceRot = true
-    -- 预览期 Game 不每帧驱动 renderer:Update，LayoutShowcasePieces 仅被 ShowcasePieces 立即调过一次（rot=1）；
-    -- 故此处必须主动重摆一次，把 _previewForceRot→midRot=2 的旋转 teleport 到根，否则旋转永不应用。
-    self:LayoutShowcasePieces()
-end
-
--- 摆出/刷新 7 种预览方块。幂等、且对异步 spawn 安全：
--- 根未 spawn 时附着会失败 → 不置 attached，下一帧由 Update 再来一次，直到根就绪。
--- 注意：本函数每帧调用（预览期），但根/子已附着后只做廉价的位置传送，无副作用。
+-- 把本盘 7 种方块(每型1份，self.pieces)并排摆到盘面上方做开局预览。
+-- 幂等、对异步 spawn 安全：根未 spawn 时传送会失败，下一帧由 Update 重试。
+-- 子块相对偏移已在开局前 PrimeAllPieces / PrewarmPiece 烘焙好(rot=1)，此处只需传送根，子块随根跟随。
 function TetrisRenderer:LayoutShowcasePieces()
     if not self.wholePieceAttach or next(self.pieces) == nil then return end
     local r = TetrisConfig.Render
+    local sc = r.Showcase or {}
     local step = r.CellSize + r.CellGap
-    local gap = step * 5                       -- 每种方块间隔 5 格，避免相邻重叠
+    local gap = step * (sc.GapCells or 5)          -- 相邻方块间隔（格）
+    local height = step * (sc.HeightCells or 13)   -- 盘面上方抬高（格）
+    local nf = sc.NormalOffsetM or 0               -- 沿显示法线偏移（米）
+
     local o = self.origin or r.BoardOrigin
     local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
-    local midX = o.X + (TetrisConfig.Board.Cols - 1) * step / 2  -- 盘面横向中心
-    local zShow = o.Z + step * 50              -- 盘面上方两行处（Z 越大越高）
-    if not self._diagLayoutSelfDone then
-        self._diagLayoutSelfDone = true
-    end
-    -- 21 个预览方块不做旋转（按需求屏蔽），统一以 rot=1 原样展示，便于核对生成。
-    local midRot = 1
-    -- 统一方块池：21 个(每型3份)在盘面最上方排成 3 行 × 7 列（列=类型，行=第几份），供核对生成是否正确
-    local pool = self.piecePool or {}
-    for k, p in ipairs(pool) do
+    -- 显示法线 = right 逆时针转 90° = (-right.Y, right.X)，水平且垂直于 right，已含 BoardFlipAxis180 翻转。
+    -- 不可用 boardForward（基于 posYaw，不含翻转，翻转开启时指向盘面内侧）。
+    local nrm = { X = -right.Y, Y = right.X, Z = 0 }
+    local zShow = o.Z + height
+
+    for t = 1, 7 do
+        local p = self.pieces[t]
         if p and p.root then
-            -- 每帧无条件重试附着（AttachToActor 幂等；根未 spawn 时静默失败，下帧再来）
+            -- 子块相对偏移沿 boardRight 烘焙到 rot=1（与下落 placeWholePieceV3 同源：只转根、子块跟随）。
+            -- 幂等：根未 spawn 时静默失败，下帧再来；确保即便预热未完成，展示期也能正确挂接并显示。
             for i, child in ipairs(p.children or {}) do
                 self:attachChildToRoot(child, p.root)
                 local o2 = p.offsets[i]
                 if o2 then
-                    -- 子块相对偏移始终保持 rot=1 原始值；旋转完全由根 Actor 带动
-                    -- （与下落 placeWholePieceV3 一致：只转根、子块跟随，避免重复旋转导致子块飞散）
-                    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
-                    -- 子块相对根偏移必须沿盘面 right（随 boardRight 旋转）；用世界 X 轴固定偏移会在盘面
-                    -- 非世界轴(即 pawn 基准真实朝向)时错位，且无法跟随 ResolveOrigin 后续更新（时序问题）
-                    local relLoc = Game:ConstructFVectorByLuaTable({ X = right.X * o2.dx * 100, Y = right.Y * o2.dx * 100, Z = o2.dz * 100 })
-                    pcall(function() child:K2_SetActorRelativeLocation(relLoc) end)
+                    local rel = Game:ConstructFVectorByLuaTable({ X = right.X * o2.dx * 100, Y = right.Y * o2.dx * 100, Z = o2.dz * 100 })
+                    pcall(function() child:K2_SetActorRelativeLocation(rel) end)
                 end
             end
-            local col = (k - 1) % 7               -- 0..6：列 = 类型
-            local row = math.floor((k - 1) / 7)   -- 0,1,2：行 = 第几份（活动/下一/Hold）
-            local along = (col - 3) * gap         -- 沿 right 居中展开 7 列
-            local x = o.X + right.X * along
-            local y = o.Y + right.Y * along
-            local z = zShow + row * gap           -- 3 行向上堆叠于盘面上方
-            -- 根带旋转量传送：与下落 placeWholePieceV3 同源（makePieceRotator），确保预览旋转=下落旋转。
-            pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = y, Z = z }), self:makePieceRotator(midRot)) end)
-        end
-    end
-    -- 诊断（预览开始后等待足够帧数让附着完成，仅打印一次）：
-    -- 逐子块输出「实际相对位置 vs 期望偏移」，定位哪一个子块错位
-    if TetrisConfig.Debug and not self._showcaseDiagDone then
-        self._showcaseDiagFrame = (self._showcaseDiagFrame or 0) + 1
-        if self._showcaseDiagFrame >= 30 then   -- ~0.5 秒后执行，确保异步 spawn 已完成
-            self._showcaseDiagDone = true
-            for t = 1, 7 do
-                local p = self.pieces[t]
-                if p and p.root then
-                    pcall(function()
-                        local rloc = p.root:K2_GetActorLocation()
-                        for i, o in ipairs(p.offsets) do
-                            local c = p.children[i]
-                            local wl = c and c:K2_GetActorLocation()
-                            if rloc and wl then
-                                local exX, exZ = o.dx * 100, o.dz * 100
-                                local acX, acZ = wl.X - rloc.X, wl.Z - rloc.Z
-                                local ok = math.abs(acX - exX) < 2 and math.abs(acZ - exZ) < 2
-                                print(string.format(
-                                    "[Tetris][Preview] type=%d 子#%d 期望相对=(%.0f,%.0f) 实际相对=(%.0f,%.0f) %s",
-                                    t, i, exX, exZ, acX, acZ, ok and "OK" or "MISS!!"))
-                            end
-                        end
-                    end)
-                end
-            end
+            -- 沿盘面 right 居中展开 7 列（t=1..7 → col=0..6，居中以第 4 个为中点）
+            local along = (t - 1 - 3) * gap
+            local x = o.X + right.X * along + nrm.X * nf
+            local y = o.Y + right.Y * along + nrm.Y * nf
+            pcall(function() p.root:K2_TeleportTo(cmVec({ X = x, Y = y, Z = zShow }), self.rot) end)
         end
     end
 end
