@@ -30,7 +30,9 @@ function TetrisGame:new(owner, opts)
     o.isAI = false           -- 是否 AI 托管（对手盘自动对战）
     o.aiQuality = nil        -- AI 落子质量（0~1，由 AiPanel 难度写入；nil 时视为 1=最优）
     o.aiSeq = 0              -- AI 已规划到的 spawnSeq（避免同一块重复规划）
-    o.selectedSkill = nil    -- 本盘所选技能 key（"SK01"/"SK02"/"SK06"），由 Match 在开局前赋值
+    o.selectedSkill = nil    -- 本盘所选技能 key（"SK01"/"SK02"/"SK06"/"SK07"），由 Match 在开局前赋值
+    o.s07Charged = false     -- SK07「额外消行」冷却中标记（true=已蓄能待触发；冷却中再次点击提示"技能冷却中"）
+    o.s08Charged = false     -- SK08「左右对调」冷却中标记（true=已蓄能待触发；对手当前方块落地后解除）
     o._shownHold = false     -- 当前 Hold 组件显隐状态：false=隐藏，数字=已显示的方块类型
     o._shownNext = false     -- 当前 Next 组件显隐状态：false=隐藏，数字=已显示的方块类型
     return o
@@ -71,6 +73,19 @@ function TetrisGame:Start()
             -- 垃圾行提示框：开局先隐藏（暂停期间 UpdateHUD 不跑，需主动清，避免上局残留）
             pcall(function() if ui.GarbageSendHint then CustomUIAPI.SetWidgetVisible(ps, ui.GarbageSendHint, false) end end)
             pcall(function() if ui.GarbageRecvHint then CustomUIAPI.SetWidgetVisible(ps, ui.GarbageRecvHint, false) end end)
+            -- 中央大图提示组件（BigTipInstance）：开局先隐藏，避免编辑器默认可见导致一开局就显示空大图（仅技能释放时弹出）
+            local bigTip = TetrisConfig.Skill and TetrisConfig.Skill.BigTipInstance
+            if bigTip then pcall(function() CustomUIAPI.SetWidgetVisible(ps, bigTip, false) end) end
+            -- 开局统一先隐藏下列状态/指示器组件（编辑器默认可见，仅在对局中特定时机才显示）：
+            --   SK07 冷却常驻指示器、SK08 左右对调生效指示器、以及尚未接线的预留组件
+            local initHidden = {
+                (TetrisConfig.Skills and TetrisConfig.Skills.SK07 and TetrisConfig.Skills.SK07.cdIndicator),
+                (TetrisConfig.Skills and TetrisConfig.Skills.SK08 and TetrisConfig.Skills.SK08.indicator),
+                "1_CreativeInstance_23643899098553539",
+            }
+            for _, hid in ipairs(initHidden) do
+                if hid then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
+            end
         end
         -- 取消可能未到期的 combo 隐藏定时器，避免重开后用旧定时器误隐藏新局提示
         if self._comboHideTimer then
@@ -124,6 +139,8 @@ function TetrisGame:Start()
     if lockCam then self:ScheduleCameraSetup() end
     self:UpdateHUD()                -- 开局先置零（分数=0 消行=0 等级=1）
     self:InitSkillUI()              -- 技能：说明文本 + 蓄能条置零
+    self:UpdateNameTags()           -- 名字组件：显示我方 / 对方 名字
+    self:UpdateAvatarTags()         -- 头像组件：显示我方 / 对方 头像（开局随机分配）
     print("[Tetris] Start")
 end
 
@@ -305,6 +322,9 @@ function TetrisGame:Reset()
     -- 重置能量槽（技能 bar / power）
     self.skillBars = 0
     self.skillPower = 0
+    self.s07Charged = false   -- 重置 SK07 冷却标记
+    self.s08Charged = false   -- 重置 SK08 冷却标记
+    self:ShowS07CdIndicator(false)   -- 重置时确保「赠送技能」常驻指示器已隐藏
     -- 渲染层清空并跟随空盘面
     if self.renderer then
         self.renderer:Clear()
@@ -844,10 +864,10 @@ function TetrisGame:InitSkillUI()
         if cfg.DescText then
             pcall(function() CustomUIAPI.SetTextContent(ps, cfg.DescText, desc) end)
         end
-        -- 局内技能 icon 图片：换成所选技能的图片（ApplyImageToSkillIcon 开关）
+        -- 局内技能 icon 图片：换成所选技能的图标 iconKey（ApplyImageToSkillIcon 开关）
         if TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.ApplyImageToSkillIcon
-           and def and def.imageKey and cfg.IconImage then
-            local imgID = (type(AssetRef) == "table" and AssetRef[def.imageKey]) or def.imageKey
+           and def and def.iconKey and cfg.IconImage then
+            local imgID = (type(AssetRef) == "table" and AssetRef[def.iconKey]) or def.iconKey
             pcall(function() CustomUIAPI.SetImageWidgetContent(ps, cfg.IconImage, imgID) end)
         end
     end
@@ -864,6 +884,17 @@ function TetrisGame:onLinesCleared(cleared)
     -- Combo 图片：2/3/4 行消除时显示 1 秒后自动隐藏（1 行不显示；>4 理论上不会出现）
     if cleared >= 2 and cleared <= 4 then
         self:ShowComboImage()
+    end
+    -- SK07「额外消行」：本次结算触发了真实消行 → 额外清除最下方一行，并解除冷却（此时 clearing=true，用 ignoreState）
+    if self.s07Charged then
+        self.s07Charged = false
+        local extra = self.board:clearBottomRows(1, true)
+        if self.renderer and self.board then self.renderer:Update(self.board) end
+        if extra and extra > 0 then
+            self:ShowHint("技能【赠送技能】触发：多消除 " .. tostring(extra) .. " 行！")
+        end
+        self:ShowS07CdIndicator(true, 1.5)   -- 「赠送技能」指示器：我方消行触发时弹出，1.5s 后自动隐藏
+        self:UpdateSkillUI()   -- 冷却解除：恢复按钮不透明度
     end
     local cfg = TetrisConfig.Skill
     if not cfg then return end
@@ -924,15 +955,19 @@ function TetrisGame:UpdateSkillUI()
     if btn then
         local enabled = self.skillPower > 0
         pcall(function() CustomUIAPI.SetWidgetInteraction(ps, btn, enabled) end)
+        -- SK07 冷却中（已蓄能待触发）：按钮半透明提示（与无 power 同视觉，但保持可点以便提示"技能冷却中"）
+        local inCD = ((self.selectedSkill == "SK07" and self.s07Charged == true)
+                  or (self.selectedSkill == "SK08" and self.s08Charged == true))
+        local dimmed = (not enabled) or inCD
         -- 按钮置灰：引擎 Button 控件无 tint/灰度接口。
         --   方案 B（真·灰度）：同时配了 BtnNormalImg + BtnDisabledImg 两张图则切整图；
-        --   否则方案 A 用图片透明度调暗近似（无需资源，power 恢复时透明度和交互都复原）。
+        --   否则方案 A 用图片透明度调暗近似（无需资源，power 恢复/冷却解除时透明度和交互都复原）。
         if cfg.BtnNormalImg and cfg.BtnDisabledImg then
-            local imgKey = enabled and cfg.BtnNormalImg or cfg.BtnDisabledImg
+            local imgKey = dimmed and cfg.BtnDisabledImg or cfg.BtnNormalImg
             local id = (type(AssetRef) == "table" and AssetRef[imgKey]) or imgKey
             pcall(function() CustomUIAPI.SetButtonNormalImage(ps, btn, id) end)
         else
-            pcall(function() CustomUIAPI.SetWidgetImageOpacity(ps, btn, enabled and 1 or (cfg.DisabledOpacity or 0.4)) end)
+            pcall(function() CustomUIAPI.SetWidgetImageOpacity(ps, btn, dimmed and (cfg.DisabledOpacity or 0.4) or 1) end)
         end
     end
 end
@@ -942,12 +977,30 @@ end
 --   SK02 清除最下方两行：本盘网格下移 clearRows 行（己方增益，不计分/不送攻击）
 --   SK06 攻势：本盘 attackBonusNext=1，下次消行攻击行数 +1（己方增益）
 --   其他 / 兜底：沿用原「向对手扔垃圾」逻辑
+
+-- 释放技能后弹中央大图提示 1.5s（SK01~SK08 通用）：读取 Skills[key].imageKey 对应图片预设
+function TetrisGame:ShowSkillBigTip(key)
+    local sk = TetrisConfig.Skills and TetrisConfig.Skills[key]
+    if not sk or not sk.imageKey then return end
+    self:ShowBigTip(
+        (TetrisConfig.Skill and TetrisConfig.Skill.BigTipInstance),
+        sk.imageKey,
+        1.5
+    )
+end
+
 function TetrisGame:OnBtnSkill()
     if not TetrisConfig.SkillEnabled then
         print("[Tetris] 技能按钮（未启用）")
         return
     end
     if not self.running or (self.board and self.board:isOver()) then return end
+    -- SK07/SK08 冷却中：已蓄能待触发，再次点击只提示，不消耗 power、不重复触发
+    if (self.selectedSkill == "SK07" and self.s07Charged)
+       or (self.selectedSkill == "SK08" and self.s08Charged) then
+        self:ShowHint("技能冷却中")
+        return
+    end
     local cfg = TetrisConfig.Skill
     if not cfg then return end
     if self.skillPower <= 0 then
@@ -967,6 +1020,7 @@ function TetrisGame:OnBtnSkill()
             self.opponent.board.noRotateNext = (self.opponent.board.noRotateNext or 0) + 1
         end
         self:ShowHint("技能【禁止转动】发动：对手下个方块无法旋转！")
+        self:ShowSkillBigTip("SK01")
     elseif key == "SK02" then
         -- 己方增益：清除最下方两行
         local def = self:GetSelectedSkillDef()
@@ -974,10 +1028,27 @@ function TetrisGame:OnBtnSkill()
         local cleared = self.board:clearBottomRows(n)
         self.renderer:Update(self.board)
         self:ShowHint("技能【清除最下方 " .. tostring(cleared) .. " 行】发动！")
+        self:ShowSkillBigTip("SK02")
     elseif key == "SK06" then
         -- 己方增益：下次消行攻击 +1
         self.board.attackBonusNext = (self.board.attackBonusNext or 0) + 1
         self:ShowHint("技能【攻势】发动：下次消行攻击行数 +1！")
+        self:ShowSkillBigTip("SK06")
+    elseif key == "SK07" then
+        -- 己方增益（蓄能型）：进入冷却，弹出中央大图提示 1.5s（见 onLinesCleared 触发效果）
+        self.s07Charged = true
+        self:ShowSkillBigTip("SK07")
+        self:ShowHint("技能【赠送技能】已就绪：下次消除多消一行！")
+    elseif key == "SK08" then
+        -- 敌方减益（蓄能型）：进入冷却，弹中央大图 1.5s；对手当前方块落地后解除冷却，
+        -- 其下一个方块下落期间左右方向互换（由对手 board:lockPiece / spawn 应用 swapLR）
+        self.s08Charged = true
+        self:ShowSkillBigTip("SK08")
+        if self.opponent and self.opponent.board and not (self.match and self.match.over) then
+            self.opponent.board.swapRequested = true
+            self.opponent.board.pendingSwapRequester = self
+        end
+        self:ShowHint("技能【左右对调】已就绪：对手下个方块左右互换！")
     else
         -- 兜底：未知技能 key（正常不会走到，selectedSkill 必为 SK01/02/06）
         print("[Tetris][Skill] 未知技能 key：" .. tostring(key))
@@ -990,6 +1061,108 @@ end
 -- ---------------- 通用游戏提示（飘字，显示 1 秒后隐藏） ----------------
 -- 文本控件见 TetrisConfig.HintText。每次调用刷新内容与显示，1 秒后自动隐藏；
 -- 用 _hintSeq 防止「连续提示时旧的定时器提前把新的提示隐藏」。
+-- 中央大图提示（SK07「额外消行」等需弹图的技能）：弹出指定 CreativeInstance 组件，
+-- 设置图片资源并显隐 durationSec 秒后自动隐藏。仅对真人盘（有 PlayerState）生效。
+function TetrisGame:ShowBigTip(instanceUUID, imagePreset, durationSec)
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" or not instanceUUID then return end
+    local imgID = (type(AssetRef) == "table" and AssetRef[imagePreset]) or imagePreset
+    pcall(function()
+        if imgID then CustomUIAPI.SetImageWidgetContent(ps, instanceUUID, imgID) end
+        CustomUIAPI.SetWidgetVisible(ps, instanceUUID, true)
+    end)
+    if self._bigTipTimer then
+        pcall(function() self.owner:RemoveTimer(self._bigTipTimer) end)
+        self._bigTipTimer = nil
+    end
+    self._bigTipTimer = self.owner:AddTimerOnce(durationSec or 1.5, function()
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, instanceUUID, false) end)
+        self._bigTipTimer = nil
+    end)
+end
+
+-- SK07「赠送技能」指示器：显示指定 CreativeInstance 组件并持续 durationSec 后自动隐藏。
+-- 用于「我方触发消行、技能生效」时弹出反馈（1.5s 后隐藏）。
+-- visible=false 可立即隐藏并取消定时器（如重置时）。
+function TetrisGame:ShowS07CdIndicator(visible, durationSec)
+    local id = TetrisConfig.Skills and TetrisConfig.Skills.SK07 and TetrisConfig.Skills.SK07.cdIndicator
+    if not id then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    if visible ~= true then
+        if self._s07CdTimer then
+            pcall(function() self.owner:RemoveTimer(self._s07CdTimer) end)
+            self._s07CdTimer = nil
+        end
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+        return
+    end
+    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
+    if self._s07CdTimer then
+        pcall(function() self.owner:RemoveTimer(self._s07CdTimer) end)
+        self._s07CdTimer = nil
+    end
+    self._s07CdTimer = self.owner:AddTimerOnce(durationSec or 1.5, function()
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+        self._s07CdTimer = nil
+    end)
+end
+
+-- 设置「我方 / 对方」名字组件文本：每个玩家各自视图下，我方=自己名、对方=对手名。
+-- 依赖 self.match:GameDisplayName（玩家盘取 PlayerState.PlayerName，AI 盘取难度角色名）。
+function TetrisGame:UpdateNameTags()
+    local cfg = TetrisConfig.NameUI
+    if not cfg then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local selfName = (self.match and self.match.GameDisplayName) and self.match:GameDisplayName(self) or (self.playerKey or "我方")
+    local oppName  = (self.opponent and self.match and self.match.GameDisplayName)
+                     and self.match:GameDisplayName(self.opponent) or "对方"
+    if cfg.SelfName then
+        pcall(function()
+            CustomUIAPI.SetWidgetVisible(ps, cfg.SelfName, true)   -- 确保组件可见（编辑器默认可能隐藏）
+            CustomUIAPI.SetTextContent(ps, cfg.SelfName, tostring(selfName))
+        end)
+    end
+    if cfg.OppName then
+        pcall(function()
+            CustomUIAPI.SetWidgetVisible(ps, cfg.OppName, true)    -- 确保组件可见
+            CustomUIAPI.SetTextContent(ps, cfg.OppName, tostring(oppName))
+        end)
+    end
+end
+
+-- 设置「我方 / 对方」头像组件图片：每个玩家各自视图下，我方=自己头像、对方=对手头像（开局随机分配）。
+function TetrisGame:UpdateAvatarTags()
+    local cfg = TetrisConfig.AvatarUI
+    if not cfg then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local function setImg(wid, key)
+        if not wid or not key then return end
+        local imgID = (type(AssetRef) == "table" and AssetRef[key]) or key
+        pcall(function()
+            CustomUIAPI.SetWidgetVisible(ps, wid, true)   -- 确保组件可见（编辑器默认可能隐藏）
+            CustomUIAPI.SetImageWidgetContent(ps, wid, imgID)
+        end)
+    end
+    setImg(cfg.SelfAvatar, self.avatarKey)
+    setImg(cfg.OppAvatar, self.opponent and self.opponent.avatarKey)
+    -- 头像 icon 组件（实际显示图片的子控件）：同样喂入头像图，框容器若非图片控件则忽略
+    setImg(cfg.SelfAvatarIcon, self.avatarKey)
+    setImg(cfg.OppAvatarIcon, self.opponent and self.opponent.avatarKey)
+end
+
+-- SK08「左右对调」指示器：显示/隐藏敌方左右对调生效期间的 UI 组件（由对手 board 在 swapLR 块生成/落地时回调）。
+-- 仅对施法方（有 PlayerState）生效；indicator 未配置时静默跳过。
+function TetrisGame:ShowS08Indicator(visible)
+    local id = TetrisConfig.Skills and TetrisConfig.Skills.SK08 and TetrisConfig.Skills.SK08.indicator
+    if not id then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, visible == true) end)
+end
+
 function TetrisGame:ShowHint(text)
     local id = TetrisConfig.HintText
     if not id or type(CustomUIAPI) ~= "table" then return end

@@ -150,8 +150,8 @@ TetrisConfig.Pieces = {
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
     Debug = true,                      -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
-    Prob = 0.95,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
-    Types = { 9, 10, 9 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
+    Prob = 0.5,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
+    Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
     BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
     BlastRadius = 2,                    -- 【已废弃】爆破改为消除一整列，不再按半径；保留字段仅供参考
@@ -524,9 +524,9 @@ TetrisConfig.PieceImages = {
     [6] = "23_ImagePreset_181443114759746",  -- S
     [7] = "23_ImagePreset_181444179307978",  -- Z
     -- 道具方块（9/10/11）：Next / Hold 与 3D 浮空图标共用同一套图（单一图源，见下）。
-    [9]  = "23_ImagePreset_40020",   -- 爆破块
-    [10] = "23_ImagePreset_91007",   -- 位移块
-    [11] = "23_ImagePreset_91143",   -- 充能块
+    [9]  = "23_ImagePreset_181443677212097",   -- 爆破块
+    [10] = "23_ImagePreset_181442507346340",   -- 位移块
+    [11] = "23_ImagePreset_181443922126642",   -- 充能块
 }
 
 -- Hold / Next 图片底色（白色底图，由 SetImageWidgetColor 叠加 tint 出各色）。
@@ -595,6 +595,7 @@ TetrisConfig.Skill = {
     DescText = ci("1_CreativeInstance_23643899335684710"),   -- 技能说明文本控件
     Desc     = "消除 1 行得 1 bar，集满 3 bar 得 1 power；释放技能消耗 1 power",
     IconImage = ci("1_CreativeInstance_23643899882881827"),   -- 局内技能 icon 图片控件（Image 控件）
+    BigTipInstance = ci("1_CreativeInstance_23643900834440806"),  -- SK07「额外消行」中央大图提示组件（CreativeInstance 控件 UUID）
 
     -- 3 个 bar 图片（按当前 bar 数显隐：bar0=第1格, bar1=第2格, bar2=第3格/满）
     --   编辑器里这 3 张图已是「亮起的 bar」样式，代码只切换显隐，不换图。
@@ -635,17 +636,34 @@ TetrisConfig.Skills = {
     SK01 = {
         key = "SK01", name = "禁止转动", type = "debuff",
         desc = "对手接下来 1 个方块无法旋转（左右移动 / 软降 / 硬降 / Hold 不受影响）",
-        imageKey = "23_ImagePreset_40023",   -- 替换为编辑器注册的图片预设 Key
+        imageKey = "23_ImagePreset_181445133927289",   -- 中央大图提示图片预设
+        iconKey  = "23_ImagePreset_181442919461175",   -- 技能图标（局内 HUD / 选择按钮）
     },
     SK02 = {
         key = "SK02", name = "清除最下方两行", type = "buff", clearRows = 2,
         desc = "删除可见区最下方 2 行，上方整体下移 2 行（不计分 / 不消行 / 不送攻击）",
-        imageKey = "23_ImagePreset_40029",   -- 替换为编辑器注册的图片预设 Key
+        imageKey = "23_ImagePreset_181444855524605",   -- 中央大图提示图片预设
+        iconKey  = "23_ImagePreset_181443391878538",   -- 技能图标（局内 HUD / 选择按钮）
     },
     SK06 = {
         key = "SK06", name = "攻势", type = "buff", attackBonus = 1,
         desc = "接下来 1 次消行结算时，攻击行数 +1（单消亦从 0 行变为 1 行）",
-        imageKey = "23_ImagePreset_40017",   -- 替换为编辑器注册的图片预设 Key
+        imageKey = "23_ImagePreset_181441732151158",   -- 中央大图提示图片预设
+        iconKey  = "23_ImagePreset_181443140642203",   -- 技能图标（局内 HUD / 选择按钮）
+    },
+    SK07 = {
+        key = "SK07", name = "赠送技能", type = "buff",
+        desc = "释放后进入冷却：下次结算消除时，额外多消除下方一行；触发消除后冷却解除（冷却中再次点击提示：技能冷却中）。",
+        imageKey = "23_ImagePreset_181444591440840",   -- 与中央大图提示共用同一图片预设
+        iconKey  = "23_ImagePreset_181445135603547",   -- 技能图标（局内 HUD / 选择按钮）
+        cdIndicator = "1_CreativeInstance_23643899321563373",   -- 消行时显示，1.5s后隐藏
+    },
+    SK08 = {
+        key = "SK08", name = "左右对调", type = "debuff",
+        desc = "释放后进入冷却：对手下一个方块下落期间左右方向键互换；对手当前方块落地后冷却解除（冷却中再次点击提示：技能冷却中）。",
+        imageKey = "23_ImagePreset_181444605973235",   -- 中央大图提示图片预设
+        iconKey  = "23_ImagePreset_181441605832442",   -- 技能图标（局内 HUD / 选择按钮）
+        indicator = "1_CreativeInstance_23643899208638721",   -- 生效指示器组件：敌方左右对调期间显示，敌方该方块落地后隐藏
     },
 }
 
@@ -665,8 +683,37 @@ TetrisConfig.SkillSelect = {
     StartBtn  = ci("1_CreativeInstance_23643901825073557"),  -- 「开始游戏」按钮：点击后显示技能选择面板
     PanelKey  = ci("1_CreativeInstance_23643901481771979"),  -- 技能选择面板（父级，内含 3 个技能按键）
     BtnSK01   = ci("1_CreativeInstance_23643901110827074"),  -- 技能按钮：SK-01 禁止转动
-    BtnSK02   = ci("1_CreativeInstance_23643900199050294"),  -- 技能按钮：SK-02 清除最下方两行
-    BtnSK06   = ci("1_CreativeInstance_23643898051465510"),  -- 技能按钮：SK-06 攻势
+    BtnSK02   = ci("1_CreativeInstance_23643902157912974"),  -- 技能按钮：SK-02 清除最下方两行
+    BtnSK06   = ci("1_CreativeInstance_23643900733325060"),  -- 技能按钮：SK-06 攻势
+    BtnSK07   = ci("1_CreativeInstance_23643900548841233"),  -- 技能按钮：SK-07 赠送技能
+    BtnSK08   = ci("1_CreativeInstance_23643901741151544"),  -- 技能按钮：SK-08 左右对调
+    -- 选择界面各技能的独立图标组件（按钮本身只负责点击触发，图标显示在这些独立组件上）
+    IconSK01  = ci("1_CreativeInstance_23643900737922680"),  -- SK-01 图标
+    IconSK02  = ci("1_CreativeInstance_23643898435229426"),  -- SK-02 图标
+    IconSK06  = ci("1_CreativeInstance_23643898516504238"),  -- SK-06 图标
+    IconSK07  = ci("1_CreativeInstance_23643901228761309"),  -- SK-07 图标
+    IconSK08  = ci("1_CreativeInstance_23643900267681567"),  -- SK-08 图标
+}
+
+-- ===================== 名字组件（对局 HUD：我方 / 对方 名字显示） =====================
+TetrisConfig.NameUI = {
+    SelfName = ci("1_CreativeInstance_23643899410907749"),  -- 我方名字组件（显示自己昵称）
+    OppName  = ci("1_CreativeInstance_23643902237944181"),  -- 对方名字组件（显示对手昵称 / AI 角色名）
+}
+
+-- ===================== 头像组件（对局 HUD：我方 / 对方 头像显示） =====================
+-- 开局从 AvatarPresets 中随机分配；2 名玩家时洗牌分配保证两者头像不同。
+TetrisConfig.AvatarUI = {
+    -- 头像框（容器组件）：若为图片控件也会被填图，非图片则忽略
+    SelfAvatar = ci("1_CreativeInstance_23643899970464328"),  -- 我方头像组件
+    OppAvatar  = ci("1_CreativeInstance_23643902263045933"),  -- 对方头像组件（你给的顺序为 对方/我方）
+    -- 头像 icon（实际显示头像图片的子控件）
+    SelfAvatarIcon = ci("1_CreativeInstance_23643901196455156"),  -- 我方头像 icon 组件
+    OppAvatarIcon  = ci("1_CreativeInstance_23643900780098696"),  -- 对方头像 icon 组件（顺序同上为 对方/我方）
+    AvatarPresets = {
+        "23_ImagePreset_181441835555322",
+        "23_ImagePreset_181441298389940",
+    },
 }
 
 -- ===================== 选完技能后隐藏的场景对象 =====================

@@ -85,6 +85,12 @@ function TetrisBoard:reset()
     self.outgoingGarbage = 0      -- 本次 lock 应发给对手的垃圾行数（对战用，外层消费）
     self.pendingItemCharge = 0     -- 道具-充能块累计的待消费 power 数（由 TetrisGame 取走）
     self.noRotateNext = 0         -- 待生效「禁止转动」减益层数（对手 SK-01 注入，下一块起生效）
+    -- SK-08「左右对调」减益状态：swapRequested=有对手申请；pendingSwapRequester=申请方(TetrisGame)；
+    -- pendingSwapNext=下一个 spawn 的方块左右互换。对手 board:lockPiece 落地时消费 swapRequested 并解除申请方 CD。
+    self.swapRequested = false
+    self.pendingSwapRequester = nil
+    self.pendingSwapNext = false
+    self.swapLrRequester = nil   -- 处于「左右对调」生效中的方块对应的申请方(TetrisGame)，落地时清空
     self.attackBonusNext = 0      -- 待生效「攻势」加成次数（本盘 SK-06，下次消行攻击 +1）
     self.lastClearRows = 0        -- 最近一次 clearBottomRows 清除的行数（Game 层提示用）
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
@@ -191,6 +197,17 @@ function TetrisBoard:spawn(typeOverride)
         self.active.noRotate = true
         self.noRotateNext = self.noRotateNext - 1
     end
+    -- 应用「左右对调」减益（对手 SK-08 注入）：本块左右方向互换（仅影响 move，不影响旋转）
+    if self.pendingSwapNext then
+        self.active.swapLR = true
+        self.pendingSwapNext = false
+        -- 标记本块生效中的申请方（取出 caster），并立即显示指示器；取出后清空 pendingSwapRequester
+        self.swapLrRequester = self.pendingSwapRequester
+        if self.swapLrRequester then
+            pcall(function() self.swapLrRequester:ShowS08Indicator(true) end)
+            self.pendingSwapRequester = nil
+        end
+    end
     self.grounded = false         -- 新方块出生即未贴地
     self.groundTimer = 0
     self.lockResets = 0
@@ -232,6 +249,7 @@ end
 -- ---------------- 操作 ----------------
 function TetrisBoard:move(dx)
     if self.isGameOver or not self.active then return false end
+    if self.active.swapLR then dx = -dx end   -- SK-08「左右对调」：左右方向键互换
     local p = self.active
     if self:canPlace(p, p.x + dx, p.y, p.rot) then
         p.x = p.x + dx
@@ -383,6 +401,25 @@ function TetrisBoard:lockPiece()
     -- 使其能像普通旧块一样参与 delta 计算与延迟下落。
     self.pendingLockedCells = (#lockedCells > 0) and lockedCells or nil
     self.active = nil
+
+    -- SK-08「左右对调」：对手当前方块落地 → 解除申请方冷却，并标记下一个方块左右互换
+    if self.swapRequested and self.pendingSwapRequester then
+        self.pendingSwapNext = true
+        local req = self.pendingSwapRequester
+        if req and req.s08Charged then
+            req.s08Charged = false
+            pcall(function() req:UpdateSkillUI() end)
+        end
+        -- 注意：pendingSwapRequester 暂不清空，留待下一块（swapLR）spawn 时取出，用于落地后隐藏指示器
+        self.swapRequested = false
+    end
+
+    -- SK-08「左右对调」：若刚落地的方块正是带 swapLR 的那一块（swapLrRequester 仍存活），
+    -- 说明技能失效 → 隐藏申请方指示器并清空引用
+    if self.swapLrRequester then
+        pcall(function() self.swapLrRequester:ShowS08Indicator(false) end)
+        self.swapLrRequester = nil
+    end
 
     -- 先不消行：进入"落地停顿"（lockPaused）。此时 grid 中已含刚锁定的方块、满行仍是亮着的，
     -- 渲染层会把这一帧画出来，玩家能看到"方块落定 + 满行完成"的一瞬；停顿结束后由 Game 层调用 doClear() 再消行。
@@ -587,8 +624,8 @@ end
 -- 删除可见区最下方 n 行，上方全部内容整体下移 n 行（顶部 n 行清空）。
 -- 当前下落方块随场地下移（逐格尝试，避免穿过障碍 / 越界）。
 -- 不计分 / 不消行 / 不送攻击：不修改 score / lines / outgoingGarbage / combo。
-function TetrisBoard:clearBottomRows(n)
-    if self.isGameOver or self.clearing or self.lockPaused then return 0 end
+function TetrisBoard:clearBottomRows(n, ignoreState)
+    if not ignoreState and (self.isGameOver or self.clearing or self.lockPaused) then return 0 end
     n = n or 2
     if n <= 0 then return 0 end
     -- 网格整体下移 n 行：row r 取旧 row (r-n)；顶部 n 行清空；底部 n 行被删除

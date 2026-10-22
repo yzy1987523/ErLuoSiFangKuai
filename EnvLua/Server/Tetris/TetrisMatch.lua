@@ -307,6 +307,9 @@ function TetrisMatch:Start()
         end
     end
 
+    -- 开局随机分配头像：每个玩家从 AvatarPresets 中取一个（2 人时洗牌保证互不相同）
+    self:AssignAvatars()
+
     -- 输入路由：每个按钮注册一次，按点击者 PlayerState 分发（避免每个实例重复注册互相覆盖）
     self:RegisterInput()
 
@@ -869,6 +872,25 @@ function TetrisMatch:GameDisplayName(g)
     local lv = self.aiDifficulty or cfg.DefaultDifficulty or "Normal"
     local lvl = cfg.DifficultyLevels or {}
     return (lvl[lv] and lvl[lv].Name) or lv
+end
+
+-- 开局随机分配头像：先把 AvatarPresets 洗牌，再对所有棋盘轮转分配。
+-- 我方与对方是两个不同的棋盘 → 各自拿到洗牌后不同位置的元素，保证两张头像不一样。
+-- （你要求：一方拿到一个，另一方就分到另一个，两个必须不同。）
+function TetrisMatch:AssignAvatars()
+    local cfg = TetrisConfig.AvatarUI
+    if not cfg or not cfg.AvatarPresets or #cfg.AvatarPresets == 0 then return end
+    local presets = cfg.AvatarPresets
+    local pool = {}
+    for _, p in ipairs(presets) do pool[#pool + 1] = p end
+    for i = #pool, 2, -1 do
+        local j = math.random(i)
+        pool[i], pool[j] = pool[j], pool[i]
+    end
+    -- 对所有棋盘（含 AI 盘）轮转分配：2 盘 + 2 头像时双方必然不同；仅 1 盘时无所谓重复
+    for i, g in ipairs(self.list) do
+        g.avatarKey = pool[(i - 1) % #pool + 1]
+    end
 end
 
 -- 给全体玩家弹出结算面板，分 3 个文本显示：玩家A分数 / 玩家B分数 / 胜者

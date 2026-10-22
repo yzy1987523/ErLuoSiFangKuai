@@ -47,7 +47,7 @@ end
 function TetrisSkillSelect:Available()
     local cfg = cfgOf()
     if not cfg.Enabled then return false end
-    return (cfg.BtnSK01 ~= nil or cfg.BtnSK02 ~= nil or cfg.BtnSK06 ~= nil)
+    return (cfg.BtnSK01 ~= nil or cfg.BtnSK02 ~= nil or cfg.BtnSK06 ~= nil or cfg.BtnSK07 ~= nil or cfg.BtnSK08 ~= nil)
 end
 
 -- 3 个技能按键对应的（控件, 技能 key）列表
@@ -57,18 +57,22 @@ function TetrisSkillSelect:SkillBinds()
         { cfg.BtnSK01, "SK01" },
         { cfg.BtnSK02, "SK02" },
         { cfg.BtnSK06, "SK06" },
+        { cfg.BtnSK07, "SK07" },
+        { cfg.BtnSK08, "SK08" },
     }
 end
 
 function TetrisSkillSelect:SkillButtonIDs()
     local cfg = cfgOf()
-    return { cfg.BtnSK01, cfg.BtnSK02, cfg.BtnSK06 }
+    return { cfg.BtnSK01, cfg.BtnSK02, cfg.BtnSK06, cfg.BtnSK07, cfg.BtnSK08 }
 end
 
 -- 需要统一显隐的控件：开始界面 + 开始按钮 + 面板 + 3 个技能按键
 function TetrisSkillSelect:WidgetIDs()
     local cfg = cfgOf()
-    return { cfg.StartPanel, cfg.StartBtn, cfg.PanelKey, cfg.BtnSK01, cfg.BtnSK02, cfg.BtnSK06 }
+    return { cfg.StartPanel, cfg.StartBtn, cfg.PanelKey,
+             cfg.BtnSK01, cfg.BtnSK02, cfg.BtnSK06, cfg.BtnSK07, cfg.BtnSK08,
+             cfg.IconSK01, cfg.IconSK02, cfg.IconSK06, cfg.IconSK07, cfg.IconSK08 }
 end
 
 function TetrisSkillSelect:SkillName(key)
@@ -109,6 +113,26 @@ function TetrisSkillSelect:ShowPanelFor(ps, visible)
         -- 重开复用同一实例时若只恢复可见性不恢复交互，按钮会"可见但点不了"。
         if visible and id ~= nil and type(CustomUIAPI) == "table" then
             pcall(function() CustomUIAPI.SetWidgetInteraction(ps, id, true) end)
+        end
+    end
+    if visible then self:ApplySkillIcons(ps) end
+end
+
+-- 把每个技能对应的独立图标组件设为该技能的 iconKey 图片（按钮本身只负责点击触发，不改按钮图标）
+function TetrisSkillSelect:ApplySkillIcons(ps)
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local cfg = cfgOf()
+    if not cfg then return end
+    for _, b in ipairs(self:SkillBinds()) do
+        local key = b[2]
+        local iconWid = key and cfg["Icon" .. key]
+        if key and iconWid then
+            local def = TetrisConfig.Skills and TetrisConfig.Skills[key]
+            local ik = def and def.iconKey
+            if ik then
+                local imgID = (type(AssetRef) == "table" and AssetRef[ik]) or ik
+                pcall(function() CustomUIAPI.SetImageWidgetContent(ps, iconWid, imgID) end)
+            end
         end
     end
 end
