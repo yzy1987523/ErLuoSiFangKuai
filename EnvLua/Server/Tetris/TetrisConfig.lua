@@ -60,7 +60,7 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
-         [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
+         --[20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
     },
 }
 
@@ -150,7 +150,7 @@ TetrisConfig.Pieces = {
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
     Debug = true,                      -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
-    Prob = 0.5,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
+    Prob = 0.15,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
     Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
     BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
@@ -255,6 +255,8 @@ TetrisConfig.Render = {
     -- 边框（左/右/下三侧外框）资源：与方块同模型，用【动态实例】生成（InstanceAPI.CreateInstance），
     -- 因此必须是 CreativeAsset（44_CreativeAsset_*），不能传 ActorPreset。
     BorderAssetRefKey = "44_CreativeAsset_3400003",
+    -- 外边框（立方体方框）总开关：true=生成左/右/下三侧外框；false=不生成（纯盘面，无立方体方框）
+    BorderEnabled = true,
 
     BlockScale = 1,        -- 方块模型缩放，按模型实际尺寸调整
 
@@ -423,10 +425,10 @@ TetrisConfig.BackgroundWall = {
 TetrisConfig.BehindBoardWidget = {
     Enabled = true,                                   -- 是否生成盘面背后 3D UI 挂件
     PresetKey = "46_ActorPreset_1273493010",           -- 带 WidgetComponent 的 Actor 预设键（AssetRef）
-    DistanceBehindM = 0.6,                               -- 盘心沿视线方向再向后推的距离（盘面背后，调此值）
-    Scale = { X = 10, Y = 10, Z = 10 },                   -- 整体缩放（影响 WidgetComponent 的世界尺寸）
-    SideOffsetM = -0.72,                                   -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
-    HeightOffsetM = -2.8,                                 -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
+    DistanceBehindM = 0.51,                               -- 盘心沿视线方向再向后推的距离（盘面背后，调此值）
+    Scale = { X = 7.52, Y = 7.52, Z = 7.52 },                   -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    SideOffsetM = 0,                                   -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
+    HeightOffsetM = 0,                                 -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
     -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让挂件呈对称倾斜。
     -- 1号 +45°、2号 −45°；未列出的棋盘不额外偏置（0°）。
     -- 测试时用-45，正式用-180
@@ -720,7 +722,7 @@ TetrisConfig.AvatarUI = {
 -- 任意玩家点完技能即隐藏这些「场景对象」（CreativeInstance key），全程只执行一次。
 -- 与 UI 控件不同，场景对象用 InstanceAPI.ToggleInstanceVisible(uuid, false) 隐藏（影响全体玩家，无需按玩家重复）。
 TetrisConfig.HideAfterSkill = {
-    "1_CreativeInstance_23643899057135203",
+    "1_CreativeInstance_23643898160458360",
     "1_CreativeInstance_23643900034986535",
 }
 

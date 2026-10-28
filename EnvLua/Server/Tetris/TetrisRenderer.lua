@@ -2124,6 +2124,12 @@ end
 -- 常驻可见（不参与方块显隐）。顶部开放，供方块下落进入。
 -- 三侧集合互不重叠，共 Rows + Rows + Cols 块。
 function TetrisRenderer:BuildBorder()
+    -- 开关关闭：完全不生成外边框（立方体方框），置空并跳过（Update 重试时也不会再创建）
+    if TetrisConfig.Render and TetrisConfig.Render.BorderEnabled == false then
+        self.border = {}
+        self.borderSpecs = {}
+        return
+    end
     -- 幂等：已成功创建则跳过（Update 会在失败时逐帧重试本函数）
     if self.border and #self.border > 0 then return end
     self.borderSpecs = {}
