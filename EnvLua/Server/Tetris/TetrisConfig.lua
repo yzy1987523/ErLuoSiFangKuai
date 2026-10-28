@@ -60,7 +60,7 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
-         --[20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
+         [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
     },
 }
 
@@ -256,7 +256,7 @@ TetrisConfig.Render = {
     -- 因此必须是 CreativeAsset（44_CreativeAsset_*），不能传 ActorPreset。
     BorderAssetRefKey = "44_CreativeAsset_3400003",
     -- 外边框（立方体方框）总开关：true=生成左/右/下三侧外框；false=不生成（纯盘面，无立方体方框）
-    BorderEnabled = true,
+    BorderEnabled = false,
 
     BlockScale = 1,        -- 方块模型缩放，按模型实际尺寸调整
 
@@ -442,6 +442,33 @@ TetrisConfig.BehindBoardWidget = {
     OpponentScoreTextChildName = { "ui_enemyscore", "ScoreText", "Text", "OpponentScore", "Score", "Label" },
 }
 
+-- ===================== 盘面前方 3D 大框（用户所述“3D大框”，替代双方 2D 的 Hold/Next 显示） =====================
+-- 与 BehindBoardWidget 相对：延法线方向相反——位于「盘面前方（朝玩家一侧）」，即 盘心 - boardForward * DistanceFrontM。
+-- 每个盘面（双盘各一）各生成一个带 WidgetComponent 的 Actor，其 UMG 内含 Hold / Next 两个图片控件；
+-- 运行时按 HoldImageChildName / NextImageChildName 在 UMG 内定位图片控件并注入 PieceImages 图片（与 2D Hold/Next 同源）。
+-- 显示道具图片（类型 >= Item.TypeMin，即 PieceImages[9/10/11]）时颜色强制为白色；普通方块按 PieceTint 染色。
+TetrisConfig.BigFrame3D = {
+    Enabled = true,                                       -- 默认关闭；填入下方 PresetKey 并置 true 后生效（替代 2D Hold/Next）
+    -- 3D 大框 Actor 预设键（46_ActorPreset_*，带 WidgetComponent 的 UMG，内含 Hold / Next 两个 Image 控件）
+    -- 【必填】在编辑器里创建一个带 WidgetComponent 的 ActorPreset，UMG 内放两个 Image 控件，注册后填入其键
+    PresetKey = "46_ActorPreset_612940845",
+    DistanceFrontM = -0.5,                                  -- 盘心沿 +boardForward（与 BehindBoardWidget 同侧=朝玩家可见侧）的距离；调大以避开 0.6m 处的背后挂件，避免重叠。与 DistanceBehindM 同为 +forward 侧。
+    Scale = { X = 2.52, Y = 2.52, Z = 2.52},                    -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    SideOffsetM = 0,                                       -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
+    HeightOffsetM = -0,                                     -- 沿世界 +Z 的额外抬高
+    -- 按棋盘 index 的额外偏置旋转（绕竖直/Yaw 轴，单位°）：双盘对称倾斜。
+    -- 必须与可见的「背后挂件(BehindBoardWidget)」用相同偏置，因为玩家始终在盘面同一侧(-forward)看两者，
+    -- 两者 WidgetComponent 法线都需指向 -forward（朝玩家）。翻反(180/-180)会让前方大框背面朝玩家→整片不可见。
+    RotationBiasByIndex = { [1] = 0, [2] = 0 },
+    -- UMG 内图片控件名（编辑器里给 Hold / Next 图片控件命的名）：按顺序匹配第一个有效的。
+    -- 你的结构是 ui → front → hold / next，真实控件名是 "hold" / "next"，中间容器为 "front"（FrontContainerName）。
+    FrontContainerName = "front",                              -- hold/next 所在的中间容器（ui 下的 front 组），用于按层级定位
+    HoldImageChildName = { "hold", "Hold", "HoldImg", "HoldImage", "Image_Hold" },
+    NextImageChildName = { "next", "Next", "NextImg", "NextImage", "Image_Next" },
+    -- 攻势技能(SK06)高亮：ui 下与 front 同级的 backlight 图片，默认隐藏；点击攻势时显示、攻击结算(方块落地/消行)后隐藏
+    BacklightChildName = { "backlight", "Backlight", "BackLight", "Glow" },
+}
+
 -- ===================== 远景背景 3D UI 挂件（背景图 WidgetComponent Actor） =====================
 -- 需求：每个盘面（双盘各一）的「背后更远处」各生成 1 个带 WidgetComponent 的 Actor，用于显示远景背景图。
 -- 生成方式完全照搬 BehindBoardWidget（仅依赖出生点装置 + ActorPreset(AssetRef)），纯背景、不挂接 renderer、
@@ -489,8 +516,19 @@ TetrisConfig.UI = {
     HoldImg = ci("1_CreativeInstance_23643900748630271"),   -- Hold 槽图片组件
     NextImg = ci("1_CreativeInstance_23643898717166573"),   -- Next 槽图片组件
 
-    -- Combo 图片组件：出现 2/3/4 行消除时显示 1 秒后自动隐藏（见 TetrisGame:ShowComboImage）。
+    -- Combo 图片组件：每次消除(按消除行数)显示对应图，到点自动隐藏（见 TetrisGame:ShowComboImage）。
+    --   ComboImg        = 图片控件实例（容器），运行时按行数换图；
+    --   ComboImgByRows  = 消除行数 → 图片 AssetRef 键（1/2/3 各一张，4&5 共用一张）；行数 >5 回落到 5；
+    --   ComboImgDuration= 显示时长（秒），到点自动隐藏；连消时刷新为满窗口。
     ComboImg = ci("1_CreativeInstance_23643901081703507"),
+    ComboImgByRows = {
+        [1] = "23_ImagePreset_181442738434917",
+        [2] = "23_ImagePreset_181444424376355",
+        [3] = "23_ImagePreset_181444856678574",
+        [4] = "23_ImagePreset_181444578235925",
+        [5] = "23_ImagePreset_181444578235925",
+    },
+    ComboImgDuration = 1.0,   -- 显示时长（秒）
 
     -- 垃圾行提示框（对战 / 人机）：根据双方 board.pendingGarbage 显示「即将发 / 即将收垃圾」。
     -- 即将给对手扔垃圾：对手盘 pendingGarbage>0（我刚发起的攻击尚未在对手盘落地）。

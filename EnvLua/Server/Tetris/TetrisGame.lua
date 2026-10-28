@@ -151,7 +151,7 @@ function TetrisGame:StartSpectator()
     self.previewShown = false
     self.owner:AddTimerOnce(0.5, function()
         if not self.running then return end
-        self.renderer:Update(self.board)   -- 摆好边框与空格子（边框可见，呈现棋盘外形）
+        self.renderer:Update(self.board, self.running)   -- 摆好边框与空格子（边框可见，呈现棋盘外形）
         if not self.previewShown then
             if self.renderer and self.renderer.wholePieceAttach then
                 self.renderer:ShowcasePieces(2)   -- 棋盘上方展示 7 个预览方块，明确「这是一块棋盘」
@@ -189,7 +189,7 @@ function TetrisGame:RefreshRenderer(frames)
     for i = 1, (frames or 6) do
         self.owner:AddTimerOnce(i * iv + 0.05, function()
             if self.renderer and self.board then
-                self.renderer:Update(self.board)
+                self.renderer:Update(self.board, self.running)
             end
         end)
     end
@@ -227,7 +227,7 @@ function TetrisGame:SetupFixedCamera()
         if not self.renderer._spawnResolved then
             return false  -- 出生点装置尚未注入，等待重试
         end
-        if self.board then self.renderer:Update(self.board) end  -- 用新 origin 重摆所有格子
+        if self.board then self.renderer:Update(self.board, self.running) end  -- 用新 origin 重摆所有格子
     end
     local center = self.renderer:GetBoardCenter()
     if not center then return false end
@@ -301,7 +301,7 @@ end
 function TetrisGame:Restart()
     self.board:reset()
     self.renderer:Clear()
-    self.renderer:Update(self.board)
+    self.renderer:Update(self.board, self.running)
     self:UpdateHUD()                -- 重开置零
     if self.running then
         self:ScheduleTick()
@@ -328,7 +328,7 @@ function TetrisGame:Reset()
     -- 渲染层清空并跟随空盘面
     if self.renderer then
         self.renderer:Clear()
-        self.renderer:Update(self.board)
+        self.renderer:Update(self.board, self.running)
     end
     -- 刷新 HUD：分数归零、Hold/Next 预览更新、对手分数归零；能量槽归零
     self:UpdateHUD()
@@ -344,7 +344,7 @@ function TetrisGame:ScheduleSettle()
     for i = 1, r.SettleFrames do
         self.owner:AddTimerOnce(i * r.SettleInterval, function()
             if self.renderer and self.board then
-                self.renderer:Update(self.board)
+                self.renderer:Update(self.board, self.running)
             end
         end)
     end
@@ -371,7 +371,7 @@ function TetrisGame:OnTick()
     board:tick()                    -- 数据层下落一格或锁定
     self:maybeScheduleLockFlash()   -- 锁定后满行：先渲染展示 LockFlashDelay 秒，再消行
     self:flushOutgoingGarbage()     -- 对战：把本步消除产生的垃圾行发给对手
-    self.renderer:Update(board)     -- 渲染层只跟随数据
+    self.renderer:Update(board, self.running)     -- 渲染层只跟随数据
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
     self:CheckPieceSpawned()        -- 产出新方块则上屏
@@ -399,7 +399,7 @@ function TetrisGame:maybeScheduleLockFlash()
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
         self:CheckReceivedGarbage()    -- 仅清零 lastAppliedGarbage（垃圾升起已延迟到特效播完后，由 UpdateGarbageHints 显示）
-        if self.renderer and self.board then self.renderer:Update(self.board) end
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         self:maybeScheduleClearResume() -- clearing=true → 等 ClearDelay 后 finishClear
         self:UpdateHUD()
         self:CheckPieceSpawned()
@@ -422,7 +422,7 @@ function TetrisGame:ScheduleClearResume()
         if not self.running or not self.board then return end
         self.board:applyClearCollapse()
         self.board:applyGarbage()
-        if self.renderer and self.board then self.renderer:Update(self.board) end
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         if self.board:isOver() then self:OnGameOver() end
     end)
     -- ClearDelay 后结束消除、出下一个块
@@ -430,7 +430,7 @@ function TetrisGame:ScheduleClearResume()
         self._clearResumeScheduled = false
         if not self.running or not self.board then return end
         self.board:finishClear()
-        if self.renderer and self.board then self.renderer:Update(self.board) end
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         self:CheckPieceSpawned()
         if self.board:isOver() then self:OnGameOver() end
     end)
@@ -533,9 +533,24 @@ function TetrisGame:UpdateHoldNextUI()
     local b = self.board
     if not b then return end
     local ui = TetrisConfig.UI
-    if not (ui and (ui.HoldImg or ui.NextImg)) then return end
     local imgs = TetrisConfig.PieceImages
     local tints = TetrisConfig.PieceTint
+
+    -- 盘面前方 3D 大框（BigFrame3D）已启用：Hold/Next 改由 3D 大框显示（全局 API，不依赖 ps → 双盘含 AI 盘都刷新）。
+    -- 同时每帧轮询 attackBonusNext 驱动 backlight（攻势 SK06 高亮）显隐。
+    -- 前方大框(BigFrame3D)已启用：Hold/Next/backlight 改由渲染层每帧驱动（TetrisRenderer:Update，按 running 显隐，支持 AI 盘）。
+    -- 这里仅隐藏本盘对应的 2D Hold/Next（避免与原 2D 显示重叠；AI 盘无 ps 则跳过）。
+    local frontCfg = TetrisConfig.BigFrame3D
+    if frontCfg and frontCfg.Enabled and self.renderer then
+        local ps = self:GetPlayerState()
+        if ps then
+            if ui and ui.HoldImg then pcall(function() CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, false) end) end
+            if ui and ui.NextImg then pcall(function() CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, false) end) end
+        end
+        return
+    end
+
+    if not (ui and (ui.HoldImg or ui.NextImg)) then return end
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
 
@@ -722,7 +737,7 @@ function TetrisGame:safeApply(fn)
         print("[Tetris][ERROR] 操作异常: " .. tostring(err))
         return
     end
-    self.renderer:Update(self.board)
+    self.renderer:Update(self.board, self.running)
     self:flushOutgoingGarbage()     -- 对战：把本步消除产生的垃圾行发给对手
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
     self:UpdateHUD()                -- 刷新分数 / 消行 / 等级
@@ -881,15 +896,15 @@ end
 --   每消除 1 行得 1 个 bar；集满 NeedBars 个 bar 兑换 1 个 power（bar 清零）；最多持有 MaxPower 个 power。
 function TetrisGame:onLinesCleared(cleared)
     if not cleared or cleared <= 0 then return end
-    -- Combo 图片：2/3/4 行消除时显示 1 秒后自动隐藏（1 行不显示；>4 理论上不会出现）
-    if cleared >= 2 and cleared <= 4 then
-        self:ShowComboImage()
+    -- Combo 图片：每次消除都显示，按消除行数换对应图（1/2/3/4&5 各一张），见 TetrisGame:ShowComboImage
+    if cleared >= 1 then
+        self:ShowComboImage(cleared)
     end
     -- SK07「额外消行」：本次结算触发了真实消行 → 额外清除最下方一行，并解除冷却（此时 clearing=true，用 ignoreState）
     if self.s07Charged then
         self.s07Charged = false
         local extra = self.board:clearBottomRows(1, true)
-        if self.renderer and self.board then self.renderer:Update(self.board) end
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         if extra and extra > 0 then
             self:ShowHint("技能【赠送技能】触发：多消除 " .. tostring(extra) .. " 行！")
         end
@@ -911,18 +926,27 @@ function TetrisGame:onLinesCleared(cleared)
     self:UpdateSkillUI()
 end
 
--- 显示 Combo 图片（2/3/4 行消除）1 秒后自动隐藏；连消时取消上一次未到期的隐藏定时器，
--- 保证每次消除都把"显示窗口"刷新为满 1 秒，不会提前隐藏。仅对真人盘（有 PlayerState）生效。
-function TetrisGame:ShowComboImage()
-    local id = TetrisConfig.UI and TetrisConfig.UI.ComboImg
+-- 显示 Combo 图片：按本次消除行数(cleared)换对应图，ComboImgDuration 秒后自动隐藏；
+-- 连消时取消上一次未到期的隐藏定时器，保证每次消除都把"显示窗口"刷新为满窗口。仅对真人盘（有 PlayerState）生效。
+function TetrisGame:ShowComboImage(cleared)
+    local ui = TetrisConfig.UI
+    local id = ui and ui.ComboImg
+    local byRows = ui and ui.ComboImgByRows
     local ps = self:GetPlayerState()
     if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    -- 按消除行数选图：1/2/3 各一张，4&5 共用一张；行数 >5 回落到 5
+    local rowKey = cleared and byRows and (byRows[cleared] or byRows[5])
+    if rowKey then
+        local imgID = (type(AssetRef) == "table" and AssetRef[rowKey]) or rowKey
+        pcall(function() CustomUIAPI.SetImageWidgetContent(ps, id, imgID) end)
+    end
     pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
     if self._comboHideTimer then
         pcall(function() self.owner:RemoveTimer(self._comboHideTimer) end)
         self._comboHideTimer = nil
     end
-    self._comboHideTimer = self.owner:AddTimerOnce(1.0, function()
+    local dur = (ui and ui.ComboImgDuration) or 1.0
+    self._comboHideTimer = self.owner:AddTimerOnce(dur, function()
         pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
         self._comboHideTimer = nil
     end)
@@ -1026,7 +1050,7 @@ function TetrisGame:OnBtnSkill()
         local def = self:GetSelectedSkillDef()
         local n = (def and def.clearRows) or 2
         local cleared = self.board:clearBottomRows(n)
-        self.renderer:Update(self.board)
+        self.renderer:Update(self.board, self.running)
         self:ShowHint("技能【清除最下方 " .. tostring(cleared) .. " 行】发动！")
         self:ShowSkillBigTip("SK02")
     elseif key == "SK06" then
@@ -1297,7 +1321,7 @@ function TetrisGame:aiStep()
         if not b:move(dx) then break end
         guard = guard + 1
     end
-    if self.renderer then self.renderer:Update(b) end
+    if self.renderer then self.renderer:Update(b, self.running) end
 end
 
 return TetrisGame

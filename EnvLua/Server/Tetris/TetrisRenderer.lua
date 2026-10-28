@@ -73,6 +73,7 @@ function TetrisRenderer:new(owner, index)
     o.actors = {}   -- actors[row][col] = 底层 Actor（若可解析），用于可靠隐藏
     o.shown = {}    -- shown[row][col] = bool，当前显隐状态（脏检查用）
     o.border = {}   -- border[] = 边框格子对象（左/右/下三侧静态装饰，常驻可见）
+    o._borderDisabled = false   -- 边框被配置关闭(BorderEnabled=false)时置 true，视为已完成
     o.pieces = {}   -- pieces[type] = 见 BuildActivePiecesV1/V2，整体活动方块
     o.shownPieceType = nil  -- 当前显示中的活动方块类型（整体模式用）
     o.wholePieceV2 = nil    -- true=方案2(根+子组件)可用；false/nil=回退方案1(4 Actor)
@@ -721,6 +722,243 @@ function TetrisRenderer:ReanchorBehindBoardWidget()
     pcall(function() self._behindWidgetActor:K2_TeleportTo(cmVec(pos), rot) end)
 end
 
+-- ============== 盘面前方 3D 大框（BigFrame3D）：与 BehindBoardWidget 相对，位于盘面前方（朝玩家一侧） ==============
+-- 每个盘面（双盘各一）在「盘面前方」生成 1 个带 WidgetComponent 的 Actor，其 UMG 内含 Hold / Next 两个图片控件，
+-- 替代双方原本的 2D Hold/Next 显示。定位 = 盘心 - 视线前向(boardForward) * DistanceFrontM（即盘面“朝玩家”一侧）。
+function TetrisRenderer:BuildFrontBoardWidget()
+    local cfg = TetrisConfig.BigFrame3D
+    if not (cfg and cfg.Enabled) then return end
+    if not self.boardCenter or not self.boardForward or not self.boardRight then
+        if not self._frontWidgetBaseLogged then
+            self._frontWidgetBaseLogged = true
+            print(string.format("[Tetris][FrontWidget][WARN] 盘面基底未就绪(首次): built=%s hasCenter=%s hasFwd=%s hasRight=%s",
+                tostring(self.built), tostring(not not self.boardCenter), tostring(not not self.boardForward), tostring(not not self.boardRight)))
+        end
+        return
+    end
+    if self._frontWidgetActor then return end   -- 已生成：交给 ReanchorFrontBoardWidget 重定位
+    local ref = (type(AssetRef) == "table" and AssetRef[cfg.PresetKey])
+             or (type(CreativeAsset) == "table" and CreativeAsset[cfg.PresetKey])
+    if not ref then
+        if not self._frontWidgetRefLogged then
+            self._frontWidgetRefLogged = true
+            print(string.format("[Tetris][FrontWidget][WARN] 资源键无引用(首次): %s | AssetRef表=%s CreativeAsset表=%s",
+                tostring(cfg.PresetKey), tostring(type(AssetRef) == "table"), tostring(type(CreativeAsset) == "table")))
+        end
+        return
+    end
+    local D = (type(cfg.DistanceFrontM) == "number") and cfg.DistanceFrontM or 0.6
+    local side = (type(cfg.SideOffsetM) == "number") and cfg.SideOffsetM or 0
+    local hgt = (type(cfg.HeightOffsetM) == "number") and cfg.HeightOffsetM or 0
+    -- 前方：沿 -boardForward（朝玩家一侧），与 BehindBoardWidget 的 +boardForward（背后）相反
+    -- 前方：沿 +boardForward（与 BehindBoardWidget 同侧=朝玩家可见侧；-forward 会被盘体遮挡不可见，已实测验证）
+    local pos = {
+        X = self.boardCenter.X + self.boardForward.X * D + self.boardRight.X * side,
+        Y = self.boardCenter.Y + self.boardForward.Y * D + self.boardRight.Y * side,
+        Z = self.boardCenter.Z + self.boardForward.Z * D + hgt,
+    }
+    local scaleVec = Game:ConstructFVectorByLuaTable({
+        X = (cfg.Scale and cfg.Scale.X) or 1,
+        Y = (cfg.Scale and cfg.Scale.Y) or 1,
+        Z = (cfg.Scale and cfg.Scale.Z) or 1,
+    })
+    local rot = self:FrontBoardWidgetRot()
+    local ok, obj = pcall(function()
+        if type(CreativeGameAPI) == "table" and CreativeGameAPI.CreateActor then
+            return CreativeGameAPI.CreateActor(ref, Game:ConstructFVectorByLuaTable(pos), rot, scaleVec, nil)
+        end
+        return self:CreateOne(Game:ConstructFVectorByLuaTable(pos), scaleVec, ref, rot)
+    end)
+    if ok and obj then
+        self._frontWidgetActor = obj
+        pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(false) end end)
+        print(string.format("[Tetris][FrontWidget] 盘面前方 3D 大框已生成 (D=%.1f side=%.1f hgt=%.1f)", D, side, hgt))
+        -- AssetRef 晚注册导致大框在 Update 阶段才生成时，补刷此前缓存的 Hold/Next
+        if self._pendingFrontHold ~= nil or self._pendingFrontNext ~= nil then
+            self:SetFrontWidgetHoldNext(self._pendingFrontHold, self._pendingFrontNext)
+        end
+        -- 生成即隐藏 Hold/Next/backlight（running=false 时 Update 每帧也会隐藏；此处提前确保开局前不显示空框）
+        self:SetFrontWidgetHoldNext(nil, nil)
+        self:SetFrontBacklight(false)
+    else
+        print("[Tetris][FrontWidget][WARN] 创建失败: " .. tostring(obj))
+    end
+end
+
+-- 计算盘面前方 3D 大框旋转：基于盘面偏航 self.boardYaw + RotationBiasByIndex[boardIndex]（与 BehindBoardWidgetRot 同构）
+function TetrisRenderer:FrontBoardWidgetRot()
+    local cfg = TetrisConfig.BigFrame3D
+    local bias = 0
+    if cfg and type(cfg.RotationBiasByIndex) == "table" then
+        bias = cfg.RotationBiasByIndex[self.boardIndex] or 0
+    end
+    local yaw = (self.boardYaw or 0) + bias
+    if type(FRotator) == "table" and FRotator.MakeFromEuler then
+        return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = yaw }))
+    end
+    return self.rot
+end
+
+-- 从盘面前方 3D 大框 Actor 上，按候选名列表找到某个图片子控件，返回其 InstanceUUID（全局）。
+function TetrisRenderer:FindFrontWidgetImageChild(childNames)
+    if type(childNames) == "string" then childNames = { childNames } end
+    local actor = self._frontWidgetActor
+    if not actor then return nil end
+    local wc
+    pcall(function()
+        if type(actor.GetComponentByClass) == "function" then
+            wc = actor:GetComponentByClass("WidgetComponent")
+        end
+    end)
+    if not wc then
+        pcall(function()
+            for _, nm in ipairs({ "UI", "Widget", "WidgetComp", "WidgetComponent" }) do
+                local okC, c = pcall(function() return actor:GetComponentByName(nm) end)
+                if okC and c then wc = c; break end
+            end
+        end)
+    end
+    if not wc then
+        print("[Tetris][FrontWidget][WARN] 找不到 UI 组件(WidgetComponent)")
+        return nil
+    end
+    local plist
+    pcall(function()
+        local okP, p = pcall(function() return Game:GetAllPlayerPawns() end)
+        if okP and p then plist = p end
+    end)
+    if not plist or type(plist.Num) ~= "function" or plist:Num() <= 0 then
+        return nil  -- 暂无玩家，下一帧重试
+    end
+    local uw
+    for i = 0, plist:Num() - 1 do
+        local pawn = plist:Get(i)
+        if pawn then
+            pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
+            if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
+            if uw then break end
+        end
+    end
+    if not uw then
+        print("[Tetris][FrontWidget][WARN] wc:GetUserWidgetObject 所有玩家均返回空（组件可能尚未初始化，下一帧重试）")
+        return nil
+    end
+    -- 你的 UMG 结构是 ui → front → hold / next，所以先按名直接查（递归），失败再尝试经中间容器（如 front）二级查找
+    local cname = (type(TetrisConfig.BigFrame3D) == "table") and TetrisConfig.BigFrame3D.FrontContainerName
+    local function tryFind(name)
+        local t
+        pcall(function() t = uw:GetWidgetFromName(name) end)
+        if not t and cname then
+            local c
+            pcall(function() c = uw:GetWidgetFromName(cname) end)
+            if c then pcall(function() t = c:GetWidgetFromName(name) end) end
+        end
+        return t
+    end
+    local tw
+    for _, cn in ipairs(childNames) do
+        local t = tryFind(cn)
+        if t then tw = t; break end
+    end
+    if not tw then
+        print(string.format("[Tetris][FrontWidget][WARN] uw:GetWidgetFromName 未命中: %s", table.concat(childNames, ",")))
+        return nil
+    end
+    print(string.format("[Tetris][FrontWidget] 定位成功 childNames=%s", table.concat(childNames, ",")))
+    -- 返回图片控件对象（WoWCustomUIImage）：世界空间 WidgetComponent 的图片子控件必须用对象方法
+    -- SetImageContent / SetImageColor / SetVisible 操作（CustomUIAPI.SetImageWidget* 仅适用于 2D HUD 命名实例，对这类控件无效）。
+    return tw
+end
+
+-- 把 Hold / Next 图片写入盘面前方 3D 大框的图片控件（替代 2D Hold/Next）。
+-- 若大框未生成或图片子控件未定位，则缓存类型，待生成/定位后补刷。
+-- 道具图片（IsItemType，即 PieceImages[9/10/11]）颜色设为白色；普通方块按 PieceTint 染色。
+function TetrisRenderer:SetFrontWidgetHoldNext(holdType, nextType)
+    local cfg = TetrisConfig.BigFrame3D
+    if not (cfg and cfg.Enabled) then return end
+    -- 缓存最新类型（即使大框/控件尚未就绪）
+    self._pendingFrontHold = holdType
+    self._pendingFrontNext = nextType
+    if not self._frontWidgetActor then return end
+    if not self._frontHoldWidget then
+        self._frontHoldWidget = self:FindFrontWidgetImageChild(cfg.HoldImageChildName or { "hold" })
+    end
+    if not self._frontNextWidget then
+        self._frontNextWidget = self:FindFrontWidgetImageChild(cfg.NextImageChildName or { "next" })
+    end
+    local imgs = TetrisConfig.PieceImages
+    local tints = TetrisConfig.PieceTint
+    local function resolveImg(t)
+        local key = (t and imgs) and imgs[t] or nil
+        if not key then return nil end
+        return (type(AssetRef) == "table" and AssetRef[key]) or key
+    end
+    local function isItem(t)
+        return type(TetrisConfig.IsItemType) == "function" and TetrisConfig.IsItemType(t)
+    end
+    -- 直接操作图片控件对象（WoWCustomUIImage）：SetImageContent / SetImageColor / SetVisible。
+    -- 无内容时 SetVisible(false) 隐藏（初始/未持有/队列未就绪均不显示空框）；有内容时显示并注入贴图+染色。
+    -- 贴图/染色仅在类型变化时才刷新（变更检测），避免每帧重载贴图导致闪烁。
+    local function setImg(widget, t, lastKey)
+        if not widget then return end
+        local imgID = resolveImg(t)
+        local visible = (imgID ~= nil)
+        pcall(function() widget:SetVisible(visible) end)
+        if not visible then
+            self[lastKey] = nil
+            return
+        end
+        if self[lastKey] == t then return end   -- 类型未变，跳过贴图重载
+        self[lastKey] = t
+        local colorVec
+        if isItem(t) then
+            colorVec = Game:ConstructFVectorByLuaTable({ X = 1, Y = 1, Z = 1 })   -- 道具：白色
+        else
+            local c = (t and tints) and tints[t]
+            if c then colorVec = Game:ConstructFVectorByLuaTable({ X = c.X, Y = c.Y, Z = c.Z }) end
+        end
+        pcall(function() widget:SetImageContent(imgID) end)
+        if colorVec then pcall(function() widget:SetImageColor(colorVec) end) end
+    end
+    setImg(self._frontHoldWidget, holdType, "_frontHoldLastType")
+    setImg(self._frontNextWidget, nextType, "_frontNextLastType")
+end
+
+-- 设置盘面前方 3D 大框上的「攻势高亮」(backlight) 显隐。
+-- 该图片在 ui 下与 front 同级、默认隐藏；visible=true 显示（点击攻势技能 SK06 时），false 隐藏（攻击结算后）。
+function TetrisRenderer:SetFrontBacklight(visible)
+    local cfg = TetrisConfig.BigFrame3D
+    if not (cfg and cfg.Enabled) then return end
+    if not self._frontWidgetActor then return end
+    if not self._frontBacklightWidget then
+        self._frontBacklightWidget = self:FindFrontWidgetImageChild(cfg.BacklightChildName or { "backlight", "Backlight" })
+    end
+    if not self._frontBacklightWidget then return end
+    local v = (visible == true)
+    if self._frontBacklightShown == v then return end   -- 状态未变则跳过
+    self._frontBacklightShown = v
+    pcall(function() self._frontBacklightWidget:SetVisible(v) end)
+end
+
+-- 将盘面前方 3D 大框重定位到当前盘面基底（应对 ResolveOrigin 重新解析、基准变化）。
+function TetrisRenderer:ReanchorFrontBoardWidget()
+    local cfg = TetrisConfig.BigFrame3D
+    if not (cfg and cfg.Enabled) then return end
+    if not self._frontWidgetActor then return end
+    if not self.boardCenter or not self.boardForward or not self.boardRight then return end
+    local D = (type(cfg.DistanceFrontM) == "number") and cfg.DistanceFrontM or 0.6
+    local side = (type(cfg.SideOffsetM) == "number") and cfg.SideOffsetM or 0
+    local hgt = (type(cfg.HeightOffsetM) == "number") and cfg.HeightOffsetM or 0
+    local pos = {
+        X = self.boardCenter.X + self.boardForward.X * D + self.boardRight.X * side,
+        Y = self.boardCenter.Y + self.boardForward.Y * D + self.boardRight.Y * side,
+        Z = self.boardCenter.Z + self.boardForward.Z * D + hgt,
+    }
+    local rot = self:FrontBoardWidgetRot()
+    -- 与 ReanchorBehindBoardWidget 保持一致：pos 是米，必须用 cmVec(×100) 转厘米，否则会被当成米当厘米放到盘心内部而不可见
+    pcall(function() self._frontWidgetActor:K2_TeleportTo(cmVec(pos), rot) end)
+end
+
 -- 尝试取出实例背后的 Actor。动态实例可能是纯组件，取不到时返回 nil。
 function TetrisRenderer:ResolveActor(obj)
     if not obj or self.mode ~= "instance" then return nil end
@@ -1228,6 +1466,7 @@ end
 
 -- 本盘边框是否生成好。
 function TetrisRenderer:BorderDone()
+    if self._borderDisabled then return true end   -- 边框被配置关闭：视为已完成，避免构建状态机走 25 次 0.2s 超时
     return (self.border and #self.border > 0)
 end
 
@@ -2128,6 +2367,7 @@ function TetrisRenderer:BuildBorder()
     if TetrisConfig.Render and TetrisConfig.Render.BorderEnabled == false then
         self.border = {}
         self.borderSpecs = {}
+        self._borderDisabled = true   -- 边框被配置关闭：标记"故意为空"，供 BorderDone() 视为已完成
         return
     end
     -- 幂等：已成功创建则跳过（Update 会在失败时逐帧重试本函数）
@@ -2290,6 +2530,7 @@ function TetrisRenderer:ReanchorBoard()
     end
     -- 背后 3D UI 挂件随盘面基底重定位（出生点装置晚注入后基准变化）
     self:ReanchorBehindBoardWidget()
+    self:ReanchorFrontBoardWidget()
 end
 
 -- 调试：逐行统计 已创建 / 当前显示 / 期望显示 的格子数。
@@ -2615,7 +2856,7 @@ function TetrisRenderer:GetLocalPlayerState()
     return self._localPS
 end
 
-function TetrisRenderer:Update(board)
+function TetrisRenderer:Update(board, running)
     if not self.built then return end
     self.frame = self.frame + 1
 
@@ -2638,6 +2879,23 @@ function TetrisRenderer:Update(board)
     -- 兜底生成盘面背后 3D UI 挂件：Build 阶段（开局第一帧）若 AssetRef 尚未注册该 ActorPreset 会失败，
     -- 这里 poolReady 后再次尝试；函数内有 _behindWidgetActor 幂等保护，已生成则跳过，不会重复创建。
     self:BuildBehindBoardWidget()
+    -- 兜底生成盘面前方 3D 大框（BigFrame3D）：同样幂等，AssetRef 晚注册时在此重试。
+    self:BuildFrontBoardWidget()
+
+    -- 盘面前方 3D 大框 Hold/Next/backlight：每帧按 running 显隐（初始/暂停/结束隐藏，方块下落时显示）。
+    -- 直接操作图片控件对象（SetImageContent/SetImageColor/SetVisible），与背后盘面一致；不依赖 ps，AI 盘也在此路径刷新。
+    if self._frontWidgetActor and TetrisConfig.BigFrame3D and TetrisConfig.BigFrame3D.Enabled then
+        if running == true then
+            local ht = board:getHoldType()
+            local nq = board:getNextQueue()
+            local nt = (nq and nq[1]) or nil
+            self:SetFrontWidgetHoldNext(ht, nt)
+            self:SetFrontBacklight(board.attackBonusNext and board.attackBonusNext > 0)
+        else
+            self:SetFrontWidgetHoldNext(nil, nil)   -- 隐藏 Hold/Next
+            self:SetFrontBacklight(false)           -- 隐藏攻势高亮
+        end
+    end
 
     -- 分帧补齐 21 个整体实例（BuildWholePiecePool 起的异步构建），未完成前逐帧建少量，避免初始化卡顿。
     if self._poolBuild then self:ProcessPoolBuild() end
@@ -2648,7 +2906,7 @@ function TetrisRenderer:Update(board)
 
     -- 边框延迟创建：Build 时 InstanceAPI 可能未注入或实例创建暂时失败，重试直到成功（上限若干帧）。
     -- 每 5 帧才真正尝试一次（探测开销较大）；成功后强制重摆若干帧，确保对齐当前基准。
-    if (not self.border or #self.border == 0) and (self._borderRetry or 0) < 30 then
+    if (not self.border or #self.border == 0) and (self._borderRetry or 0) < 30 and not self._borderDisabled then
         self._borderRetry = (self._borderRetry or 0) + 1
         if ((self._borderRetry - 1) % 5) == 0 then
             self:BuildBorder()
