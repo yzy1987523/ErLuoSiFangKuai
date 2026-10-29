@@ -91,6 +91,8 @@ function TetrisBoard:reset()
     self.pendingSwapRequester = nil
     self.pendingSwapNext = false
     self.swapLrRequester = nil   -- 处于「左右对调」生效中的方块对应的申请方(TetrisGame)，落地时清空
+    self.rotateLockRequester = nil          -- 处于「禁止转动」生效中的方块对应的申请方(TetrisGame)，落地时清空（参考 swapLrRequester）
+    self.pendingRotateLockRequester = nil   -- 申请方(TetrisGame)，落子前由施法方写入（参考 pendingSwapRequester）
     self.attackBonusNext = 0      -- 待生效「攻势」加成次数（本盘 SK-06，下次消行攻击 +1）
     self.lastClearRows = 0        -- 最近一次 clearBottomRows 清除的行数（Game 层提示用）
     self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
@@ -98,9 +100,10 @@ function TetrisBoard:reset()
     -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
     self.pendingClearedRows = nil     -- 本次消除的行号列表（渲染层据此播消行特效）
     self.pendingBlastFx = nil          -- 本次爆破竖版特效列表 { {col, bottom, top}, ... }（渲染层播竖版光束）
-    self.pendingShiftFx = nil          -- 本次位移特效行号列表（渲染层在位移块所在行播横向特效）
     self.pendingGarbageMoved = nil    -- 保留字段：渲染层已改为全数据驱动刷新，不再据此切换路径
     self._clearFullRows = nil         -- 被消除满行集合（clearLines 暂存，applyClearCollapse 消费；延迟坍塌用）
+    self.pendingShiftImg = nil        -- 位移道具：消行含位移块时置位，供 Game 在消除特效后弹两张提示图
+    self.pendingShiftExec = nil       -- 位移道具：消行含位移块时置位，供 Game 在消除特效后执行整行右移（先于坍塌）
     -- 三阶段状态机 fall/clearing/settle：游戏层仍以 lockPaused/clearing 布尔推进，stage 为其可读投影，供渲染层只读
     self.stage = "fall"
     self.clearing = false              -- 消行动画期间置 true：挂起出块与重力，等动画结束后 finishClear()
@@ -196,6 +199,13 @@ function TetrisBoard:spawn(typeOverride)
     if self.noRotateNext and self.noRotateNext > 0 then
         self.active.noRotate = true
         self.noRotateNext = self.noRotateNext - 1
+        -- 真正进入"无法旋转"时显示 SK01 双向 UI：施法方 1 图 + 被限制方 3 图
+        self.rotateLockRequester = self.pendingRotateLockRequester
+        if self.rotateLockRequester then
+            pcall(function() self.rotateLockRequester:ShowRotationRestrictCasterUI(true) end)
+            self.pendingRotateLockRequester = nil
+        end
+        if self.game then pcall(function() self.game:ShowRotationRestrictOpponentUI(true) end) end
     end
     -- 应用「左右对调」减益（对手 SK-08 注入）：本块左右方向互换（仅影响 move，不影响旋转）
     if self.pendingSwapNext then
@@ -421,6 +431,14 @@ function TetrisBoard:lockPiece()
         self.swapLrRequester = nil
     end
 
+    -- SK-01「禁止转动」：若刚落地的方块正是带 noRotate 的那一块（rotateLockRequester 仍存活），
+    -- 说明限制结束 → 隐藏施法方 1 图 + 被限制方 3 图，并清空引用
+    if self.rotateLockRequester then
+        pcall(function() self.rotateLockRequester:ShowRotationRestrictCasterUI(false) end)
+        if self.game then pcall(function() self.game:ShowRotationRestrictOpponentUI(false) end) end
+        self.rotateLockRequester = nil
+    end
+
     -- 先不消行：进入"落地停顿"（lockPaused）。此时 grid 中已含刚锁定的方块、满行仍是亮着的，
     -- 渲染层会把这一帧画出来，玩家能看到"方块落定 + 满行完成"的一瞬；停顿结束后由 Game 层调用 doClear() 再消行。
     if self:hasFullRows() then
@@ -533,23 +551,12 @@ function TetrisBoard:clearLines(countScore)
     if countScore ~= false and #itemEffects.blast > 0 then
         self.pendingBlastImg = true
     end
-    -- 位移：消除后所有行整体向右平移 1 列（每行从最右格起向左遍历，当前格非空且右为空则右移 1 格）
-    if itemEffects.shift then
-        local moved = false
-        for r = 1, self.rows do
-            for c = self.cols, 1, -1 do
-                if self.grid[r][c] ~= nil and c + 1 <= self.cols and self.grid[r][c + 1] == nil then
-                    self.grid[r][c + 1] = self.grid[r][c]
-                    self.grid[r][c] = nil
-                    moved = true
-                end
-            end
-        end
-        if moved then self.pendingGarbageMoved = true end
-        -- 位移特效：记录位移块所在行（数据层行号，不依赖列内是否有方块）
-        if #itemEffects.shiftRows > 0 then
-            self.pendingShiftFx = itemEffects.shiftRows
-        end
+    -- 位移：仅记录"待执行"标记；真正的整行右移延迟到「消除特效播完、方块下落前」(Game 的 effectDur 定时器)
+    -- 由 executePendingShift() 执行。这样位移与提示图片都在消除特效之后、方块下落之前出现（符合需求），
+    -- 且右移在坍塌(applyClearCollapse)之前完成——横向右移与竖向坍塌可交换、最终盘面一致，仅改时序不改数据。
+    if itemEffects.shift and countScore ~= false then
+        self.pendingShiftExec = true   -- 供 Game 在消除特效后执行真正右移（先于 applyClearCollapse）
+        self.pendingShiftImg = true    -- 供 Game 在消除特效后弹两张提示图
     end
     -- 充能：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量。
     -- 仅真实消行(countScore~=false)时累计；开局预处理消除(countScore=false)不计，避免开局即弹提示图/送免费 power。
@@ -563,8 +570,8 @@ function TetrisBoard:clearLines(countScore)
     -- 这里仅暂存被消除满行集合，供 applyClearCollapse 跳过这些行做压缩。
     self._clearFullRows = fullRows
 
-    -- 道具爆破/位移改动了非整体行移动的格子（爆破清列打洞 / 位移整行右移），渲染层需走逐格全量重排
-    if #itemEffects.blast > 0 or itemEffects.shift then
+    -- 道具爆破改动了非整体行移动的格子（爆破清列打洞），渲染层需走逐格全量重排（位移整行右移已延迟到 executePendingShift）
+    if #itemEffects.blast > 0 then
         self.pendingItemFx = true
     end
 
@@ -625,6 +632,25 @@ function TetrisBoard:applyClearCollapse()
     self.stage = "settle"
 end
 
+-- 位移道具：在「消除特效播放完、方块下落前」(Game 的 effectDur 定时器)执行真正的整行右移。
+-- 仅当本次消行含位移块(pendingShiftExec)时执行；执行后清空标记并置 pendingItemFx，供渲染层走逐格全量重排。
+-- 必须早于 applyClearCollapse：右移(横向)与坍塌(竖向)可交换、最终盘面一致，但时序上需「先位移→再下落」。
+function TetrisBoard:executePendingShift()
+    if not self.pendingShiftExec then return end
+    self.pendingShiftExec = nil
+    local moved = false
+    for r = 1, self.rows do
+        for c = self.cols, 1, -1 do
+            if self.grid[r][c] ~= nil and c + 1 <= self.cols and self.grid[r][c + 1] == nil then
+                self.grid[r][c + 1] = self.grid[r][c]
+                self.grid[r][c] = nil
+                moved = true
+            end
+        end
+    end
+    if moved then self.pendingItemFx = true end
+end
+
 -- 清除最下方 n 行（SK-02「清除最下方两行」）：
 -- 删除可见区最下方 n 行，上方全部内容整体下移 n 行（顶部 n 行清空）。
 -- 当前下落方块随场地下移（逐格尝试，避免穿过障碍 / 越界）。
@@ -671,12 +697,6 @@ function TetrisBoard:consumeBlastFx()
     return v
 end
 
--- 渲染层消费：取走本次位移特效的行号列表（取后清空，避免重复处理）
-function TetrisBoard:consumeShiftFx()
-    local v = self.pendingShiftFx
-    self.pendingShiftFx = nil
-    return v
-end
 
 -- 渲染层消费：取走"本帧是否发生过道具单元格级改动（爆破打洞/位移右移）"（取后清空）。
 -- 为 true 时渲染层不能用 parent-shift，须走逐格全量重排以正确反映这些格子变化。

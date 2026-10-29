@@ -41,6 +41,7 @@ end
 -- ---------------- 生命周期 ----------------
 function TetrisGame:Init(spawnPointKey)
     self.board = TetrisBoard:new()
+    self.board.game = self   -- 反向引用：board 触发"被限制方"UI 时回调本 game
     -- 调试用：把"哪块盘"的身份注入数据层，便于 lockPiece 打印区分玩家盘 / 对手盘
     self.board.index = self.index
     self.board.isAI = self.isAI
@@ -85,6 +86,16 @@ function TetrisGame:Start()
             }
             for _, hid in ipairs(initHidden) do
                 if hid then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
+            end
+            -- SK01「禁止转动」：开局先隐藏被限制方 3 图 + 施法方 1 图（编辑器默认可能可见，仅限制生效时才显示）
+            local sk1 = TetrisConfig.Skills and TetrisConfig.Skills.SK01
+            if sk1 then
+                if sk1.rotLockCasterImg then
+                    pcall(function() CustomUIAPI.SetWidgetVisible(ps, sk1.rotLockCasterImg, false) end)
+                end
+                for _, id in ipairs(sk1.rotLockOpponentImgs or {}) do
+                    if id then pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end) end
+                end
             end
         end
         -- 取消可能未到期的 combo 隐藏定时器，避免重开后用旧定时器误隐藏新局提示
@@ -143,6 +154,7 @@ function TetrisGame:Start()
     self:UpdateAvatarTags()         -- 头像组件：显示我方 / 对方 头像（开局随机分配）
     self:HideChargeItemImage()      -- 充能块提示图：开局先隐藏（控件编辑器默认可能可见）
     self:HideBlastImage()           -- 爆炸道具块提示图：开局先隐藏（透明度置 0）
+    self:HideShiftImage()           -- 位移道具两张提示图：开局先隐藏（透明度置 0）
     print("[Tetris] Start")
 end
 
@@ -327,6 +339,8 @@ function TetrisGame:Reset()
     self.s07Charged = false   -- 重置 SK07 冷却标记
     self.s08Charged = false   -- 重置 SK08 冷却标记
     self:ShowS07CdIndicator(false)   -- 重置时确保「赠送技能」常驻指示器已隐藏
+    self:ShowRotationRestrictOpponentUI(false)  -- 重置时隐藏 SK01 被限制方 3 图
+    self:ShowRotationRestrictCasterUI(false)    -- 重置时隐藏 SK01 施法方 1 图
     -- 渲染层清空并跟随空盘面
     if self.renderer then
         self.renderer:Clear()
@@ -400,6 +414,7 @@ function TetrisGame:maybeScheduleLockFlash()
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:ConsumeItemCharge()        -- 道具-充能块：仅真实消行(含充能块)时取走 power 并弹提示图
         self:ConsumeBlastImage()        -- 道具-爆破块：仅真实消行(含爆破块)时弹提示图（透明度 1，隐藏时改 0）
+        self:ConsumeShiftImage()        -- 道具-位移块：提示图与 Combo 同时机显示（doClear=消除那一刻；真正右移仍延到消除特效后）
         self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
         self:CheckReceivedGarbage()    -- 仅清零 lastAppliedGarbage（垃圾升起已延迟到特效播完后，由 UpdateGarbageHints 显示）
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
@@ -423,7 +438,8 @@ function TetrisGame:ScheduleClearResume()
     -- 特效播完后：坍塌（下落）→ 升起垃圾（行号依赖坍塌结果，必须在后）
     self.owner:AddTimerOnce(effectDur, function()
         if not self.running or not self.board then return end
-        self.board:applyClearCollapse()
+        self.board:executePendingShift()   -- 位移道具：消除特效播完后、方块下落前执行整行右移（提示图已在 doClear 与 Combo 同时显示）
+        self.board:applyClearCollapse()      -- 方块下落（坍塌）
         self.board:applyGarbage()
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         if self.board:isOver() then self:OnGameOver() end
@@ -1037,6 +1053,68 @@ function TetrisGame:ConsumeBlastImage()
     self:ShowBlastImage()
 end
 
+-- 位移道具消除提示：同时显示 ShiftImg1 / ShiftImg2 两张图片 ShiftImgDuration 秒后自动隐藏（隐藏时透明度改 0）；
+-- 连消时取消上一次未到期的隐藏定时器，刷新为满窗口。仅对真人盘（有 PlayerState）生效。
+function TetrisGame:ShowShiftImage()
+    local ui = TetrisConfig.UI
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local ids = { ui and ui.ShiftImg1, ui and ui.ShiftImg2 }
+    local shown = false
+    for _, id in ipairs(ids) do
+        if id then
+            -- 显示那一刻把图片透明度置 1（全不透明）；仅在显示事件里设置，不在 tick 逐帧设置。
+            pcall(function()
+                CustomUIAPI.SetWidgetVisible(ps, id, true)
+                CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+            end)
+            shown = true
+        end
+    end
+    if not shown then return end
+    if self._shiftHideTimer then
+        pcall(function() self.owner:RemoveTimer(self._shiftHideTimer) end)
+        self._shiftHideTimer = nil
+    end
+    local dur = (ui and ui.ShiftImgDuration) or 1.7
+    self._shiftHideTimer = self.owner:AddTimerOnce(dur, function()
+        -- 隐藏时透明度改 0 + 隐藏
+        for _, id in ipairs(ids) do
+            if id then
+                pcall(function()
+                    CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+                    CustomUIAPI.SetWidgetVisible(ps, id, false)
+                end)
+            end
+        end
+        self._shiftHideTimer = nil
+    end)
+end
+
+-- 开局显式隐藏位移道具两张提示图：控件编辑器可能默认可见，而代码从不在开局隐藏它们会导致「一开局就显示」；
+-- 隐藏时透明度也置 0，确保只在真正消除位移块(ShowShiftImage)时才以不透明出现。仅对真人盘生效。
+function TetrisGame:HideShiftImage()
+    local ui = TetrisConfig.UI
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    for _, id in ipairs({ ui and ui.ShiftImg1, ui and ui.ShiftImg2 }) do
+        if id then
+            pcall(function()
+                CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+                CustomUIAPI.SetWidgetVisible(ps, id, false)
+            end)
+        end
+    end
+end
+
+-- 道具-位移块：仅真实消行(含位移块)时取走"待显示标记"并弹两张提示图（与 ConsumeItemCharge/ConsumeBlastImage 并列，由 doClear 触发）。
+function TetrisGame:ConsumeShiftImage()
+    local b = self.board
+    if not b or not b.pendingShiftImg then return end
+    b.pendingShiftImg = nil
+    self:ShowShiftImage()
+end
+
 -- 刷新技能 UI：bar 图片按当前 bar 数显隐；power 图片组件按当前 power 数换「有/无」图
 function TetrisGame:UpdateSkillUI()
     local cfg = TetrisConfig.Skill
@@ -1127,6 +1205,8 @@ function TetrisGame:OnBtnSkill()
         -- 敌方减益：对手接下来 1 个方块无法旋转
         if self.opponent and self.opponent.board and not self.opponent.board:isOver() and not over then
             self.opponent.board.noRotateNext = (self.opponent.board.noRotateNext or 0) + 1
+            -- 记录施法方，供对手 board 在 noRotate 块生成/落地时回调显示/隐藏双向 UI
+            self.opponent.board.pendingRotateLockRequester = self
         end
         -- self:ShowHint("技能【禁止转动】发动：对手下个方块无法旋转！")
         self:ShowSkillBigTip("SK01")
@@ -1274,6 +1354,50 @@ function TetrisGame:ShowS08Indicator(visible)
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
     pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, visible == true) end)
+end
+
+-- SK01「禁止转动」：被限制方(对手)视图的 3 张图（由被限制方 board 在 noRotate 块生成/落地时回调）。
+-- 仅对被限制方自身(有 PlayerState)生效；未配置时静默跳过。显示 opacity=1，隐藏 opacity=0。
+function TetrisGame:ShowRotationRestrictOpponentUI(visible)
+    local sk = TetrisConfig.Skills and TetrisConfig.Skills.SK01
+    local imgs = sk and sk.rotLockOpponentImgs
+    if not imgs then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local v = visible == true
+    for _, id in ipairs(imgs) do
+        if id then
+            pcall(function()
+                if v then
+                    CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+                    CustomUIAPI.SetWidgetVisible(ps, id, true)
+                else
+                    CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+                    CustomUIAPI.SetWidgetVisible(ps, id, false)
+                end
+            end)
+        end
+    end
+end
+
+-- SK01「禁止转动」：施法方(我方)视图的 1 张图（由被限制方 board 在 noRotate 块生成/落地时回调）。
+-- 仅对施法方(有 PlayerState)生效；未配置时静默跳过。显示 opacity=1，隐藏 opacity=0。
+function TetrisGame:ShowRotationRestrictCasterUI(visible)
+    local sk = TetrisConfig.Skills and TetrisConfig.Skills.SK01
+    local id = sk and sk.rotLockCasterImg
+    if not id then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    local v = visible == true
+    pcall(function()
+        if v then
+            CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+            CustomUIAPI.SetWidgetVisible(ps, id, true)
+        else
+            CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+            CustomUIAPI.SetWidgetVisible(ps, id, false)
+        end
+    end)
 end
 
 function TetrisGame:ShowHint(text)

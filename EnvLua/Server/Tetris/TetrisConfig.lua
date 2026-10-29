@@ -31,11 +31,6 @@ TetrisConfig.Clear = {
     BlastEffectScale = { X = 7, Y = 2.5, Z = 1.0 },  -- 竖版缩放（绝对倍数，1.0=原始大小）：X=水平宽度，Y=竖直长度，Z=深度厚度；按需微调，代码不限制尺寸。
     BlastEffectRot = { X = -90.0, Y = 0.0, Z = 0.0 },    -- 将横版特效立为竖版的额外旋转(Pitch=-90 朝上)；yaw 自动叠 boardYaw 正对玩家
     BlastEffectOffset = { X = 0.0, Y = 0.0, Z = 0.0 },    -- 位置微调（米）
-    -- 位移道具特效：位移块消除→整行右移时，在位移块所在行播放横向特效。
-    ShiftEffectPresetKey = "13_EffectPreset_100043",  -- 位移特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
-    ShiftEffectScale = { X = 3.0, Y = 3.0, Z = 3.0 },  -- 位移特效缩放（按需微调）
-    ShiftEffectRot = { X = 0.0, Y = 0.0, Z = -90.0 },    -- 看预览窗口，上面有坐标轴
-    ShiftEffectOffset = { X = -2.0, Y = 0.0, Z = 0.0 }, -- 位移特效位置微调（米）
 }
 
 -- ===================== 初始预填版面（开局即存在的方块） =====================
@@ -151,7 +146,7 @@ TetrisConfig.Pieces = {
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
     Prob = 0.95,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
-    Types = { 9, 9, 9 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
+    Types = { 10, 10, 10 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
     BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
     BlastRadius = 2,                    -- 【已废弃】爆破改为消除一整列，不再按半径；保留字段仅供参考
@@ -551,6 +546,14 @@ TetrisConfig.UI = {
     BlastImg = ci("1_CreativeInstance_23643898862002159"),
     BlastImgDuration = 1.7,   -- 显示时长（秒）
 
+    -- 位移道具消除提示图片：道具-位移块(ITEM_SHIFT=10)被消除时"同时"显示下方两张图，ShiftImgDuration 秒后自动隐藏（见 TetrisGame:ShowShiftImage）。
+    --   原 3D 位移特效(PlayShiftEffectAt)已弃用，改用这两张 2D UI 图片表示位移效果。
+    --   ShiftImg1 / ShiftImg2 = 图片控件实例（CreativeInstance），消除位移块时同时显示；
+    --   ShiftImgDuration     = 显示时长（秒），到点自动隐藏（隐藏时透明度改 0）。
+    ShiftImg1 = ci("1_CreativeInstance_23643900945912659"),
+    ShiftImg2 = ci("1_CreativeInstance_23643899521674335"),
+    ShiftImgDuration = 1.7,   -- 显示时长（秒）
+
     -- 垃圾行提示框（对战 / 人机）：根据双方 board.pendingGarbage 显示「即将发 / 即将收垃圾」。
     -- 即将给对手扔垃圾：对手盘 pendingGarbage>0（我刚发起的攻击尚未在对手盘落地）。
     GarbageSendHint = ci("1_CreativeInstance_23643899752970406"),
@@ -699,6 +702,16 @@ TetrisConfig.Skills = {
         desc = "对手接下来 1 个方块无法旋转（左右移动 / 软降 / 硬降 / Hold 不受影响）",
         imageKey = "23_ImagePreset_181445133927289",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181442919461175",   -- 技能图标（局内 HUD / 选择按钮）
+        -- "限制旋转"生效期间的 UI 提示（见 TetrisGame:ShowRotationRestrict*）：
+        --   rotLockOpponentImgs = 被限制方(对手)视图显示的 3 张图；
+        --   rotLockCasterImg    = 施法方(我方)视图显示的 1 张图；
+        --   被限制方下一块真正进入"无法旋转"时双方同时显示；该块落地(限制结束)时同时隐藏。
+        rotLockOpponentImgs = {
+            "1_CreativeInstance_23643899076280686",
+            "1_CreativeInstance_23643898266489216",
+            "1_CreativeInstance_23643898879690775",
+        },
+        rotLockCasterImg = "1_CreativeInstance_23643901871727548",
     },
     SK02 = {
         key = "SK02", name = "清除最下方两行", type = "buff", clearRows = 2,

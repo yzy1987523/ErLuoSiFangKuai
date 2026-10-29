@@ -1218,64 +1218,6 @@ function TetrisRenderer:PlayClearEffectAt(row)
     end
 end
 
--- 位移道具特效：位移块消除→整行右移时，在位移块所在行播放横向特效。
--- 位置：竖直按位移块所在行（数据层行号，不找方块）；水平居中盘面（与消行特效一致）。
--- 朝向：基准为盘面法线（yaw=boardYaw 正对玩家）叠加配置偏转 ShiftEffectRot（默认 0）。
-function TetrisRenderer:PlayShiftEffectAt(row)
-    if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
-    local cl = TetrisConfig.Clear or {}
-    local key = cl.ShiftEffectPresetKey or "13_EffectPreset_100043"
-    local ref = AssetRef and AssetRef[key]
-    if not ref then
-        if TetrisConfig.Debug then
-            print(string.format("[Tetris][Shift][WARN] 特效资源未注册 AssetRef[%s]，跳过", tostring(key)))
-        end
-        return
-    end
-    local r = TetrisConfig.Render
-    local step = r.CellSize + r.CellGap
-    local o = self.origin or r.BoardOrigin
-    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
-    -- 水平居中盘面（与消行特效一致）
-    local center = self.boardCenter
-    if not center then
-        local w = (TetrisConfig.Board.Cols - 1) * step
-        center = { X = o.X + right.X * (w / 2), Y = o.Y + right.Y * (w / 2), Z = o.Z }
-    end
-    -- 竖直按行（与世界 -Z 同向，与 cellLocation 完全一致）；水平直接取盘面中心，不乘列。
-    local loc = { X = center.X, Y = center.Y, Z = o.Z - (row - 1) * step }
-    local off = cl.ShiftEffectOffset or { X = 0.0, Y = 0.0, Z = 0.0 }
-    local along = (off.X or 0) * right.X + (off.Y or 0) * right.Y
-    local pos = { X = loc.X + right.X * along, Y = loc.Y + right.Y * along, Z = loc.Z + (off.Z or 0) }
-    local dur = cl.EffectDuration or 0.5
-    local ok, id = pcall(function()
-        return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), dur)
-    end)
-    if not ok or not id or id == 0 then
-        if TetrisConfig.Debug then
-            print(string.format("[Tetris][Shift][WARN] 特效创建失败 row=%d id=%s", row, tostring(id)))
-        end
-        return
-    end
-    -- 缩放
-    local scale = cl.ShiftEffectScale or { X = 1.0, Y = 1.0, Z = 1.0 }
-    pcall(function()
-        SceneEffectAPI.SetSceneEffectScale(id, Game:ConstructFVectorByLuaTable({ X = scale.X, Y = scale.Y, Z = scale.Z }))
-    end)
-    -- 朝向：基准盘面法线(yaw=boardYaw 正对玩家) + 配置偏转（默认 0）
-    local erot = cl.ShiftEffectRot or { X = 0, Y = 0, Z = 0 }
-    pcall(function()
-        if type(FRotator) == "table" and FRotator.MakeFromEuler then
-            local rot = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({
-                X = erot.X or 0, Y = erot.Y or 0, Z = (self.boardYaw or 0) + (erot.Z or 0) }))
-            SceneEffectAPI.SetSceneEffectRotation(id, rot)
-        end
-    end)
-    if TetrisConfig.Debug then
-        print(string.format("[Tetris][Shift] 特效 row=%d id=%s rot=(%.1f,%.1f,%.1f)",
-            row, tostring(id), erot.X or 0, erot.Y or 0, (self.boardYaw or 0) + (erot.Z or 0)))
-    end
-end
 
 -- ---------------- 整体活动方块（7 种 tetromino） ----------------
 -- 设计：每种方块 = 4 个独立子方块 Actor，由「同一变换」驱动，保证刚体一致（整体移动）。
@@ -2953,11 +2895,7 @@ function TetrisRenderer:Update(board, running)
             if blastFx then
                 for _, bf in ipairs(blastFx) do self:PlayBlastEffectAt(bf.col, bf.bottom, bf.top) end
             end
-            -- 位移特效：在位移块所在行播放横向特效（数据层行号，不依赖方块）
-            local shiftFx = board:consumeShiftFx()
-            if shiftFx then
-                for _, srow in ipairs(shiftFx) do self:PlayShiftEffectAt(srow) end
-            end
+            -- 位移道具的表现形式已改为 2D UI 图片提示（见 TetrisGame:ShowShiftImage），不再播 3D 位移特效
             if TetrisConfig.Debug then
                 print(string.format("[Tetris][DBG] Update刷新: sig变化 stage=%s 消行=%d -> ReconcileBoard(数据驱动)",
                     tostring(board:getStage()), cleared and #cleared or 0))
