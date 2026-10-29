@@ -547,8 +547,9 @@ function TetrisBoard:clearLines(countScore)
             self.pendingShiftFx = itemEffects.shiftRows
         end
     end
-    -- 充能：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量
-    if itemEffects.charge > 0 then
+    -- 充能：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量。
+    -- 仅真实消行(countScore~=false)时累计；开局预处理消除(countScore=false)不计，避免开局即弹提示图/送免费 power。
+    if itemEffects.charge > 0 and countScore ~= false then
         self.pendingItemCharge = (self.pendingItemCharge or 0) + itemEffects.charge
     end
 

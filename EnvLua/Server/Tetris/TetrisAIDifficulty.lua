@@ -116,6 +116,12 @@ function TetrisAIDifficulty:OnPick(ps, level)
     if self.done or not ps then return end
     self.done = true
     self.match.aiDifficulty = level
+    -- 玩家已选 AI 难度：立即按所选难度刷新远景背景挂件的"对手标识图"（之前默认按 -1 显示真人图）
+    pcall(function()
+        if self.match and self.match.RefreshBackgroundOpponentImages then
+            self.match:RefreshBackgroundOpponentImages()
+        end
+    end)
     print(string.format("[Tetris][AI] 玩家选择 AI 难度：%s", self:LevelName(level)))
 
     -- 隐藏 AiPanel + 难度按钮，进入技能选择阶段
@@ -125,6 +131,12 @@ end
 
 -- 无论是否经过本阶段，最终都进入技能选择（由 Match 决定是否启用技能选择）
 function TetrisAIDifficulty:ProceedToSkillSelect()
+    -- 跳过 AI 选择（未启用/未放置控件/无玩家）：aiDifficulty 仍为默认 -1 → 背景对手图按真人显示
+    pcall(function()
+        if self.match and self.match.RefreshBackgroundOpponentImages then
+            self.match:RefreshBackgroundOpponentImages()
+        end
+    end)
     -- 复用点击 StartBtn 时建立的技能选择实例（已 Begin，仅差显示面板），避免重弹开始界面
     if self.match and self.match.skillSelect then
         self.match.skillSelect:ShowSkillPanel()

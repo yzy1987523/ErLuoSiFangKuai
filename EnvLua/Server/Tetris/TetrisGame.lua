@@ -141,6 +141,7 @@ function TetrisGame:Start()
     self:InitSkillUI()              -- 技能：说明文本 + 蓄能条置零
     self:UpdateNameTags()           -- 名字组件：显示我方 / 对方 名字
     self:UpdateAvatarTags()         -- 头像组件：显示我方 / 对方 头像（开局随机分配）
+    self:HideChargeItemImage()      -- 充能块提示图：开局先隐藏（控件编辑器默认可能可见）
     print("[Tetris] Start")
 end
 
@@ -377,7 +378,6 @@ function TetrisGame:OnTick()
     self:CheckPieceSpawned()        -- 产出新方块则上屏
     self:CheckReceivedGarbage()    -- 本步是否被对手扔了垃圾（无满行→lockPiece 内已注入）
     self:UpdateGarbageHints()       -- 垃圾提示：排队时显示、垃圾升起(pending→0)时隐藏
-    self:ConsumeItemCharge()        -- 道具-充能块：把 board 累计的 power 加进技能能量
     if self.isAI then self:aiStep() end   -- AI：定位本块 + 蓄满放技能
     if board:isOver() then
         self:OnGameOver()
@@ -397,6 +397,7 @@ function TetrisGame:maybeScheduleLockFlash()
         if not self.running or not self.board then return end
         local cleared = self.board:doClear()
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
+        self:ConsumeItemCharge()        -- 道具-充能块：仅真实消行(含充能块)时取走 power 并弹提示图
         self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
         self:CheckReceivedGarbage()    -- 仅清零 lastAppliedGarbage（垃圾升起已延迟到特效播完后，由 UpdateGarbageHints 显示）
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
@@ -952,6 +953,36 @@ function TetrisGame:ShowComboImage(cleared)
     end)
 end
 
+-- 充能块消除提示：显示 ChargeItemImg 图片 ChargeItemImgDuration 秒后自动隐藏；
+-- 连消时取消上一次未到期的隐藏定时器，刷新为满窗口。仅对真人盘（有 PlayerState）生效。
+function TetrisGame:ShowChargeItemImage()
+    local ui = TetrisConfig.UI
+    local id = ui and ui.ChargeItemImg
+    local ps = self:GetPlayerState()
+    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
+    if self._chargeHideTimer then
+        pcall(function() self.owner:RemoveTimer(self._chargeHideTimer) end)
+        self._chargeHideTimer = nil
+    end
+    local dur = (ui and ui.ChargeItemImgDuration) or 1.0
+    self._chargeHideTimer = self.owner:AddTimerOnce(dur, function()
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+        self._chargeHideTimer = nil
+    end)
+end
+
+-- 开局显式隐藏充能块提示图：该控件在编辑器里可能默认可见，而代码从不在开局隐藏它，
+-- 会导致「一开局就显示」。此处在 Start 时主动隐藏，确保只在真正消除充能块(ShowChargeItemImage)时才出现。
+-- 仅对真人盘（有 PlayerState）生效；AI 盘无 PlayerState 自动跳过。
+function TetrisGame:HideChargeItemImage()
+    local ui = TetrisConfig.UI
+    local id = ui and ui.ChargeItemImg
+    local ps = self:GetPlayerState()
+    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+end
+
 -- 刷新技能 UI：bar 图片按当前 bar 数显隐；power 图片组件按当前 power 数换「有/无」图
 function TetrisGame:UpdateSkillUI()
     local cfg = TetrisConfig.Skill
@@ -1282,6 +1313,7 @@ function TetrisGame:ConsumeItemCharge()
     local maxPower = scfg.MaxPower or 3
     self.skillPower = math.min(self.skillPower + n, maxPower)
     self:UpdateSkillUI()
+    self:ShowChargeItemImage()   -- 充能块消除：显示提示图片 1 秒（仅真人盘有 PlayerState 时生效）
     if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
         print(string.format("[Tetris][Item] 充能块 +%d power（当前 %d）", n, self.skillPower))
     end

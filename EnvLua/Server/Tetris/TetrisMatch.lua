@@ -29,6 +29,7 @@ function TetrisMatch:new(owner)
     o.list = {}     -- 有序实例列表
     o.over = false
     o.winner = nil
+    o.aiDifficulty = -1   -- AI 选择界面结果：默认 -1 表示"未选择"→ 真人对手（背景图据此显示）；选了难度后为 Easy/Normal/Hard
     return o
 end
 
@@ -415,7 +416,7 @@ function TetrisMatch:ApplyModeToGames(choices)
         if not g.playerState then
             -- 无真人分配：单人模式下作为 AI 对手
             g.isAI = true
-            local lv = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+            local lv = ((self.aiDifficulty ~= nil and self.aiDifficulty ~= -1) and self.aiDifficulty) or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
             local lvl = (TetrisConfig.AI and TetrisConfig.AI.DifficultyLevels) or {}
             g.aiQuality = (lvl[lv] and lvl[lv].Quality) or 1.0
         else
@@ -442,16 +443,11 @@ function TetrisMatch:RefreshBackgroundOpponentImages()
         local actor = self._bgWidgets[i]
         local opp = g and g.opponent
         if actor and opp then
-            -- 对手类型：有 playerState = 真人；否则为 AI，难度取对手自身 aiDifficulty，缺失回退 match 级难度
-            local kind
-            if opp.playerState then
-                kind = "Human"
-            else
-                kind = (opp.aiDifficulty)
-                    or self.aiDifficulty
-                    or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty)
-                    or "Normal"
-            end
+            -- 对手图只依据玩家在 AI 选择界面的选择（match.aiDifficulty）：
+            --   选了难度(Easy/Normal/Hard)→对应 AI 图；未选择（默认 -1）→ 真人图。
+            -- 不再依赖 opp.isAI / playerState 的推断（那些只决定"谁是 AI 盘"，不能反映玩家实际选的难度）。
+            local sel = self.aiDifficulty
+            local kind = (sel ~= nil and sel ~= -1 and cfg.OpponentImages[sel] and sel) or "Human"
             local key = cfg.OpponentImages[kind]
             if key then
                 local imgID = (type(AssetRef) == "table" and AssetRef[key]) or key
@@ -493,7 +489,7 @@ function TetrisMatch:BuildGames()
             if not g.playerState then
                 -- 无真人分配：单人模式下作为 AI 对手
                 g.isAI = true
-                local lv = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+                local lv = ((self.aiDifficulty ~= nil and self.aiDifficulty ~= -1) and self.aiDifficulty) or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
                 local lvl = (TetrisConfig.AI and TetrisConfig.AI.DifficultyLevels) or {}
                 g.aiQuality = (lvl[lv] and lvl[lv].Quality) or 1.0
             else
@@ -507,8 +503,18 @@ function TetrisMatch:BuildGames()
             ng.playerKey = g.playerKey
             ng.opponent = g.opponent
             ng.avatarKey = g.avatarKey   -- 沿用 Start()/AssignAvatars 已随机分配的头像（BuildGames 会替换实例，否则头像丢失）
-            -- 沿用 match 级 AI 难度（对手标识图等需按难度区分的地方要用到）；缺省回退 DefaultDifficulty
-            ng.aiDifficulty = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+            -- 关键：新实例必须按真人分配情况设置 isAI（缺省 false 会让 GetPlayerState 把真人 playerState 偷赋给 AI 盘，
+            --   导致对手类型误判为人类）。无真人分配 → 单人模式 AI 对手；否则真人盘。
+            if not g.playerState then
+                ng.isAI = true
+                local lv = ((self.aiDifficulty ~= nil and self.aiDifficulty ~= -1) and self.aiDifficulty) or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+                local lvl = (TetrisConfig.AI and TetrisConfig.AI.DifficultyLevels) or {}
+                ng.aiQuality = (lvl[lv] and lvl[lv].Quality) or 1.0
+                -- 沿用 match 级 AI 难度（对手标识图等需按难度区分的地方要用到）；缺省回退 DefaultDifficulty
+                ng.aiDifficulty = lv
+            else
+                ng.isAI = false
+            end
             -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
             ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
                 or defaultSkill
@@ -660,7 +666,7 @@ function TetrisMatch:TryStartGameplay()
             -- 无真人分配：单人模式下作为 AI 对手（双人模式两盘都已分配真人，不会走到这）
             g.isAI = true
             -- 应用玩家在 AiPanel 选的难度（缺省回退 DefaultDifficulty），落到 AI 盘落子质量
-            local lv = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
+            local lv = ((self.aiDifficulty ~= nil and self.aiDifficulty ~= -1) and self.aiDifficulty) or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
             local lvl = (TetrisConfig.AI and TetrisConfig.AI.DifficultyLevels) or {}
             g.aiQuality = (lvl[lv] and lvl[lv].Quality) or 1.0
             g:Start()
@@ -919,7 +925,7 @@ function TetrisMatch:GameDisplayName(g)
     end
     -- AI 盘：按当前难度取角色名（Easy=小白 / Normal=强敌 / Hard=大师）
     local cfg = TetrisConfig.AI or {}
-    local lv = self.aiDifficulty or cfg.DefaultDifficulty or "Normal"
+    local lv = ((self.aiDifficulty ~= nil and self.aiDifficulty ~= -1) and self.aiDifficulty) or cfg.DefaultDifficulty or "Normal"
     local lvl = cfg.DifficultyLevels or {}
     return (lvl[lv] and lvl[lv].Name) or lv
 end

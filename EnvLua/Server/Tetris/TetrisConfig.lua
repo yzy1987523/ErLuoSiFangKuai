@@ -150,8 +150,8 @@ TetrisConfig.Pieces = {
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
-    Prob = 0.15,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
-    Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
+    Prob = 0.95,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
+    Types = { 11, 11, 11 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
     BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
     BlastRadius = 2,                    -- 【已废弃】爆破改为消除一整列，不再按半径；保留字段仅供参考
@@ -478,7 +478,7 @@ TetrisConfig.BackgroundWidget = {
     Enabled = true,                                   -- 是否生成远景背景 3D UI 挂件（双盘 → 2 个 Actor）
     PresetKey = "46_ActorPreset_830160950",           -- 带 WidgetComponent 的远景背景 Actor 预设键（AssetRef）
     DistanceBehindM = -1,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
-    Scale = { X = 23, Y = 23, Z = 23 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    Scale = { X = 12, Y = 12, Z = 12 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
     SideOffsetM = -45,                                  -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
     HeightOffsetM = 0,                                -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
     -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让远景呈对称倾斜。
@@ -538,6 +538,12 @@ TetrisConfig.UI = {
         [5] = "23_ImagePreset_181444578235925",
     },
     ComboImgDuration = 1.0,   -- 显示时长（秒）
+
+    -- 充能块消除提示图片：道具-充能块被消除时显示 1 秒后自动隐藏（见 TetrisGame:ShowChargeItemImage）。
+    --   ChargeItemImg       = 图片控件实例（CreativeInstance），消除充能块时显示；
+    --   ChargeItemImgDuration = 显示时长（秒），到点自动隐藏。
+    ChargeItemImg = ci("1_CreativeInstance_23643901123532648"),
+    ChargeItemImgDuration = 1.0,   -- 显示时长（秒）
 
     -- 垃圾行提示框（对战 / 人机）：根据双方 board.pendingGarbage 显示「即将发 / 即将收垃圾」。
     -- 即将给对手扔垃圾：对手盘 pendingGarbage>0（我刚发起的攻击尚未在对手盘落地）。
@@ -913,7 +919,7 @@ TetrisConfig.Debug = {
     ShowGameOverInfo = false,  -- 结束时上屏结算
     PrintGarbage = false,     -- 对战：打印发/收垃圾行日志
     DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
-    LockDbg = true,            -- 锁定加分调试：打印哪块盘(玩家/对手)在 lockPiece 加分，以及对手分控件是否写入成功
+    LockDbg = false,           -- 锁定加分调试：打印哪块盘(玩家/对手)在 lockPiece 加分，以及对手分控件是否写入成功
 }
 
 -- ===================== 噗哟噗哟（四消）玩法 =====================
