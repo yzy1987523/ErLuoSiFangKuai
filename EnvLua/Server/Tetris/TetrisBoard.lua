@@ -199,13 +199,17 @@ function TetrisBoard:spawn(typeOverride)
     if self.noRotateNext and self.noRotateNext > 0 then
         self.active.noRotate = true
         self.noRotateNext = self.noRotateNext - 1
-        -- 真正进入"无法旋转"时显示 SK01 双向 UI：施法方 1 图 + 被限制方 3 图
+        -- 真正进入"无法旋转"时显示 SK01 双向 UI：施法方 1 图 + 被限制方(受害者自身) 1 图
         self.rotateLockRequester = self.pendingRotateLockRequester
         if self.rotateLockRequester then
+            print(string.format("[DBG][spawnPiece] casterReq isAI=%s psNil=%s",
+                tostring(self.rotateLockRequester.isAI),
+                tostring(self.rotateLockRequester:GetPlayerState() == nil)))
             pcall(function() self.rotateLockRequester:ShowRotationRestrictCasterUI(true) end)
             self.pendingRotateLockRequester = nil
         end
-        if self.game then pcall(function() self.game:ShowRotationRestrictOpponentUI(true) end) end
+        -- 被限制方自身(本盘视图，"我"被限制时)显示 1 张"被限制旋转"提示图
+        if self.game then pcall(function() self.game:ShowRotationRestrictVictimUI(true) end) end
     end
     -- 应用「左右对调」减益（对手 SK-08 注入）：本块左右方向互换（仅影响 move，不影响旋转）
     if self.pendingSwapNext then
@@ -217,6 +221,8 @@ function TetrisBoard:spawn(typeOverride)
             pcall(function() self.swapLrRequester:ShowS08Indicator(true) end)
             self.pendingSwapRequester = nil
         end
+        -- 被翻转方(受害者=本盘自身)显示 3 张翻转效果图（与 caster 的 S08 指示器并存）
+        if self.game then pcall(function() self.game:ShowFlipVictimUI(true) end) end
     end
     self.grounded = false         -- 新方块出生即未贴地
     self.groundTimer = 0
@@ -427,15 +433,16 @@ function TetrisBoard:lockPiece()
     -- SK-08「左右对调」：若刚落地的方块正是带 swapLR 的那一块（swapLrRequester 仍存活），
     -- 说明技能失效 → 隐藏申请方指示器并清空引用
     if self.swapLrRequester then
-        pcall(function() self.swapLrRequester:ShowS08Indicator(false) end)
+        -- pcall(function() self.swapLrRequester:ShowS08Indicator(false) end)
+        if self.game then pcall(function() self.game:ShowFlipVictimUI(false) end) end
         self.swapLrRequester = nil
     end
 
     -- SK-01「禁止转动」：若刚落地的方块正是带 noRotate 的那一块（rotateLockRequester 仍存活），
-    -- 说明限制结束 → 隐藏施法方 1 图 + 被限制方 3 图，并清空引用
+    -- 说明限制结束 → 隐藏施法方 1 图 + 被限制方 1 图并清空引用（被翻转方 3 图属 SK08，见上方 swapLrRequester 分支）
     if self.rotateLockRequester then
         pcall(function() self.rotateLockRequester:ShowRotationRestrictCasterUI(false) end)
-        if self.game then pcall(function() self.game:ShowRotationRestrictOpponentUI(false) end) end
+        if self.game then pcall(function() self.game:ShowRotationRestrictVictimUI(false) end) end
         self.rotateLockRequester = nil
     end
 
@@ -602,6 +609,12 @@ function TetrisBoard:clearLines(countScore)
         local bonus = self.attackBonusNext or 0
         if bonus > 0 then self.attackBonusNext = 0 end
         self.outgoingGarbage = base + bonus
+        -- 攻势(SK06)消行触发：在施法方(本盘拥有者)视角弹图片提示 1.7s
+        if bonus > 0 and self.game then
+            pcall(function() self.game:ShowAttackBuffImage() end)
+            self.game.s06Charged = false   -- CD 结束（消行结算）
+            pcall(function() self.game:UpdateSkillUI() end)
+        end
     else
         self.outgoingGarbage = 0
     end

@@ -702,16 +702,13 @@ TetrisConfig.Skills = {
         desc = "对手接下来 1 个方块无法旋转（左右移动 / 软降 / 硬降 / Hold 不受影响）",
         imageKey = "23_ImagePreset_181445133927289",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181442919461175",   -- 技能图标（局内 HUD / 选择按钮）
-        -- "限制旋转"生效期间的 UI 提示（见 TetrisGame:ShowRotationRestrict*）：
-        --   rotLockOpponentImgs = 被限制方(对手)视图显示的 3 张图；
-        --   rotLockCasterImg    = 施法方(我方)视图显示的 1 张图；
-        --   被限制方下一块真正进入"无法旋转"时双方同时显示；该块落地(限制结束)时同时隐藏。
-        rotLockOpponentImgs = {
-            "1_CreativeInstance_23643899076280686",
-            "1_CreativeInstance_23643898266489216",
-            "1_CreativeInstance_23643898879690775",
-        },
-        rotLockCasterImg = "1_CreativeInstance_23643901871727548",
+        -- "限制旋转"双向 UI（见 TetrisGame:ShowRotationRestrict*）：
+        --   rotLockCasterImg = 施法方(我方)视图的 1 张图；
+        --   rotLockVictimImg = 被限制方(对手)自身视图的 1 张"被限制"提示图；
+        --   被限制方下一块真正进入"无法旋转"时：施法方显示 caster 图、被限制方显示 victim 图；该块落地(限制结束)时双方隐藏。
+        --   （被翻转方左右翻转的 3 张图属 SK08.flipVictimImgs，与本技能无关）
+        rotLockCasterImg = ci("1_CreativeInstance_23643901871727548"),
+        rotLockVictimImg = ci("1_CreativeInstance_23643899098553539"),
     },
     SK02 = {
         key = "SK02", name = "清除最下方两行", type = "buff", clearRows = 2,
@@ -724,20 +721,28 @@ TetrisConfig.Skills = {
         desc = "接下来 1 次消行结算时，攻击行数 +1（单消亦从 0 行变为 1 行）",
         imageKey = "23_ImagePreset_181441732151158",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181443140642203",   -- 技能图标（局内 HUD / 选择按钮）
+        attackBuffImg = ci("1_CreativeInstance_23643902330717066"),   -- 攻势消行触发时显示的图片提示（1.7s 后隐藏），ci() 转数字 key
     },
     SK07 = {
         key = "SK07", name = "赠送技能", type = "buff",
         desc = "释放后进入冷却：下次结算消除时，额外多消除下方一行；触发消除后冷却解除（冷却中再次点击提示：技能冷却中）。",
         imageKey = "23_ImagePreset_181444591440840",   -- 与中央大图提示共用同一图片预设
         iconKey  = "23_ImagePreset_181445135603547",   -- 技能图标（局内 HUD / 选择按钮）
-        cdIndicator = "1_CreativeInstance_23643899321563373",   -- 消行时显示，1.5s后隐藏
+        cdIndicator = ci("1_CreativeInstance_23643899321563373"),   -- 消行时显示，1.5s后隐藏
     },
     SK08 = {
         key = "SK08", name = "左右对调", type = "debuff",
         desc = "释放后进入冷却：对手下一个方块下落期间左右方向键互换；对手当前方块落地后冷却解除（冷却中再次点击提示：技能冷却中）。",
         imageKey = "23_ImagePreset_181444605973235",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181441605832442",   -- 技能图标（局内 HUD / 选择按钮）
-        indicator = "1_CreativeInstance_23643899208638721",   -- 生效指示器组件：敌方左右对调期间显示，敌方该方块落地后隐藏
+        indicator = ci(""),   -- 生效指示器组件：施法方视图显示，敌方该方块落地后隐藏
+        -- "左右翻转"生效期间：被翻转方(受害者=被施法盘自身)视图显示的 3 张效果图（见 TetrisGame:ShowFlipVictimUI）；
+        --   受害者下一块真正进入"左右互换"时显示，该块落地(翻转结束)时隐藏。
+        flipVictimImgs = {
+            ci("1_CreativeInstance_23643899076280686"),
+            ci("1_CreativeInstance_23643898266489216"),
+            ci("1_CreativeInstance_23643898879690775"),
+        },
     },
 }
 
@@ -939,6 +944,8 @@ TetrisConfig.Debug = {
     PrintGarbage = false,     -- 对战：打印发/收垃圾行日志
     DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
     LockDbg = false,           -- 锁定加分调试：打印哪块盘(玩家/对手)在 lockPiece 加分，以及对手分控件是否写入成功
+    MirrorAISkill = false,     -- 调试：AI 对手的所选技能强制与真人玩家一致（便于双侧对照测试技能效果）
+    AIAutoCast = true,         -- 调试：AI 攒满 power 后立即自动施放技能（默认 true 沿用现有 AI 行为；设 false 可关闭 AI 自动施放，便于对照）
 }
 
 -- ===================== 噗哟噗哟（四消）玩法 =====================

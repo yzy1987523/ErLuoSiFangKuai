@@ -33,6 +33,7 @@ function TetrisGame:new(owner, opts)
     o.selectedSkill = nil    -- 本盘所选技能 key（"SK01"/"SK02"/"SK06"/"SK07"），由 Match 在开局前赋值
     o.s07Charged = false     -- SK07「额外消行」冷却中标记（true=已蓄能待触发；冷却中再次点击提示"技能冷却中"）
     o.s08Charged = false     -- SK08「左右对调」冷却中标记（true=已蓄能待触发；对手当前方块落地后解除）
+    o.s06Charged = false     -- SK06「攻势」冷却中标记（true=已蓄能待触发；下次消行结算解除）
     o._shownHold = false     -- 当前 Hold 组件显隐状态：false=隐藏，数字=已显示的方块类型
     o._shownNext = false     -- 当前 Next 组件显隐状态：false=隐藏，数字=已显示的方块类型
     return o
@@ -78,22 +79,29 @@ function TetrisGame:Start()
             local bigTip = TetrisConfig.Skill and TetrisConfig.Skill.BigTipInstance
             if bigTip then pcall(function() CustomUIAPI.SetWidgetVisible(ps, bigTip, false) end) end
             -- 开局统一先隐藏下列状态/指示器组件（编辑器默认可见，仅在对局中特定时机才显示）：
-            --   SK07 冷却常驻指示器、SK08 左右对调生效指示器、以及尚未接线的预留组件
+            --   SK07 冷却常驻指示器、SK08 左右对调生效指示器、SK01 被限制方提示图
             local initHidden = {
                 (TetrisConfig.Skills and TetrisConfig.Skills.SK07 and TetrisConfig.Skills.SK07.cdIndicator),
                 (TetrisConfig.Skills and TetrisConfig.Skills.SK08 and TetrisConfig.Skills.SK08.indicator),
-                "1_CreativeInstance_23643899098553539",
+                (TetrisConfig.Skills and TetrisConfig.Skills.SK01 and TetrisConfig.Skills.SK01.rotLockVictimImg),
+                (TetrisConfig.Skills and TetrisConfig.Skills.SK06 and TetrisConfig.Skills.SK06.attackBuffImg),
             }
             for _, hid in ipairs(initHidden) do
-                if hid then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
-            end
-            -- SK01「禁止转动」：开局先隐藏被限制方 3 图 + 施法方 1 图（编辑器默认可能可见，仅限制生效时才显示）
-            local sk1 = TetrisConfig.Skills and TetrisConfig.Skills.SK01
-            if sk1 then
-                if sk1.rotLockCasterImg then
-                    pcall(function() CustomUIAPI.SetWidgetVisible(ps, sk1.rotLockCasterImg, false) end)
+                if hid then
+                    -- print(string.format("[DBG][initHidden] run hid=%s psNil=%s", tostring(hid), tostring(ps == nil)))
+                    local ok, err = pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end)
+                    -- if not ok then print(string.format("[DBG][initHidden] FAIL hid=%s err=%s", tostring(hid), tostring(err))) end
                 end
-                for _, id in ipairs(sk1.rotLockOpponentImgs or {}) do
+            end
+            -- 开局先隐藏两处技能提示图（编辑器默认可能可见，仅生效时才显示）：
+            --   SK01 限制旋转 → 施法方 1 图；SK08 左右翻转 → 被翻转方 3 图
+            local sk1 = TetrisConfig.Skills and TetrisConfig.Skills.SK01
+            if sk1 and sk1.rotLockCasterImg then
+                pcall(function() CustomUIAPI.SetWidgetVisible(ps, sk1.rotLockCasterImg, false) end)
+            end
+            local sk8 = TetrisConfig.Skills and TetrisConfig.Skills.SK08
+            if sk8 then
+                for _, id in ipairs(sk8.flipVictimImgs or {}) do
                     if id then pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end) end
                 end
             end
@@ -338,9 +346,11 @@ function TetrisGame:Reset()
     self.skillPower = 0
     self.s07Charged = false   -- 重置 SK07 冷却标记
     self.s08Charged = false   -- 重置 SK08 冷却标记
+    self.s06Charged = false   -- 重置 SK06 冷却标记
     self:ShowS07CdIndicator(false)   -- 重置时确保「赠送技能」常驻指示器已隐藏
-    self:ShowRotationRestrictOpponentUI(false)  -- 重置时隐藏 SK01 被限制方 3 图
+    self:ShowFlipVictimUI(false)                -- 重置时隐藏 SK08 被翻转方 3 图
     self:ShowRotationRestrictCasterUI(false)    -- 重置时隐藏 SK01 施法方 1 图
+    self:ShowRotationRestrictVictimUI(false)    -- 重置时隐藏 SK01 被限制方 1 图
     -- 渲染层清空并跟随空盘面
     if self.renderer then
         self.renderer:Clear()
@@ -1144,7 +1154,8 @@ function TetrisGame:UpdateSkillUI()
         pcall(function() CustomUIAPI.SetWidgetInteraction(ps, btn, enabled) end)
         -- SK07 冷却中（已蓄能待触发）：按钮半透明提示（与无 power 同视觉，但保持可点以便提示"技能冷却中"）
         local inCD = ((self.selectedSkill == "SK07" and self.s07Charged == true)
-                  or (self.selectedSkill == "SK08" and self.s08Charged == true))
+                  or (self.selectedSkill == "SK08" and self.s08Charged == true)
+                  or (self.selectedSkill == "SK06" and self.s06Charged == true))
         local dimmed = (not enabled) or inCD
         -- 按钮置灰：引擎 Button 控件无 tint/灰度接口。
         --   方案 B（真·灰度）：同时配了 BtnNormalImg + BtnDisabledImg 两张图则切整图；
@@ -1182,9 +1193,10 @@ function TetrisGame:OnBtnSkill()
         return
     end
     if not self.running or (self.board and self.board:isOver()) then return end
-    -- SK07/SK08 冷却中：已蓄能待触发，再次点击只提示，不消耗 power、不重复触发
+    -- SK06/SK07/SK08 冷却中：已蓄能待触发，再次点击只提示，不消耗 power、不重复触发
     if (self.selectedSkill == "SK07" and self.s07Charged)
-       or (self.selectedSkill == "SK08" and self.s08Charged) then
+       or (self.selectedSkill == "SK08" and self.s08Charged)
+       or (self.selectedSkill == "SK06" and self.s06Charged) then
         self:ShowHint("技能冷却中")
         return
     end
@@ -1219,8 +1231,10 @@ function TetrisGame:OnBtnSkill()
         -- self:ShowHint("技能【清除最下方 " .. tostring(cleared) .. " 行】发动！")
         self:ShowSkillBigTip("SK02")
     elseif key == "SK06" then
-        -- 己方增益：下次消行攻击 +1
+        -- 己方增益（蓄能型/CD）：点击进入冷却，下次消行结算时解除并触发 +1 攻击
         self.board.attackBonusNext = (self.board.attackBonusNext or 0) + 1
+        self.s06Charged = true   -- 点击技能即进入 CD
+        self:UpdateSkillUI()     -- 按钮置灰（CD 中）
         -- self:ShowHint("技能【攻势】发动：下次消行攻击行数 +1！")
         self:ShowSkillBigTip("SK06")
     elseif key == "SK07" then
@@ -1356,11 +1370,35 @@ function TetrisGame:ShowS08Indicator(visible)
     pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, visible == true) end)
 end
 
--- SK01「禁止转动」：被限制方(对手)视图的 3 张图（由被限制方 board 在 noRotate 块生成/落地时回调）。
--- 仅对被限制方自身(有 PlayerState)生效；未配置时静默跳过。显示 opacity=1，隐藏 opacity=0。
-function TetrisGame:ShowRotationRestrictOpponentUI(visible)
-    local sk = TetrisConfig.Skills and TetrisConfig.Skills.SK01
-    local imgs = sk and sk.rotLockOpponentImgs
+-- SK06「攻势」：消行触发加成时弹图片提示 1.7s（仅真人盘有 PlayerState 时生效）。
+-- 控件 ID 来自 Skills.SK06.attackBuffImg（ci() 转数字 key）。重复触发会重置计时器。
+function TetrisGame:ShowAttackBuffImage()
+    local id = TetrisConfig.Skills and TetrisConfig.Skills.SK06 and TetrisConfig.Skills.SK06.attackBuffImg
+    if not id then return end
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function()
+        CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+        CustomUIAPI.SetWidgetVisible(ps, id, true)
+    end)
+    if self._atkBuffTimer then
+        pcall(function() self.owner:RemoveTimer(self._atkBuffTimer) end)
+        self._atkBuffTimer = nil
+    end
+    self._atkBuffTimer = self.owner:AddTimerOnce(1.7, function()
+        pcall(function()
+            CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+            CustomUIAPI.SetWidgetVisible(ps, id, false)
+        end)
+        self._atkBuffTimer = nil
+    end)
+end
+
+-- SK08「左右对调/翻转」：被翻转方(受害者=被施法盘自身)视图的 3 张图（由受害者 board 在 swapLR 块生成/落地时回调）。
+-- 仅对被翻转方自身(有 PlayerState)生效；未配置时静默跳过。显示 opacity=1，隐藏 opacity=0。
+function TetrisGame:ShowFlipVictimUI(visible)
+    local sk = TetrisConfig.Skills and TetrisConfig.Skills.SK08
+    local imgs = sk and sk.flipVictimImgs
     if not imgs then return end
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
@@ -1385,10 +1423,31 @@ end
 function TetrisGame:ShowRotationRestrictCasterUI(visible)
     local sk = TetrisConfig.Skills and TetrisConfig.Skills.SK01
     local id = sk and sk.rotLockCasterImg
+    local ps = self:GetPlayerState()
+    -- 调试：early-return 之前就打印，才能看到 ps 是否为 nil（若 ps 错，下面会 ABORT）
+    print(string.format("[DBG][CasterUI] enter v=%s id=%s psNil=%s isAI=%s custUI=%s",
+        tostring(visible), tostring(id), tostring(ps == nil), tostring(self.isAI),
+        tostring(type(CustomUIAPI) == "table")))
+    if not id then print("[DBG][CasterUI] ABORT: id nil"); return end
+    if not ps or type(CustomUIAPI) ~= "table" then print("[DBG][CasterUI] ABORT: ps nil / no CustomUIAPI"); return end
+    local v = visible == true
+    pcall(function()
+        local ok1 = pcall(CustomUIAPI.SetWidgetImageOpacity, ps, id, v and 1 or 0)
+        local ok2 = pcall(CustomUIAPI.SetWidgetVisible, ps, id, v)   -- 调试期临时启用（原逻辑曾被注释）
+        print(string.format("[DBG][CasterUI] opacityOk=%s visibleOk=%s", tostring(ok1), tostring(ok2)))
+    end)
+end
+
+-- SK01「禁止转动」：被限制方(受害者=被施法盘自身)视图的 1 张"被限制"提示图（由受害者 board 在 noRotate 块生成/落地时回调）。
+-- 仅对被限制方自身(有 PlayerState)生效；未配置时静默跳过。显示 opacity=1，隐藏 opacity=0。
+function TetrisGame:ShowRotationRestrictVictimUI(visible)
+    local sk = TetrisConfig.Skills and TetrisConfig.Skills.SK01
+    local id = sk and sk.rotLockVictimImg
     if not id then return end
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
     local v = visible == true
+    print("ShowRotationRestrictVictimUI=======>")
     pcall(function()
         if v then
             CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
@@ -1509,9 +1568,10 @@ function TetrisGame:aiStep()
     local b = self.board
     if not b or b:isOver() or b.clearing or b.lockPaused then return end
 
-    -- 有 power 自动放技能（按本盘所选技能效果）
+    -- 有 power 自动放技能（按本盘所选技能效果）；AIAutoCast=false 时关闭 AI 自动施放
     local scfg = TetrisConfig.Skill
-    if scfg and self.skillPower >= 1 then
+    local autoCast = not (TetrisConfig.Debug and TetrisConfig.Debug.AIAutoCast == false)
+    if scfg and self.skillPower >= 1 and autoCast then
         self:OnBtnSkill()
     end
 

@@ -409,10 +409,21 @@ end
 -- 首次构建仍由 BuildGames 完成「实例创建 + 渲染器构建」；本函数仅用于重开，复用已生成的实例。
 function TetrisMatch:ApplyModeToGames(choices)
     local defaultSkill = (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
+    local mirrorAI = (TetrisConfig.Debug and TetrisConfig.Debug.MirrorAISkill) or false
+    -- 真人玩家的所选技能（供 MirrorAISkill：把 AI 对手技能对齐到真人，便于双侧对照测试）
+    local humanSkill = nil
+    if mirrorAI then
+        for _, g in ipairs(self.list) do
+            if g and g.playerState and self.skillChoices and self.skillChoices[g.playerState] then
+                humanSkill = self.skillChoices[g.playerState]; break
+            end
+        end
+    end
     for i, g in ipairs(self.list) do
         if not g then goto continue end
-        -- 分配到玩家的盘 → 用该玩家所选技能；旁观盘（无真人）→ 默认技能
-        g.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState]) or defaultSkill
+        -- 分配到玩家的盘 → 用该玩家所选技能；旁观盘（无真人）→ 默认技能（MirrorAISkill 时对齐真人技能）
+        g.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
+            or (mirrorAI and humanSkill) or defaultSkill
         if not g.playerState then
             -- 无真人分配：单人模式下作为 AI 对手
             g.isAI = true
@@ -478,6 +489,16 @@ function TetrisMatch:BuildGames()
     self._buildGamesStarted = true  -- 进入加载构建：停止准备阶段挂件重试，改由本函数兜底
     local M = TetrisConfig.GameMode
     local defaultSkill = (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"
+    local mirrorAI = (TetrisConfig.Debug and TetrisConfig.Debug.MirrorAISkill) or false
+    -- 真人玩家的所选技能（供 MirrorAISkill：把 AI 对手技能对齐到真人，便于双侧对照测试）
+    local humanSkill = nil
+    if mirrorAI then
+        for _, g in ipairs(self.list) do
+            if g and g.playerState and self.skillChoices and self.skillChoices[g.playerState] then
+                humanSkill = self.skillChoices[g.playerState]; break
+            end
+        end
+    end
     local reusedAll = true  -- 是否全部复用既有实例（重开）
     for i, g in ipairs(self.list) do
         -- 分配到玩家的盘 → 用该玩家所选玩法；旁观盘 → 用默认/强制玩法
@@ -485,7 +506,8 @@ function TetrisMatch:BuildGames()
         if g.renderer then
             -- 已构建过（重开复用）：不新建实例、不重建渲染器，仅刷新属性并保留既有挂件/渲染器
             reusedAll = reusedAll and true
-            g.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState]) or defaultSkill
+            g.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
+                or (mirrorAI and humanSkill) or defaultSkill
             if not g.playerState then
                 -- 无真人分配：单人模式下作为 AI 对手
                 g.isAI = true
@@ -515,9 +537,9 @@ function TetrisMatch:BuildGames()
             else
                 ng.isAI = false
             end
-            -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
+            -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能（MirrorAISkill 时对齐真人技能）
             ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
-                or defaultSkill
+                or (mirrorAI and humanSkill) or defaultSkill
             -- 背后 3D UI 挂件（解耦于 renderer，归 Match 持有 self._behindWidgets）：
             -- Init 已基于出生点尝试生成（可能因装置/资源未就绪失败）；此处（OnModeSelected 已就绪）兜底补一次。
             -- 仅 tetris 渲染器(有 BuildBehindBoardWidget)挂接；puyo 盘不挂接并销毁已生成的 widget，保持原语义。
