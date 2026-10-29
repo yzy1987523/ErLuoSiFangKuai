@@ -477,20 +477,20 @@ TetrisConfig.BigFrame3D = {
 TetrisConfig.BackgroundWidget = {
     Enabled = true,                                   -- 是否生成远景背景 3D UI 挂件（双盘 → 2 个 Actor）
     PresetKey = "46_ActorPreset_830160950",           -- 带 WidgetComponent 的远景背景 Actor 预设键（AssetRef）
-    DistanceBehindM = -1,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
-    Scale = { X = 12, Y = 12, Z = 12 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
-    SideOffsetM = -45,                                  -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
+    DistanceBehindM = -11,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
+    Scale = { X = 13, Y = 13, Z = 13 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    SideOffsetM = -30,                                  -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
     HeightOffsetM = 0,                                -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
     -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让远景呈对称倾斜。
     -- 1号 +180°、2号 −180°；未列出的棋盘不额外偏置（0°）。
-    RotationBiasByIndex = { [1] = 180, [2] = -180 },
+    RotationBiasByIndex = { [1] = 180, [2] =-180 },
     -- 对手标识图：本挂件 UMG 内名为 ImageChildName 的图片子控件，按对手类型切换（真人/简单/普通/困难）。
     -- 名字需与编辑器里给该图片控件命的名完全一致（含空格/全角半角）。
     ImageChildName = "正方形 29",
     OpponentImages = {
         Human  = "23_ImagePreset_181441242063729",  -- 真人对手
         Easy   = "23_ImagePreset_181441695453675",  -- 简单 AI
-        Normal = "23_ImagePreset_181441939072595",  -- 普通 AI
+        Normal = "23_ImagePreset_181443061864228",  -- 普通 AI
         Hard   = "23_ImagePreset_181442655198730",  -- 困难 AI
     },
 }
@@ -537,13 +537,13 @@ TetrisConfig.UI = {
         [4] = "23_ImagePreset_181444578235925",
         [5] = "23_ImagePreset_181444578235925",
     },
-    ComboImgDuration = 1.0,   -- 显示时长（秒）
+    ComboImgDuration = 1.7,   -- 显示时长（秒）
 
     -- 充能块消除提示图片：道具-充能块被消除时显示 1 秒后自动隐藏（见 TetrisGame:ShowChargeItemImage）。
     --   ChargeItemImg       = 图片控件实例（CreativeInstance），消除充能块时显示；
     --   ChargeItemImgDuration = 显示时长（秒），到点自动隐藏。
     ChargeItemImg = ci("1_CreativeInstance_23643901123532648"),
-    ChargeItemImgDuration = 1.0,   -- 显示时长（秒）
+    ChargeItemImgDuration = 1.7,   -- 显示时长（秒）
 
     -- 垃圾行提示框（对战 / 人机）：根据双方 board.pendingGarbage 显示「即将发 / 即将收垃圾」。
     -- 即将给对手扔垃圾：对手盘 pendingGarbage>0（我刚发起的攻击尚未在对手盘落地）。

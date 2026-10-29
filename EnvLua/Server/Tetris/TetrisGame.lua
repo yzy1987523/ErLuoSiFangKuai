@@ -906,9 +906,9 @@ function TetrisGame:onLinesCleared(cleared)
         self.s07Charged = false
         local extra = self.board:clearBottomRows(1, true)
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
-        if extra and extra > 0 then
-            self:ShowHint("技能【赠送技能】触发：多消除 " .. tostring(extra) .. " 行！")
-        end
+        -- if extra and extra > 0 then
+        --     self:ShowHint("技能【赠送技能】触发：多消除 " .. tostring(extra) .. " 行！")
+        -- end
         self:ShowS07CdIndicator(true, 1.5)   -- 「赠送技能」指示器：我方消行触发时弹出，1.5s 后自动隐藏
         self:UpdateSkillUI()   -- 冷却解除：恢复按钮不透明度
     end
@@ -960,7 +960,11 @@ function TetrisGame:ShowChargeItemImage()
     local id = ui and ui.ChargeItemImg
     local ps = self:GetPlayerState()
     if not id or not ps or type(CustomUIAPI) ~= "table" then return end
-    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
+    -- 显示那一刻把图片透明度置 1（全不透明）；仅在显示事件里设置，不在 tick 逐帧设置。
+    pcall(function()
+        CustomUIAPI.SetWidgetVisible(ps, id, true)
+        CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+    end)
     if self._chargeHideTimer then
         pcall(function() self.owner:RemoveTimer(self._chargeHideTimer) end)
         self._chargeHideTimer = nil
@@ -1074,7 +1078,7 @@ function TetrisGame:OnBtnSkill()
         if self.opponent and self.opponent.board and not self.opponent.board:isOver() and not over then
             self.opponent.board.noRotateNext = (self.opponent.board.noRotateNext or 0) + 1
         end
-        self:ShowHint("技能【禁止转动】发动：对手下个方块无法旋转！")
+        -- self:ShowHint("技能【禁止转动】发动：对手下个方块无法旋转！")
         self:ShowSkillBigTip("SK01")
     elseif key == "SK02" then
         -- 己方增益：清除最下方两行
@@ -1082,18 +1086,18 @@ function TetrisGame:OnBtnSkill()
         local n = (def and def.clearRows) or 2
         local cleared = self.board:clearBottomRows(n)
         self.renderer:Update(self.board, self.running)
-        self:ShowHint("技能【清除最下方 " .. tostring(cleared) .. " 行】发动！")
+        -- self:ShowHint("技能【清除最下方 " .. tostring(cleared) .. " 行】发动！")
         self:ShowSkillBigTip("SK02")
     elseif key == "SK06" then
         -- 己方增益：下次消行攻击 +1
         self.board.attackBonusNext = (self.board.attackBonusNext or 0) + 1
-        self:ShowHint("技能【攻势】发动：下次消行攻击行数 +1！")
+        -- self:ShowHint("技能【攻势】发动：下次消行攻击行数 +1！")
         self:ShowSkillBigTip("SK06")
     elseif key == "SK07" then
         -- 己方增益（蓄能型）：进入冷却，弹出中央大图提示 1.5s（见 onLinesCleared 触发效果）
         self.s07Charged = true
         self:ShowSkillBigTip("SK07")
-        self:ShowHint("技能【赠送技能】已就绪：下次消除多消一行！")
+        -- self:ShowHint("技能【赠送技能】已就绪：下次消除多消一行！")
     elseif key == "SK08" then
         -- 敌方减益（蓄能型）：进入冷却，弹中央大图 1.5s；对手当前方块落地后解除冷却，
         -- 其下一个方块下落期间左右方向互换（由对手 board:lockPiece / spawn 应用 swapLR）
@@ -1103,7 +1107,7 @@ function TetrisGame:OnBtnSkill()
             self.opponent.board.swapRequested = true
             self.opponent.board.pendingSwapRequester = self
         end
-        self:ShowHint("技能【左右对调】已就绪：对手下个方块左右互换！")
+        -- self:ShowHint("技能【左右对调】已就绪：对手下个方块左右互换！")
     else
         -- 兜底：未知技能 key（正常不会走到，selectedSkill 必为 SK01/02/06）
         print("[Tetris][Skill] 未知技能 key：" .. tostring(key))
@@ -1139,7 +1143,7 @@ end
 -- SK07「赠送技能」指示器：显示指定 CreativeInstance 组件并持续 durationSec 后自动隐藏。
 -- 用于「我方触发消行、技能生效」时弹出反馈（1.5s 后隐藏）。
 -- visible=false 可立即隐藏并取消定时器（如重置时）。
-function TetrisGame:ShowS07CdIndicator(visible, durationSec)
+function TetrisGame:ShowS07CdIndicator(visible, durationSec)    
     local id = TetrisConfig.Skills and TetrisConfig.Skills.SK07 and TetrisConfig.Skills.SK07.cdIndicator
     if not id then return end
     local ps = self:GetPlayerState()
@@ -1152,7 +1156,11 @@ function TetrisGame:ShowS07CdIndicator(visible, durationSec)
         pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
         return
     end
-    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
+    -- 显示那一刻把图片透明度置 1（全不透明）；仅在显示事件里设置，不在 tick 逐帧设置。
+    pcall(function()
+        CustomUIAPI.SetWidgetVisible(ps, id, true)
+        CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+    end)
     if self._s07CdTimer then
         pcall(function() self.owner:RemoveTimer(self._s07CdTimer) end)
         self._s07CdTimer = nil
