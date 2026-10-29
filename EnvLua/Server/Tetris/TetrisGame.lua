@@ -142,6 +142,7 @@ function TetrisGame:Start()
     self:UpdateNameTags()           -- 名字组件：显示我方 / 对方 名字
     self:UpdateAvatarTags()         -- 头像组件：显示我方 / 对方 头像（开局随机分配）
     self:HideChargeItemImage()      -- 充能块提示图：开局先隐藏（控件编辑器默认可能可见）
+    self:HideBlastImage()           -- 爆炸道具块提示图：开局先隐藏（透明度置 0）
     print("[Tetris] Start")
 end
 
@@ -398,6 +399,7 @@ function TetrisGame:maybeScheduleLockFlash()
         local cleared = self.board:doClear()
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:ConsumeItemCharge()        -- 道具-充能块：仅真实消行(含充能块)时取走 power 并弹提示图
+        self:ConsumeBlastImage()        -- 道具-爆破块：仅真实消行(含爆破块)时弹提示图（透明度 1，隐藏时改 0）
         self:flushOutgoingGarbage()     -- 消行产生的垃圾行发给对手
         self:CheckReceivedGarbage()    -- 仅清零 lastAppliedGarbage（垃圾升起已延迟到特效播完后，由 UpdateGarbageHints 显示）
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
@@ -985,6 +987,54 @@ function TetrisGame:HideChargeItemImage()
     local ps = self:GetPlayerState()
     if not id or not ps or type(CustomUIAPI) ~= "table" then return end
     pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+end
+
+-- 爆炸（爆破）道具块消除提示：显示 BlastImg 图片 BlastImgDuration 秒后自动隐藏（隐藏时透明度改 0）；
+-- 连消时取消上一次未到期的隐藏定时器，刷新为满窗口。仅对真人盘（有 PlayerState）生效。
+function TetrisGame:ShowBlastImage()
+    local ui = TetrisConfig.UI
+    local id = ui and ui.BlastImg
+    local ps = self:GetPlayerState()
+    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    -- 显示那一刻把图片透明度置 1（全不透明）；仅在显示事件里设置，不在 tick 逐帧设置。
+    pcall(function()
+        CustomUIAPI.SetWidgetVisible(ps, id, true)
+        CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+    end)
+    if self._blastHideTimer then
+        pcall(function() self.owner:RemoveTimer(self._blastHideTimer) end)
+        self._blastHideTimer = nil
+    end
+    local dur = (ui and ui.BlastImgDuration) or 1.7
+    self._blastHideTimer = self.owner:AddTimerOnce(dur, function()
+        -- 隐藏时透明度改 0 + 隐藏
+        pcall(function()
+            CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+            CustomUIAPI.SetWidgetVisible(ps, id, false)
+        end)
+        self._blastHideTimer = nil
+    end)
+end
+
+-- 开局显式隐藏爆炸道具块提示图：控件编辑器可能默认可见，而代码从不在开局隐藏它会导致「一开局就显示」；
+-- 隐藏时透明度也置 0，确保只在真正消除爆破块(ShowBlastImage)时才以不透明出现。仅对真人盘生效。
+function TetrisGame:HideBlastImage()
+    local ui = TetrisConfig.UI
+    local id = ui and ui.BlastImg
+    local ps = self:GetPlayerState()
+    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function()
+        CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+        CustomUIAPI.SetWidgetVisible(ps, id, false)
+    end)
+end
+
+-- 道具-爆破块：仅真实消行(含爆破块)时取走"待显示标记"并弹提示图（与 ConsumeItemCharge 并列，由 doClear 触发）。
+function TetrisGame:ConsumeBlastImage()
+    local b = self.board
+    if not b or not b.pendingBlastImg then return end
+    b.pendingBlastImg = nil
+    self:ShowBlastImage()
 end
 
 -- 刷新技能 UI：bar 图片按当前 bar 数显隐；power 图片组件按当前 power 数换「有/无」图

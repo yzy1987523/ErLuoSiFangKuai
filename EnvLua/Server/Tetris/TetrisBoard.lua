@@ -529,6 +529,10 @@ function TetrisBoard:clearLines(countScore)
         end
         if #blastFx > 0 then self.pendingBlastFx = blastFx end
     end
+    -- 2D 提示图标记：仅真实消行(countScore~=false)时累计，供上层 TetrisGame 在 doClear 后弹图（避免开局预处理消除误触发）
+    if countScore ~= false and #itemEffects.blast > 0 then
+        self.pendingBlastImg = true
+    end
     -- 位移：消除后所有行整体向右平移 1 列（每行从最右格起向左遍历，当前格非空且右为空则右移 1 格）
     if itemEffects.shift then
         local moved = false
