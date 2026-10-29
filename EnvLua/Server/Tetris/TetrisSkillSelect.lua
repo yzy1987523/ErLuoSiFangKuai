@@ -47,32 +47,41 @@ end
 function TetrisSkillSelect:Available()
     local cfg = cfgOf()
     if not cfg.Enabled then return false end
-    return (cfg.BtnSK01 ~= nil or cfg.BtnSK02 ~= nil or cfg.BtnSK06 ~= nil or cfg.BtnSK07 ~= nil or cfg.BtnSK08 ~= nil)
-end
-
--- 3 个技能按键对应的（控件, 技能 key）列表
-function TetrisSkillSelect:SkillBinds()
-    local cfg = cfgOf()
-    return {
-        { cfg.BtnSK01, "SK01" },
-        { cfg.BtnSK02, "SK02" },
-        { cfg.BtnSK06, "SK06" },
-        { cfg.BtnSK07, "SK07" },
-        { cfg.BtnSK08, "SK08" },
-    }
+    return (cfg.SlotButtons ~= nil and #cfg.SlotButtons >= 2)
 end
 
 function TetrisSkillSelect:SkillButtonIDs()
     local cfg = cfgOf()
-    return { cfg.BtnSK01, cfg.BtnSK02, cfg.BtnSK06, cfg.BtnSK07, cfg.BtnSK08 }
+    return cfg.SlotButtons or {}
+end
+
+-- 开局从候选技能池随机抽 2 个技能（Fisher-Yates 洗牌取前 2），写入 self.slotSkills = {key1, key2}
+function TetrisSkillSelect:PickRandomSkills()
+    local cfg = cfgOf()
+    local pool = (cfg.Pool and #cfg.Pool >= 2) and cfg.Pool or { "SK01", "SK02", "SK06", "SK07", "SK08" }
+    local t = {}
+    for _, k in ipairs(pool) do t[#t + 1] = k end
+    for i = #t, 2, -1 do
+        local j = math.random(i)
+        t[i], t[j] = t[j], t[i]
+    end
+    self.slotSkills = { t[1], t[2] }
+    print(string.format("[Tetris][Skill] 随机技能池 -> %s / %s", tostring(t[1]), tostring(t[2])))
 end
 
 -- 需要统一显隐的控件：开始界面 + 开始按钮 + 面板 + 3 个技能按键
 function TetrisSkillSelect:WidgetIDs()
     local cfg = cfgOf()
-    return { cfg.StartPanel, cfg.StartBtn, cfg.PanelKey,
-             cfg.BtnSK01, cfg.BtnSK02, cfg.BtnSK06, cfg.BtnSK07, cfg.BtnSK08,
-             cfg.IconSK01, cfg.IconSK02, cfg.IconSK06, cfg.IconSK07, cfg.IconSK08 }
+    local ids = { cfg.StartPanel, cfg.StartBtn, cfg.PanelKey,
+                  cfg.BtnSK01, cfg.BtnSK02, cfg.BtnSK06, cfg.BtnSK07, cfg.BtnSK08,
+                  cfg.IconSK01, cfg.IconSK02, cfg.IconSK06, cfg.IconSK07, cfg.IconSK08 }
+    for _, t in ipairs({ cfg.SlotButtons, cfg.SlotIcons, cfg.SlotDescs, cfg.HiddenFrames }) do
+        if t then for _, id in ipairs(t) do ids[#ids + 1] = id end end
+    end
+    -- 初始化（技能选择阶段）即隐藏 SK01 被限制方提示图：编辑器默认可见，仅对局中对方限制我方旋转时才显示，与是否选技能无关
+    local sk1 = TetrisConfig.Skills and TetrisConfig.Skills.SK01
+    if sk1 and sk1.rotLockVictimImg then ids[#ids + 1] = sk1.rotLockVictimImg end
+    return ids
 end
 
 function TetrisSkillSelect:SkillName(key)
@@ -107,31 +116,51 @@ end
 function TetrisSkillSelect:ShowPanelFor(ps, visible)
     local cfg = cfgOf()
     self:ShowFor(ps, cfg.PanelKey, visible)
-    for _, id in ipairs(self:SkillButtonIDs()) do
-        self:ShowFor(ps, id, visible)
-        -- 显示面板时一并恢复技能按钮交互：选完技能(OnPick)会禁用各自按钮，
-        -- 重开复用同一实例时若只恢复可见性不恢复交互，按钮会"可见但点不了"。
-        if visible and id ~= nil and type(CustomUIAPI) == "table" then
-            pcall(function() CustomUIAPI.SetWidgetInteraction(ps, id, true) end)
+    if visible then
+        -- 先隐藏候选池里所有旧技能按钮/图标（面板若为父容器会自动带出子控件，这里强制只保留 2 个槽位）
+        for _, key in ipairs(cfg.Pool or {}) do
+            local b = cfg["Btn" .. key]
+            local ic = cfg["Icon" .. key]
+            if b then self:ShowFor(ps, b, false) end
+            if ic then self:ShowFor(ps, ic, false) end
         end
+        -- 隐藏其余 3 个已有技能框（未入选技能的容器/背景）
+        for _, id in ipairs(cfg.HiddenFrames or {}) do self:ShowFor(ps, id, false) end
+        -- 显示 2 个槽位的按钮 / 图标 / 描述文本，并恢复按钮交互
+        for _, id in ipairs(self:SkillButtonIDs()) do
+            self:ShowFor(ps, id, true)
+            if id ~= nil and type(CustomUIAPI) == "table" then
+                pcall(function() CustomUIAPI.SetWidgetInteraction(ps, id, true) end)
+            end
+        end
+        for _, id in ipairs(cfg.SlotIcons or {}) do self:ShowFor(ps, id, true) end
+        for _, id in ipairs(cfg.SlotDescs or {}) do self:ShowFor(ps, id, true) end
+        self:ApplySlotContent(ps)
+    else
+        for _, id in ipairs(self:SkillButtonIDs()) do self:ShowFor(ps, id, false) end
+        for _, id in ipairs(cfg.SlotIcons or {}) do self:ShowFor(ps, id, false) end
+        for _, id in ipairs(cfg.SlotDescs or {}) do self:ShowFor(ps, id, false) end
     end
-    if visible then self:ApplySkillIcons(ps) end
 end
 
--- 把每个技能对应的独立图标组件设为该技能的 iconKey 图片（按钮本身只负责点击触发，不改按钮图标）
-function TetrisSkillSelect:ApplySkillIcons(ps)
+-- 把 2 个槽位的图标设为对应技能的 iconKey 图片，并把描述文本设为技能的 selectDesc
+function TetrisSkillSelect:ApplySlotContent(ps)
     if not ps or type(CustomUIAPI) ~= "table" then return end
     local cfg = cfgOf()
     if not cfg then return end
-    for _, b in ipairs(self:SkillBinds()) do
-        local key = b[2]
-        local iconWid = key and cfg["Icon" .. key]
-        if key and iconWid then
+    local skills = self.slotSkills or {}
+    for i = 1, 2 do
+        local key = skills[i]
+        if key then
+            local iconWid = cfg.SlotIcons and cfg.SlotIcons[i]
+            local descWid = cfg.SlotDescs and cfg.SlotDescs[i]
             local def = TetrisConfig.Skills and TetrisConfig.Skills[key]
-            local ik = def and def.iconKey
-            if ik then
-                local imgID = (type(AssetRef) == "table" and AssetRef[ik]) or ik
+            if iconWid and def and def.iconKey then
+                local imgID = (type(AssetRef) == "table" and AssetRef[def.iconKey]) or def.iconKey
                 pcall(function() CustomUIAPI.SetImageWidgetContent(ps, iconWid, imgID) end)
+            end
+            if descWid and def and def.selectDesc then
+                pcall(function() CustomUIAPI.SetTextContent(ps, descWid, def.selectDesc) end)
             end
         end
     end
@@ -153,6 +182,7 @@ function TetrisSkillSelect:Begin(players)
     self.choices = {}
     self.done = false
     self._started = false
+    self:PickRandomSkills()   -- 开局从候选池随机抽 2 个技能填入 2 个槽位
 
     if #self.players == 0 or not self:Available() then
         print("[Tetris][Skill] 跳过技能选择（未启用/未放置按钮/无玩家），使用默认技能")
@@ -236,14 +266,17 @@ function TetrisSkillSelect:RegisterSkills()
     if self.registered then return end
     self.registered = true
     local selfRef = self
-    for _, b in ipairs(self:SkillBinds()) do
-        if b[1] ~= nil then
+    local btns = self:SkillButtonIDs()
+    for i, id in ipairs(btns) do
+        if id ~= nil then
+            local idx = i
             self.owner:AddVPEvent(self.clickEventId, function(_self, ps)
-                selfRef:OnPick(ps, b[2])
-            end, selfRef, b[1], nil)
+                local key = selfRef.slotSkills and selfRef.slotSkills[idx]
+                if key then selfRef:OnPick(ps, key) end
+            end, selfRef, id, nil)
         end
     end
-    print("[Tetris][Skill] 技能按键已注册（SK01/SK02/SK06）")
+    print("[Tetris][Skill] 技能按键已注册（2 槽位随机技能）")
 end
 
 function TetrisSkillSelect:OnPick(ps, key)

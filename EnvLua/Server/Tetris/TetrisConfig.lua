@@ -55,7 +55,7 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
-         [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
+        --  [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
     },
 }
 
@@ -145,8 +145,8 @@ TetrisConfig.Pieces = {
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
-    Prob = 0.95,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
-    Types = { 10, 10, 10 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
+    Prob = 0.15,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
+    Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
     BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
     BlastRadius = 2,                    -- 【已废弃】爆破改为消除一整列，不再按半径；保留字段仅供参考
@@ -698,7 +698,7 @@ TetrisConfig.Skill = {
 --   其余字段为效果参数（clearRows / attackBonus），由 TetrisGame:OnBtnSkill 读取。
 TetrisConfig.Skills = {
     SK01 = {
-        key = "SK01", name = "禁止转动", type = "debuff",
+        key = "SK01", name = "禁止转动", type = "debuff", selectDesc = "限制对手旋转",
         desc = "对手接下来 1 个方块无法旋转（左右移动 / 软降 / 硬降 / Hold 不受影响）",
         imageKey = "23_ImagePreset_181445133927289",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181442919461175",   -- 技能图标（局内 HUD / 选择按钮）
@@ -711,27 +711,27 @@ TetrisConfig.Skills = {
         rotLockVictimImg = ci("1_CreativeInstance_23643899098553539"),
     },
     SK02 = {
-        key = "SK02", name = "清除最下方两行", type = "buff", clearRows = 2,
+        key = "SK02", name = "清除最下方两行", type = "buff", clearRows = 2, selectDesc = "消除下方两行",
         desc = "删除可见区最下方 2 行，上方整体下移 2 行（不计分 / 不消行 / 不送攻击）",
         imageKey = "23_ImagePreset_181444855524605",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181443391878538",   -- 技能图标（局内 HUD / 选择按钮）
     },
     SK06 = {
-        key = "SK06", name = "攻势", type = "buff", attackBonus = 1,
+        key = "SK06", name = "攻势", type = "buff", attackBonus = 1, selectDesc = "强化下次垃圾",
         desc = "接下来 1 次消行结算时，攻击行数 +1（单消亦从 0 行变为 1 行）",
         imageKey = "23_ImagePreset_181441732151158",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181443140642203",   -- 技能图标（局内 HUD / 选择按钮）
         attackBuffImg = ci("1_CreativeInstance_23643902330717066"),   -- 攻势消行触发时显示的图片提示（1.7s 后隐藏），ci() 转数字 key
     },
     SK07 = {
-        key = "SK07", name = "赠送技能", type = "buff",
+        key = "SK07", name = "赠送技能", type = "buff", selectDesc = "额外消除一行",
         desc = "释放后进入冷却：下次结算消除时，额外多消除下方一行；触发消除后冷却解除（冷却中再次点击提示：技能冷却中）。",
         imageKey = "23_ImagePreset_181444591440840",   -- 与中央大图提示共用同一图片预设
         iconKey  = "23_ImagePreset_181445135603547",   -- 技能图标（局内 HUD / 选择按钮）
         cdIndicator = ci("1_CreativeInstance_23643899321563373"),   -- 消行时显示，1.5s后隐藏
     },
     SK08 = {
-        key = "SK08", name = "左右对调", type = "debuff",
+        key = "SK08", name = "左右对调", type = "debuff", selectDesc = "对调对手方向",
         desc = "释放后进入冷却：对手下一个方块下落期间左右方向键互换；对手当前方块落地后冷却解除（冷却中再次点击提示：技能冷却中）。",
         imageKey = "23_ImagePreset_181444605973235",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181441605832442",   -- 技能图标（局内 HUD / 选择按钮）
@@ -772,6 +772,29 @@ TetrisConfig.SkillSelect = {
     IconSK06  = ci("1_CreativeInstance_23643898516504238"),  -- SK-06 图标
     IconSK07  = ci("1_CreativeInstance_23643901228761309"),  -- SK-07 图标
     IconSK08  = ci("1_CreativeInstance_23643900267681567"),  -- SK-08 图标
+
+    -- 2 个技能槽位（开局从 Pool 随机抽 2 个技能填入）；每个槽位 = 按钮 + 图标 + 描述文本。
+    --   以下 UUID 复用编辑器中原 SK02/SK07 的按钮与图标控件，作为「通用槽位」，内容由随机决定。
+    SlotButtons = {
+        ci("1_CreativeInstance_23643902157912974"),
+        ci("1_CreativeInstance_23643900548841233"),
+    },
+    SlotIcons = {
+        ci("1_CreativeInstance_23643898435229426"),
+        ci("1_CreativeInstance_23643901228761309"),
+    },
+    SlotDescs = {
+        ci("1_CreativeInstance_23643898380398915"),
+        ci("1_CreativeInstance_23643900820675217"),
+    },
+    -- 候选技能池（从中随机抽 2 个；可调整顺序）
+    Pool = { "SK01", "SK02", "SK06", "SK07", "SK08" },
+    -- 其余 3 个已有技能框（未入选技能的容器/背景），开局统一隐藏
+    HiddenFrames = {
+        ci("1_CreativeInstance_23643900245158402"),
+        ci("1_CreativeInstance_23643898285521782"),
+        ci("1_CreativeInstance_23643901910120460"),
+    },
 }
 
 -- ===================== 名字组件（对局 HUD：我方 / 对方 名字显示） =====================
