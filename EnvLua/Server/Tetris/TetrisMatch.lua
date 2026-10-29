@@ -460,6 +460,7 @@ function TetrisMatch:BuildGames()
             ng.playerState = g.playerState
             ng.playerKey = g.playerKey
             ng.opponent = g.opponent
+            ng.avatarKey = g.avatarKey   -- 沿用 Start()/AssignAvatars 已随机分配的头像（BuildGames 会替换实例，否则头像丢失）
             -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
             ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
                 or defaultSkill
@@ -874,20 +875,24 @@ function TetrisMatch:GameDisplayName(g)
     return (lvl[lv] and lvl[lv].Name) or lv
 end
 
--- 开局随机分配头像：先把 AvatarPresets 洗牌，再对所有棋盘轮转分配。
--- 我方与对方是两个不同的棋盘 → 各自拿到洗牌后不同位置的元素，保证两张头像不一样。
--- （你要求：一方拿到一个，另一方就分到另一个，两个必须不同。）
+-- 开局随机分配头像：先把 AvatarPresets 去重、洗牌，再对所有棋盘（含 AI 盘）轮转分配。
+-- 真人 / AI 都从这里取头像；2 名玩家时保证双方头像值不同（去重后按棋盘序号轮转，互不重复）。
 function TetrisMatch:AssignAvatars()
     local cfg = TetrisConfig.AvatarUI
     if not cfg or not cfg.AvatarPresets or #cfg.AvatarPresets == 0 then return end
-    local presets = cfg.AvatarPresets
+    -- 去重：避免池中重复图导致两盘分到同一张头像（保证「双方不同」）
+    local seen = {}
+    local uniq = {}
+    for _, p in ipairs(cfg.AvatarPresets) do
+        if not seen[p] then seen[p] = true; uniq[#uniq + 1] = p end
+    end
     local pool = {}
-    for _, p in ipairs(presets) do pool[#pool + 1] = p end
+    for _, p in ipairs(uniq) do pool[#pool + 1] = p end
     for i = #pool, 2, -1 do
         local j = math.random(i)
         pool[i], pool[j] = pool[j], pool[i]
     end
-    -- 对所有棋盘（含 AI 盘）轮转分配：2 盘 + 2 头像时双方必然不同；仅 1 盘时无所谓重复
+    -- 对所有棋盘（含 AI 盘）轮转分配：2 盘 + 去重后 >=2 张时双方必然不同；盘数超过池大小才会重复
     for i, g in ipairs(self.list) do
         g.avatarKey = pool[(i - 1) % #pool + 1]
     end

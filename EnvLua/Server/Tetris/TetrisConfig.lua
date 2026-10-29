@@ -149,7 +149,7 @@ TetrisConfig.Pieces = {
 --   10 = 位移块：消除含本格的方块时，所有行整体向右平移 1 列（每行从最右格起右移 1，目标格被占/越界则跳过）
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
-    Debug = true,                      -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
+    Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
     Prob = 0.15,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
     Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
@@ -750,9 +750,15 @@ TetrisConfig.AvatarUI = {
     -- 头像 icon（实际显示头像图片的子控件）
     SelfAvatarIcon = ci("1_CreativeInstance_23643901196455156"),  -- 我方头像 icon 组件
     OppAvatarIcon  = ci("1_CreativeInstance_23643900780098696"),  -- 对方头像 icon 组件（顺序同上为 对方/我方）
+    -- 头像图片候选池（AssetRef 图片键）：开局随机分配，真人/AI 都从这里取；2 人时保证双方不同。
+    -- 注：下方第 2、3 项当前为同一张图(181444908600059)，系重复录入；AssignAvatars 已去重，
+    --      故实际可用为 4 张。如你确实想要 5 张不同的，把第 3 项换成另一张图的键即可。
     AvatarPresets = {
-        "23_ImagePreset_181441835555322",
-        "23_ImagePreset_181441298389940",
+        "23_ImagePreset_181443134637078",
+        "23_ImagePreset_181442580203129",
+        "23_ImagePreset_181444908600059",
+        "23_ImagePreset_181442334583358",
+        "23_ImagePreset_181441512885511",
     },
 }
 
@@ -896,7 +902,7 @@ TetrisConfig.Debug = {
     ShowPieceInfo = false,    -- 每次生成新下落方块时上屏（已改由 HUD 显示分数，默认关闭避免刷屏）
     ShowPieceInfoPopup = false, -- false = 聊天框(SendQuickMenuMessage)；true = 屏幕弹窗(SendBattlePopupMessage)
     ShowGameOverInfo = false,  -- 结束时上屏结算
-    PrintGarbage = true,      -- 对战：打印发/收垃圾行日志
+    PrintGarbage = false,     -- 对战：打印发/收垃圾行日志
     DropDbg = false,           -- 下落时每 15 帧打印所有子块实际坐标 vs 预期坐标（[Tetris][DropDbg]）
     LockDbg = true,            -- 锁定加分调试：打印哪块盘(玩家/对手)在 lockPiece 加分，以及对手分控件是否写入成功
 }
