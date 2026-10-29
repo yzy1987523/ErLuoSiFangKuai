@@ -484,6 +484,15 @@ TetrisConfig.BackgroundWidget = {
     -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让远景呈对称倾斜。
     -- 1号 +180°、2号 −180°；未列出的棋盘不额外偏置（0°）。
     RotationBiasByIndex = { [1] = 180, [2] = -180 },
+    -- 对手标识图：本挂件 UMG 内名为 ImageChildName 的图片子控件，按对手类型切换（真人/简单/普通/困难）。
+    -- 名字需与编辑器里给该图片控件命的名完全一致（含空格/全角半角）。
+    ImageChildName = "正方形 29",
+    OpponentImages = {
+        Human  = "23_ImagePreset_181441242063729",  -- 真人对手
+        Easy   = "23_ImagePreset_181441695453675",  -- 简单 AI
+        Normal = "23_ImagePreset_181441939072595",  -- 普通 AI
+        Hard   = "23_ImagePreset_181442655198730",  -- 困难 AI
+    },
 }
 
 -- ===================== 输入（CustomUI 按钮） =====================

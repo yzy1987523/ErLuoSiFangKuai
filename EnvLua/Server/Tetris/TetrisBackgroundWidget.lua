@@ -157,4 +157,46 @@ function TetrisBackgroundWidget.Reanchor(actor, spawnPointKey, boardIndex)
     pcall(function() actor:K2_TeleportTo(Game:ConstructFVectorByLuaTable(pos), rot or zeroRotator()) end)
 end
 
+-- 设置背景挂件 UMG 内某命名图片子控件的图（与 3D 道具图标同路：WidgetComponent→UserWidget→GetWidgetFromName→SetImageContent）。
+-- 控件/玩家尚未就绪时返回 false（调用方可重试）；成功返回 true。
+function TetrisBackgroundWidget.SetChildImage(actor, childName, imgID)
+    if not actor or not childName or not imgID then return false end
+    local wc
+    pcall(function()
+        if type(actor.GetComponentByClass) == "function" then
+            wc = actor:GetComponentByClass("WidgetComponent")
+        end
+    end)
+    if not wc then
+        pcall(function()
+            for _, nm in ipairs({ "UI", "Widget", "WidgetComp", "WidgetComponent" }) do
+                local okC, c = pcall(function() return actor:GetComponentByName(nm) end)
+                if okC and c then wc = c; break end
+            end
+        end)
+    end
+    if not wc then return false end
+    local plist
+    pcall(function()
+        local okP, p = pcall(function() return Game:GetAllPlayerPawns() end)
+        if okP and p then plist = p end
+    end)
+    if not plist or type(plist.Num) ~= "function" or plist:Num() <= 0 then return false end
+    local uw
+    for i = 0, plist:Num() - 1 do
+        local pawn = plist:Get(i)
+        if pawn then
+            pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
+            if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
+            if uw then break end
+        end
+    end
+    if not uw then return false end
+    local imgComp
+    pcall(function() imgComp = uw:GetWidgetFromName(childName) end)
+    if not imgComp then return false end
+    local ok = pcall(function() imgComp:SetImageContent(imgID) end)
+    return ok == true
+end
+
 return TetrisBackgroundWidget

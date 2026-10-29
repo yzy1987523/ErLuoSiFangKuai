@@ -431,6 +431,52 @@ function TetrisMatch:ApplyModeToGames(choices)
     end
 end
 
+-- 根据各盘对手类型，刷新远景背景挂件内图片子控件(正方形 29)的图：真人/简单/普通/困难 各一张。
+-- 控件/玩家未就绪时自动重试若干次（与 WidgetComponent 控件初始化时机保持一致）。
+function TetrisMatch:RefreshBackgroundOpponentImages()
+    local cfg = TetrisConfig.BackgroundWidget
+    if not (cfg and cfg.Enabled and cfg.ImageChildName and cfg.OpponentImages) then return end
+    if not self._bgWidgets then return end
+    local pending = {}
+    for i, g in ipairs(self.list) do
+        local actor = self._bgWidgets[i]
+        local opp = g and g.opponent
+        if actor and opp then
+            -- 对手类型：有 playerState = 真人；否则为 AI，难度取对手自身 aiDifficulty，缺失回退 match 级难度
+            local kind
+            if opp.playerState then
+                kind = "Human"
+            else
+                kind = (opp.aiDifficulty)
+                    or self.aiDifficulty
+                    or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty)
+                    or "Normal"
+            end
+            local key = cfg.OpponentImages[kind]
+            if key then
+                local imgID = (type(AssetRef) == "table" and AssetRef[key]) or key
+                pending[#pending + 1] = { actor = actor, name = cfg.ImageChildName, imgID = imgID }
+            end
+        end
+    end
+    if #pending > 0 then self:_applyBgOpponentImages(pending, 0) end
+end
+
+function TetrisMatch:_applyBgOpponentImages(pending, tries)
+    if not pending or #pending == 0 then return end
+    local remain = {}
+    for _, p in ipairs(pending) do
+        local ok = false
+        pcall(function() ok = TetrisBackgroundWidget.SetChildImage(p.actor, p.name, p.imgID) end)
+        if not ok then remain[#remain + 1] = p end
+    end
+    if #remain > 0 and tries < 10 then
+        self.owner:AddTimerOnce(0.3, function()
+            self:_applyBgOpponentImages(remain, tries + 1)
+        end)
+    end
+end
+
 -- 构建棋盘并启动分阶段构建（落方块延后到 loading 隐藏后，由 TryStartGameplay 触发）。
 function TetrisMatch:BuildGames()
     self._buildGamesStarted = true  -- 进入加载构建：停止准备阶段挂件重试，改由本函数兜底
@@ -461,6 +507,8 @@ function TetrisMatch:BuildGames()
             ng.playerKey = g.playerKey
             ng.opponent = g.opponent
             ng.avatarKey = g.avatarKey   -- 沿用 Start()/AssignAvatars 已随机分配的头像（BuildGames 会替换实例，否则头像丢失）
+            -- 沿用 match 级 AI 难度（对手标识图等需按难度区分的地方要用到）；缺省回退 DefaultDifficulty
+            ng.aiDifficulty = self.aiDifficulty or (TetrisConfig.AI and TetrisConfig.AI.DefaultDifficulty) or "Normal"
             -- 所选技能：分配到玩家的盘取该玩家所选，否则回退默认技能
             ng.selectedSkill = (g.playerState and self.skillChoices and self.skillChoices[g.playerState])
                 or defaultSkill
@@ -504,6 +552,7 @@ function TetrisMatch:BuildGames()
             g.opponent = self.list[i % #self.list + 1]
         end
     end
+    self:RefreshBackgroundOpponentImages()   -- 按对手类型刷新远景背景挂件内"正方形 29"标识图
     if reusedAll then
         -- 全部复用既有实例与渲染器：无需分阶段构建，直接标记边框完成并交由 TryStartGameplay 开局
         self._borderDone = true
