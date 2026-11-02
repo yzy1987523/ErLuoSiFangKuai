@@ -217,7 +217,8 @@ TetrisConfig.Rotation = {
 -- ===================== 手感 / 节奏 =====================
 TetrisConfig.Timing = {
     -- 重力下落间隔（秒），随等级提升而缩短；索引 = 等级，超出取最后一个
-    GravityIntervalByLevel = { 0.80, 0.72, 0.63, 0.55, 0.51, 0.48, 0.43, 0.42, 0.37, 0.33, 0.30, 0.28, 0.27, 0.26, 0.25 },
+    -- GravityIntervalByLevel = { 0.80, 0.72, 0.63, 0.55, 0.51, 0.48, 0.43, 0.42, 0.37, 0.33, 0.30, 0.28, 0.27, 0.26, 0.25 },
+    GravityIntervalByLevel = { 0.80},
     SoftDropInterval = 0.05,  -- 软降时的下落间隔（秒）
     LockDelay = 0.25,         -- 触底后的锁定延迟（秒）：方块落到底不立刻锁定，给玩家滑动/转身窗口
     LockResetLimit = 15,       -- 落地后「移动/旋转重置」延迟的最大次数（超过后不再重置，防止无限拖延）
@@ -366,6 +367,39 @@ TetrisConfig.Render = {
         [7] = "50_CreativeAsset_110257472",        -- Z 红色（Red）
         [8] = "50_CreativeAsset_115324270",        -- 垃圾块 灰色（Gray）
     },
+
+    -- ===================== 落点预览（Ghost / 落地预览） =====================
+    -- 方案A：盘面上 1 个 3D UI Actor（WidgetComponent），UMG 内 1 个图片控件显示「方块整体形状图」；
+    -- 下落开始设一次图，之后只靠旋转该 Actor（K2_TeleportTo + makePieceRotator）表达朝向，落点 = hardDrop 目标。
+    -- 全部为占位键，替换真实资源后即可生效。
+    Ghost = {
+        Enabled = true,
+        Debug = false,                                  -- true：每 60 帧打印 ghost 状态（actor/控件/落点）便于排查
+        ActorPresetKey = "46_ActorPreset_588552338",   -- TODO：替换为盘面上 WidgetComponent Actor 的 AssetRef Key
+        ImageChildName = { "fk_preview" },            -- UMG 内图片控件名（需与编辑器一致）
+        -- 8 张图（1=I 2=O 3=T 4=J 5=L 6=S 7=Z 8=垃圾）；道具 9/10/11 暂复用第 8 张
+        ImageKeys = {
+            [1] = "23_ImagePreset_181444770133562",   -- I
+            [2] = "23_ImagePreset_181441436225423",   -- O
+            [3] = "23_ImagePreset_181443437357787",   -- T
+            [4] = "23_ImagePreset_181442727713774",   -- J
+            [5] = "23_ImagePreset_181442404463554",   -- L
+            [6] = "23_ImagePreset_181442935656754",   -- S
+            [7] = "23_ImagePreset_181442033467598",   -- Z
+            [8] = "23_ImagePreset_181441211138765",   -- 垃圾
+            [9] = "23_ImagePreset_181441211138765",   -- 道具(占位复用垃圾图)
+            [10] = "23_ImagePreset_181441211138765",  -- 道具(占位复用垃圾图)
+            [11] = "23_ImagePreset_181441211138765",  -- 道具(占位复用垃圾图)
+        },
+        Opacity = 1,                              -- 半透明，和实时下落块区分
+        ParkLocM = { X = 0, Y = 0, Z = -200 },       -- 无活动块时 Actor 停放位置（图片隐藏，位置不重要）
+        Scale = { X = 2.34, Y = 2.34, Z = 2.34 },
+        ScaleI = { X = 3.3, Y = 3.3, Z = 3.3 },       -- I 型单独缩放
+        ScaleO = { X = 1.75, Y = 1.75, Z = 1.75 },       -- O 型单独缩放（2x2，按图标实际尺寸填）
+        ScaleItem = { X = 0.83, Y = 0.83, Z = 0.83 },    -- 道具(9/10/11)单独缩放
+        SpinAxis = "X",                                  -- 绕法向内旋转轴：X=Roll=绕本地法向(+X)原地转图（正确轴）；若仍镜像改 "Y"(法向为+Y时)
+        SpinSign = -1,                                   -- 面内旋转方向：X 轴下之前的"镜像"实为方向反了，故取反；若仍反改 1
+    },
 }
 
 -- ===================== 原生 UI（引擎自带 HUD / 屏幕操作按钮） =====================
@@ -512,7 +546,7 @@ TetrisConfig.UI = {
     -- 分数 / 消行 / 等级 HUD 文本控件：
     --   在编辑器 UI Editor 中预放置「文本控件」，复制其 InstanceUUID 填到下面（形如 "1_CreativeInstance_xxxx"）。
     --   未放置 / 未填 → UpdateHUD 自动跳过（不报错）。占位 key 需替换为真实 InstanceUUID。
-    ScoreLabel = ci("1_CreativeInstance_23643898111776723"),
+    ScoreLabel = ci("1_CreativeInstance_23643902076643527"),
     LinesLabel = ci("1_CreativeInstance_FILL_LINES"),
     LevelLabel = ci("1_CreativeInstance_FILL_LEVEL"),
 
@@ -561,7 +595,16 @@ TetrisConfig.UI = {
     GarbageRecvHint = ci("1_CreativeInstance_23643901821514970"),
 
     -- 对手分数文本控件：显示 self.opponent.board.score（对战 / 人机通用）
-    OpponentScoreLabel = ci("1_CreativeInstance_23643899615395720"),
+    OpponentScoreLabel = ci("1_CreativeInstance_23643901631192115"),
+}
+
+-- ===================== 消行音效（按消行数播放，AssetRef 句柄由 SoundPreset Key 解析） =====================
+--   1 行 / 2 行 / 3 行 / 4 行及以上 分别对应不同音效；键为 SoundPreset 资源标识，需经 AssetRef 解析为句柄。
+TetrisConfig.ClearSounds = {
+    [1] = "19_SoundPreset_181436666164240",
+    [2] = "19_SoundPreset_181437172922024",
+    [3] = "19_SoundPreset_181437746770248",
+    [4] = "19_SoundPreset_181439233974659",   -- 4 行及以上统一用此音效
 }
 
 -- ===================== 输入手感（长按 / 自动横移 DAS-）ARR） =====================
@@ -588,9 +631,9 @@ TetrisConfig.PieceImages = {
     [6] = "23_ImagePreset_181443114759746",  -- S
     [7] = "23_ImagePreset_181444179307978",  -- Z
     -- 道具方块（9/10/11）：Next / Hold 与 3D 浮空图标共用同一套图（单一图源，见下）。
-    [9]  = "23_ImagePreset_181443677212097",   -- 爆破块
-    [10] = "23_ImagePreset_181442507346340",   -- 位移块
-    [11] = "23_ImagePreset_181443922126642",   -- 充能块
+    [9]  = "23_ImagePreset_181444441905046",   -- 爆破块
+    [10] = "23_ImagePreset_181443652373081",   -- 位移块
+    [11] = "23_ImagePreset_181442081947966",   -- 充能块
 }
 
 -- Hold / Next 图片底色（白色底图，由 SetImageWidgetColor 叠加 tint 出各色）。
@@ -721,7 +764,7 @@ TetrisConfig.Skills = {
         desc = "接下来 1 次消行结算时，攻击行数 +1（单消亦从 0 行变为 1 行）",
         imageKey = "23_ImagePreset_181441732151158",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181443140642203",   -- 技能图标（局内 HUD / 选择按钮）
-        attackBuffImg = ci("1_CreativeInstance_23643902330717066"),   -- 攻势消行触发时显示的图片提示（1.7s 后隐藏），ci() 转数字 key
+        attackBuffImg = ci("1_CreativeInstance_23643899894524727"),   -- 攻势消行触发时显示的图片提示（1.7s 后隐藏），ci() 转数字 key
     },
     SK07 = {
         key = "SK07", name = "赠送技能", type = "buff", selectDesc = "额外消除一行",
@@ -800,18 +843,18 @@ TetrisConfig.SkillSelect = {
 -- ===================== 名字组件（对局 HUD：我方 / 对方 名字显示） =====================
 TetrisConfig.NameUI = {
     SelfName = ci("1_CreativeInstance_23643899410907749"),  -- 我方名字组件（显示自己昵称）
-    OppName  = ci("1_CreativeInstance_23643902237944181"),  -- 对方名字组件（显示对手昵称 / AI 角色名）
+    OppName  = ci("1_CreativeInstance_23643901522693787"),  -- 对方名字组件（显示对手昵称 / AI 角色名）
 }
 
 -- ===================== 头像组件（对局 HUD：我方 / 对方 头像显示） =====================
 -- 开局从 AvatarPresets 中随机分配；2 名玩家时洗牌分配保证两者头像不同。
 TetrisConfig.AvatarUI = {
     -- 头像框（容器组件）：若为图片控件也会被填图，非图片则忽略
-    SelfAvatar = ci("1_CreativeInstance_23643899970464328"),  -- 我方头像组件
-    OppAvatar  = ci("1_CreativeInstance_23643902263045933"),  -- 对方头像组件（你给的顺序为 对方/我方）
+    -- SelfAvatar = ci("1_CreativeInstance_23643899970464328"),  -- 我方头像组件
+    -- OppAvatar  = ci("1_CreativeInstance_23643902263045933"),  -- 对方头像组件（你给的顺序为 对方/我方）
     -- 头像 icon（实际显示头像图片的子控件）
     SelfAvatarIcon = ci("1_CreativeInstance_23643901196455156"),  -- 我方头像 icon 组件
-    OppAvatarIcon  = ci("1_CreativeInstance_23643900780098696"),  -- 对方头像 icon 组件（顺序同上为 对方/我方）
+    OppAvatarIcon  = ci("1_CreativeInstance_23643898469663973"),  -- 对方头像 icon 组件（顺序同上为 对方/我方）
     -- 头像图片候选池（AssetRef 图片键）：开局随机分配，真人/AI 都从这里取；2 人时保证双方不同。
     -- 注：下方第 2、3 项当前为同一张图(181444908600059)，系重复录入；AssignAvatars 已去重，
     --      故实际可用为 4 张。如你确实想要 5 张不同的，把第 3 项换成另一张图的键即可。
@@ -926,7 +969,7 @@ TetrisConfig.SceneObjects = {
 }
 
 -- 出生点装置前方生成棋盘的距离（米，可配置）：棋盘中心 = 装置位置 + 世界 +Y(北) * 该值。
-TetrisConfig.BoardForwardDistM = 36
+TetrisConfig.BoardForwardDistM = 32
 
 -- 盘面左右偏移（米，沿盘面右向量 right，正=向玩家右手侧移）：与 BoardForwardDistM 垂直，仅平移不改朝向/前后。
 TetrisConfig.BoardSideOffsetM = 0

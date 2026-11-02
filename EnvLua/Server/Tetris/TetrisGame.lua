@@ -506,10 +506,6 @@ end
 function TetrisGame:UpdateHUD()
     local b = self.board
     if not b then return end
-    -- 3D 挂件分数：与 2D HUD 解耦，不依赖 playerState（AI 盘 GetPlayerState 返回 nil，也要刷新对手盘分数）
-    if self.renderer and self.renderer.SetWidgetOpponentScore then
-        self.renderer:SetWidgetOpponentScore(b.score)
-    end
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
     self:UpdateHoldNextUI()                       -- 2D Hold / Next 方块预览
@@ -520,9 +516,9 @@ function TetrisGame:UpdateHUD()
         if not id then return end
         pcall(function() CustomUIAPI.SetTextContent(ps, id, text) end)
     end
-    set(ui.ScoreLabel, "分数: " .. tostring(b.score))
-    set(ui.LinesLabel, "消行: " .. tostring(b.lines))
-    set(ui.LevelLabel, "等级: " .. tostring(b.level))
+    set(ui.ScoreLabel, tostring(b.score))
+    -- set(ui.LinesLabel, "消行: " .. tostring(b.lines))
+    -- set(ui.LevelLabel, "等级: " .. tostring(b.level))
 end
 
 -- 垃圾行提示框：显示由事件/排队触发，隐藏完全由"垃圾升起(pending→0)"触发（见 UpdateGarbageHints），
@@ -666,6 +662,30 @@ function TetrisGame:UpdateOpponentHUD()
     local opp = self.opponent
     local score = (opp and opp.board and opp.board.score) or 0
     pcall(function() CustomUIAPI.SetTextContent(ps, id, "" .. tostring(score)) end)
+end
+
+-- 按消行数播放消行音效（1/2/3/4+ 行对应不同 SoundPreset）；仅对真人盘(有 PlayerState)播放。
+-- 资源键见 TetrisConfig.ClearSounds，经 AssetRef 解析为句柄后交给 AudioAPI.PlayAudio。
+function TetrisGame:PlayLineClearSound(cleared)
+    cleared = (type(cleared) == "number") and cleared or 0
+    if cleared < 1 then return end
+    local keys = TetrisConfig.ClearSounds
+    if not keys then return end
+    local key = keys[math.min(cleared, 4)]   -- 4 行及以上统一用第 4 个音效
+    if not key then return end
+    local ref = (type(AssetRef) == "table") and AssetRef[key]
+    if not ref then
+        if TetrisConfig.Debug and TetrisConfig.Debug.PrintClearSound then
+            print(string.format("[Tetris][Clear][WARN] 音效资源未注册 AssetRef[%s]，跳过", tostring(key)))
+        end
+        return
+    end
+    local ps = self:GetPlayerState()
+    if not ps or type(AudioAPI) ~= "table" then return end
+    -- AudioAPI.PlayAudio(TargetObject, AudioID, Duration, Volume, bAllMap, bShowMark, AudiencePlayerState)
+    --   TargetObject=ps(玩家自身)，bAllMap=true 全图播放但 AudiencePlayerState=ps 仅该玩家可闻（类 UI 音效，不受相机距离影响）
+    --   Duration=3 为播放时长上限（秒），若需"整段自然播放"可按实际音频长度调整
+    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, 1, true, false, ps) end)
 end
 
 function TetrisGame:CheckPieceSpawned()
@@ -1353,8 +1373,8 @@ function TetrisGame:UpdateAvatarTags()
             CustomUIAPI.SetImageWidgetContent(ps, wid, imgID)
         end)
     end
-    setImg(cfg.SelfAvatar, self.avatarKey)
-    setImg(cfg.OppAvatar, self.opponent and self.opponent.avatarKey)
+    -- setImg(cfg.SelfAvatar, self.avatarKey)
+    -- setImg(cfg.OppAvatar, self.opponent and self.opponent.avatarKey)
     -- 头像 icon 组件（实际显示图片的子控件）：同样喂入头像图，框容器若非图片控件则忽略
     setImg(cfg.SelfAvatarIcon, self.avatarKey)
     setImg(cfg.OppAvatarIcon, self.opponent and self.opponent.avatarKey)

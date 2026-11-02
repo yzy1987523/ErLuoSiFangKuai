@@ -870,6 +870,295 @@ function TetrisRenderer:FindFrontWidgetImageChild(childNames)
     return tw
 end
 
+-- ---------------- 落点预览 Ghost（方案A：单图标 + 旋转 Actor 表达朝向） ----------------
+-- 1 个 WidgetComponent Actor，UMG 内 1 个图片控件显示方块整体形状；下落开始设一次图，
+-- 之后每帧按 hardDrop 落点重定位 + 按当前 rot 旋转 Actor。锁定/无活动块时隐藏。
+function TetrisRenderer:BuildGhostActor()
+    local cfg = TetrisConfig.Render.Ghost
+    if not (cfg and cfg.Enabled) then return end
+    if self._ghostActor then return end   -- 幂等：已生成则跳过
+    if not self.origin or not self.boardRight then
+        if not self._ghostBaseLogged then self._ghostBaseLogged = true
+            print("[Tetris][Ghost][WARN] 基底未就绪(origin/boardRight 缺失)，延迟创建") end
+        return   -- 基底未就绪，下一帧重试
+    end
+    local ref = (type(AssetRef) == "table" and AssetRef[cfg.ActorPresetKey])
+             or (type(CreativeAsset) == "table" and CreativeAsset[cfg.ActorPresetKey])
+    if not ref then
+        if not self._ghostRefLogged then
+            self._ghostRefLogged = true
+            print(string.format("[Tetris][Ghost][WARN] 资源键无引用(占位未填): %s", tostring(cfg.ActorPresetKey)))
+        end
+        return
+    end
+    local park = cfg.ParkLocM or { X = self.origin.X, Y = self.origin.Y, Z = self.origin.Z - 200 }
+    local pos = { X = park.X, Y = park.Y, Z = park.Z }
+    local scaleVec = Game:ConstructFVectorByLuaTable({
+        X = (cfg.Scale and cfg.Scale.X) or 1, Y = (cfg.Scale and cfg.Scale.Y) or 1, Z = (cfg.Scale and cfg.Scale.Z) or 1 })
+    local ok, obj = pcall(function()
+        if type(CreativeGameAPI) == "table" and CreativeGameAPI.CreateActor then
+            return CreativeGameAPI.CreateActor(ref, Game:ConstructFVectorByLuaTable(pos), self.rot, scaleVec, nil)
+        end
+        return self:CreateOne(Game:ConstructFVectorByLuaTable(pos), scaleVec, ref, self.rot)
+    end)
+    if ok and obj then
+        self._ghostActor = obj
+        pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(false) end end)
+        self._ghostImgWidget = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
+        if self._ghostImgWidget then
+            print(string.format("[Tetris][Ghost] 落点预览 Actor 已生成，图片控件定位成功 childNames=%s",
+                table.concat(cfg.ImageChildName or { "ghostImg" }, ",")))
+        else
+            print("[Tetris][Ghost][WARN] 落点预览 Actor 已生成，但图片控件未定位（检查 UMG 内控件名是否=ghostImg）")
+        end
+    else
+        print("[Tetris][Ghost][WARN] 创建失败: " .. tostring(obj))
+    end
+end
+
+-- 从 Ghost Actor 的 WidgetComponent 找到图片控件对象（WoWCustomUIImage）。
+-- 返回对象而非 UUID：世界空间 WidgetComponent 的图片子控件必须用对象方法 SetImageContent/SetVisible 操作。
+function TetrisRenderer:FindGhostImageChild(childNames)
+    if type(childNames) == "string" then childNames = { childNames } end
+    local actor = self._ghostActor
+    if not actor then return nil end
+    local wc
+    pcall(function()
+        if type(actor.GetComponentByClass) == "function" then
+            wc = actor:GetComponentByClass("WidgetComponent")
+        end
+    end)
+    if not wc then
+        pcall(function()
+            for _, nm in ipairs({ "UI", "Widget", "WidgetComp", "WidgetComponent" }) do
+                local okC, c = pcall(function() return actor:GetComponentByName(nm) end)
+                if okC and c then wc = c; break end
+            end
+        end)
+    end
+    if not wc then
+        print("[Tetris][Ghost][WARN] 找不到 WidgetComponent")
+        return nil
+    end
+    local plist
+    pcall(function()
+        local okP, p = pcall(function() return Game:GetAllPlayerPawns() end)
+        if okP and p then plist = p end
+    end)
+    if not plist or type(plist.Num) ~= "function" or plist:Num() <= 0 then
+        if not self._ghostPawnLogged then self._ghostPawnLogged = true
+            print("[Tetris][Ghost][WARN] 暂无玩家 pawn，图片控件延迟定位") end
+        return nil   -- 暂无玩家，下一帧重试
+    end
+    local uw
+    for i = 0, plist:Num() - 1 do
+        local pawn = plist:Get(i)
+        if pawn then
+            pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
+            if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
+            if uw then break end
+        end
+    end
+    if not uw then return nil end
+    local function tryFind(name)
+        local t; pcall(function() t = uw:GetWidgetFromName(name) end); return t
+    end
+    local tw
+    for _, cn in ipairs(childNames) do
+        local t = tryFind(cn)
+        if t then tw = t; break end
+    end
+    if not tw then
+        print(string.format("[Tetris][Ghost][WARN] GetWidgetFromName 未命中: %s", table.concat(childNames, ",")))
+        return nil
+    end
+    return tw
+end
+
+function TetrisRenderer:SetGhostVisible(v)
+    if not self._ghostActor then return end
+    pcall(function()
+        if self._ghostImgWidget then
+            self._ghostImgWidget:SetVisible(v)
+            if v and TetrisConfig.Render.Ghost.Opacity then
+                self._ghostImgWidget:SetImageOpacity(TetrisConfig.Render.Ghost.Opacity)
+            end
+        end
+    end)
+end
+
+-- 每帧驱动：无活动块/预览期/非运行态 → 隐藏；否则计算 hardDrop 落点，定位+旋转 Ghost Actor 并显示。
+-- 预加载所有方块预览图：挂件就绪时一次性 SetImageContent 每种类型，
+-- 触发引擎异步加载并全局缓存；之后每次换图都是已缓存的即时显示，彻底消除"显示时贴图未就绪→错乱"。
+function TetrisRenderer:PreloadGhostImages()
+    if self._ghostPreloaded then return end
+    if not self._ghostImgWidget then return end
+    local cfg = TetrisConfig.Render.Ghost
+    if not (cfg and cfg.ImageKeys) then return end
+    for _, key in pairs(cfg.ImageKeys) do
+        local aRef = (type(AssetRef) == "table" and AssetRef[key]) or nil
+        local cRef = (type(CreativeAsset) == "table" and CreativeAsset[key]) or nil
+        local imgID = aRef or cRef
+        if imgID then
+            pcall(function() self._ghostImgWidget:SetImageContent(imgID) end)
+        end
+    end
+    self._ghostPreloaded = true
+end
+
+function TetrisRenderer:RenderGhost(board, running)
+    local cfg = TetrisConfig.Render.Ghost
+    if not (cfg and cfg.Enabled) then return end
+    if not self._ghostActor then return end
+    if not (running == true) or self.previewing then
+        self:SetGhostVisible(false)
+        return
+    end
+    local p = board:getActive()
+    if not p then
+        self:SetGhostVisible(false)
+        self._ghostLastType = nil
+        self._ghostLogPiece = nil   -- 无活动块：清空标记，下一个新块会重新打印落点
+        self._ghostShowPending = nil
+        return
+    end
+    -- 方块落地瞬间即移走预览（不再等到锁定）：落定但未锁定期间隐藏，待新块落下后再显示
+    if p and board.grounded then
+        self:SetGhostVisible(false)
+        return
+    end
+    -- 事件驱动：仅在活动块状态变化(脏标记)或处于待显示窗口时才做昂贵的重定位/设图；其余帧直接跳过。
+    -- 脏标记由数据层 move/rotate/softDrop/spawn/tick/lockPiece 在改变活动块时置位。
+    if not self._ghostDirty and not self._ghostShowPending then
+        return
+    end
+    self._ghostDirty = nil
+    -- 落点：从当前位置向下直到不能放（hardDrop 目标）
+    local ly = p.y
+    while board:canPlace(p, p.x, ly + 1, p.rot) do ly = ly + 1 end
+    local center = self:pieceCenterWorld({ type = p.type, rot = p.rot, x = p.x, y = ly })
+    -- I 型修正：pieceCenterWorld 把 Ghost 放在 4x4 包围盒中心，但 I 的 4 格在不同 rot 下并不居中于包围盒
+    -- （平躺偏 0.5 行、竖起偏 0.5 列，水平/竖直都有偏移）。改为按实际落点格的质心定位，所有朝向自动对齐。
+    if p.type == 1 then
+        local cells = board:getPieceCells(1, p.rot)
+        if #cells > 0 then
+            local sx, sy, sz = 0, 0, 0
+            for _, c in ipairs(cells) do
+                local loc = self:cellLocation(ly + c.r - 1, p.x + c.c - 1)
+                sx = sx + loc.X; sy = sy + loc.Y; sz = sz + loc.Z
+            end
+            center = { X = sx / #cells, Y = sy / #cells, Z = sz / #cells }
+        end
+    end
+    -- 朝向：Ghost 是 3D 世界里的平贴面片。
+    --   正对你 = Z=baseYaw(与前方大框同基准)；表达方块 4 朝向 = 绕面片法向做面内旋转(SpinAxis 轴 + SpinSign 方向)。
+    --   绕法向转只是把图"原地转"，落点仍正对你；绝不可绕竖直轴(Yaw)转，否则面片侧过去 invisible。
+    local rcfg = TetrisConfig.BigFrame3D
+    local bias = (rcfg and rcfg.RotationBiasByIndex and rcfg.RotationBiasByIndex[self.boardIndex]) or 0
+    local baseYaw = (self.boardYaw or 0) + bias
+    local spin = (p.rot - 1) * 90 * (cfg.SpinSign or 1)  -- 绕法向面内旋转(度)
+    local ax = (cfg.SpinAxis or "Y"):upper()
+    local eul = { X = 0, Y = 0, Z = baseYaw }
+    if ax == "X" then eul.X = spin
+    elseif ax == "Y" then eul.Y = spin
+    else eul.Z = baseYaw + spin end   -- Z：与 facing 同轴对称叠加
+    local rot = self.rot
+    pcall(function()
+        if type(FRotator) == "table" and FRotator.MakeFromEuler then
+            rot = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable(eul))
+        end
+    end)
+    -- 新块事件：先设图（下方设图块即执行），延迟 0.1s 后再显示到落点位置
+    local isNew = (p ~= self._ghostLogPiece)
+    if isNew then
+        self._ghostLogPiece = p
+        self._ghostShowToken = (self._ghostShowToken or 0) + 1
+        self._ghostShowPending = true
+        local token = self._ghostShowToken
+        pcall(function()
+            if self.owner and self.owner.AddTimerOnce then
+                self.owner:AddTimerOnce(0.1, function()
+                    if self._ghostShowToken == token then
+                        self._ghostShowPending = false
+                        self._ghostDirty = true   -- 触发一次渲染以完成显示
+                        pcall(function() self:RenderGhost(board, running) end)
+                    end
+                end)
+            else
+                self._ghostShowPending = false
+            end
+        end)
+        print(string.format("[Tetris][Ghost] 新块预览 type=%s landY=%d pos=(%.1f,%.1f,%.1f) rot=%d",
+            tostring(p.type), ly, center.X, center.Y, center.Z, p.rot))
+    end
+    -- 按类型单独设置缩放（I / O / 道具 单独缩放，避免非标准尺寸图标被默认缩放拉歪）
+    local scfg = cfg.Scale
+    if p.type == 1 then scfg = cfg.ScaleI or scfg
+    elseif p.type == 2 then scfg = cfg.ScaleO or scfg
+    elseif p.type >= 9 then scfg = cfg.ScaleItem or scfg end
+    if scfg and self._ghostScaleType ~= p.type then
+        self._ghostScaleType = p.type
+        pcall(function()
+            self._ghostActor:SetActorScale3D(Game:ConstructFVectorByLuaTable({
+                X = scfg.X or 1, Y = scfg.Y or 1, Z = scfg.Z or 1 }))
+        end)
+    end
+    -- 修复1：首帧若图片控件未定位（如玩家 pawn 尚未就绪），每 15 帧重新查找，避免整局无图
+    if not self._ghostImgWidget and self._ghostActor then
+        self._ghostWidgetRetryN = (self._ghostWidgetRetryN or 0) + 1
+        if self._ghostWidgetRetryN % 15 == 1 then
+            self._ghostImgWidget = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
+        end
+    end
+    -- 挂件就绪后一次性预加载所有方块预览图（触发异步资源加载），避免快速出块时贴图未就绪就显示导致错乱
+    if self._ghostImgWidget and not self._ghostPreloaded then
+        self:PreloadGhostImages()
+    end
+    -- 设图（方案A：下落开始设一次，类型变化时才重载贴图，避免每帧闪烁）
+    if self._ghostImgWidget then
+        local key = cfg.ImageKeys and cfg.ImageKeys[p.type]
+        local aRef = (type(AssetRef) == "table" and key and AssetRef[key]) or nil
+        local cRef = (type(CreativeAsset) == "table" and key and CreativeAsset[key]) or nil
+        local imgID = aRef or cRef
+        if imgID then
+            -- 贴图为异步加载，首次请求未必即时就绪：类型切换时重置重试窗口，首若干帧持续重试 SetImageContent，
+            -- 直到贴图稳定显示，避免预览首显时图片错乱/空白（硬降快速出块尤其明显）。
+            if self._ghostImgRetryType ~= p.type then
+                self._ghostImgRetryType = p.type
+                self._ghostImgRetryN = 0
+            end
+            if self._ghostImgRetryN < 20 then
+                self._ghostImgRetryN = self._ghostImgRetryN + 1
+                pcall(function() self._ghostImgWidget:SetImageContent(imgID) end)
+                if not self._ghostSetImgLogged then
+                    self._ghostSetImgLogged = true
+                    print(string.format("[Tetris][Ghost] 设图成功 type=%s key=%s src=%s", tostring(p.type), tostring(key), aRef and "AssetRef" or "CreativeAsset"))
+                end
+            end
+        elseif not self._ghostImgLogged then
+            self._ghostImgLogged = true
+            print(string.format("[Tetris][Ghost][WARN] 无占位图(类型=%s 键=%s): AssetRef命中=%s CreativeAsset命中=%s",
+                tostring(p.type), tostring(key), tostring(aRef ~= nil), tostring(cRef ~= nil)))
+        end
+    end
+    -- 显示：设图后延迟 0.5s 才显示到落点位置（pending 期间只设图、不显示）
+    if self._ghostShowPending then
+        self:SetGhostVisible(false)
+    else
+        pcall(function() self._ghostActor:K2_TeleportTo(cmVec(center), rot) end)
+        self:SetGhostVisible(true)
+    end
+    -- 心跳诊断：每 60 帧打印一次 ghost 状态（Ghost.Debug=true 时，默认关闭）
+    if cfg.Debug then
+        self._ghostDbgN = (self._ghostDbgN or 0) + 1
+        if self._ghostDbgN % 60 == 1 then
+            print(string.format("[Tetris][Ghost][DBG] actor=%s imgW=%s type=%s landY=%d pos=(%.1f,%.1f,%.1f) rot=%d show=%s",
+                tostring(not not self._ghostActor), tostring(not not self._ghostImgWidget),
+                tostring(p.type), ly, center.X, center.Y, center.Z, p.rot, tostring(not self._ghostShowPending)))
+        end
+    end
+end
+
 -- 把 Hold / Next 图片写入盘面前方 3D 大框的图片控件（替代 2D Hold/Next）。
 -- 若大框未生成或图片子控件未定位，则缓存类型，待生成/定位后补刷。
 -- 道具图片（IsItemType，即 PieceImages[9/10/11]）颜色设为白色；普通方块按 PieceTint 染色。
@@ -2699,10 +2988,12 @@ function TetrisRenderer:AttachItemUIToBlock(block, loc, pieceType)
     if not e then
         e = self:EnsureFreeItemUI()
         if not e then return end
-        pcall(function() e.actor:K2_AttachToActor(block, "", 1, 1, 1, false) end)  -- 附加到子级（幂等）
-        e.attachedTo = block
         self._itemUIByBlock[block] = e
     end
+    -- 每帧幂等重试挂载：服务器抖动/资源晚就绪时 K2_AttachToActor 可能静默失败，下帧再来直到成功（与 EnsureWholePieceAttached 同策略）。
+    -- 即使挂载始终未成功，下方每帧 K2_TeleportTo 仍把 UI 摆到方块正前方（传送兜底），显示不受影响。
+    pcall(function() e.actor:K2_AttachToActor(block, "", 1, 1, 1, false) end)  -- 附加到子级（幂等）
+    e.attachedTo = block
     -- 定位：方块「正前方（朝玩家）」+ 垂直偏移（基于 cellLocation，与方块同基准）
     local fwd = self.boardForward
     local front = (cfg.FrontOffsetM ~= nil) and cfg.FrontOffsetM or 1.0
@@ -2823,6 +3114,8 @@ function TetrisRenderer:Update(board, running)
     self:BuildBehindBoardWidget()
     -- 兜底生成盘面前方 3D 大框（BigFrame3D）：同样幂等，AssetRef 晚注册时在此重试。
     self:BuildFrontBoardWidget()
+    -- 兜底生成落点预览 Ghost Actor（方案A）：幂等，AssetRef 晚注册时在此重试。
+    self:BuildGhostActor()
 
     -- 盘面前方 3D 大框 Hold/Next/backlight：每帧按 running 显隐（初始/暂停/结束隐藏，方块下落时显示）。
     -- 直接操作图片控件对象（SetImageContent/SetImageColor/SetVisible），与背后盘面一致；不依赖 ps，AI 盘也在此路径刷新。
@@ -2907,6 +3200,9 @@ function TetrisRenderer:Update(board, running)
 
     -- 活动方块整体层（位移/旋转只传根）
     self:RenderActivePiece(board)
+
+    -- 落点预览 Ghost：每帧按 hardDrop 落点重定位 + 按当前 rot 旋转 Actor（方案A 单图标）。
+    self:RenderGhost(board, running)
 
     -- 道具方块：灰色 1×1 方块本体（活动掉落块，复用静态方块池）+ 头顶 3D 浮空图（池，覆盖活动格与落地格）
     self:UpdateItemBlock(board)

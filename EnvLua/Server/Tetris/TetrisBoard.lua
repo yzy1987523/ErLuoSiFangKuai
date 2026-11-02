@@ -195,6 +195,9 @@ function TetrisBoard:spawn(typeOverride)
     local y = 1  -- 顶行对齐，矩阵内的空行使方块视觉上略靠下
 
     self.active = { type = t, rot = 1, x = x, y = y }
+    self:markGhostDirty()   -- 新块出现：标记预览需重绘
+    self.grounded = false   -- 新块在顶部未落定：重置落地标记（供预览"落地即移走"判断）
+    self.groundTimer = 0
     -- 应用「禁止转动」减益（对手 SK-01 注入）：本块无法旋转
     if self.noRotateNext and self.noRotateNext > 0 then
         self.active.noRotate = true
@@ -263,6 +266,13 @@ function TetrisBoard:canPlace(piece, x, y, rot)
 end
 
 -- ---------------- 操作 ----------------
+-- 标记落点预览需重绘：生成/移动/旋转/下落/锁定等改变活动块状态时调用，渲染层据此惰性刷新（避免每帧重定位）
+function TetrisBoard:markGhostDirty()
+    if self.game and self.game.renderer then
+        self.game.renderer._ghostDirty = true
+    end
+end
+
 function TetrisBoard:move(dx)
     if self.isGameOver or not self.active then return false end
     if self.active.swapLR then dx = -dx end   -- SK-08「左右对调」：左右方向键互换
@@ -270,6 +280,7 @@ function TetrisBoard:move(dx)
     if self:canPlace(p, p.x + dx, p.y, p.rot) then
         p.x = p.x + dx
         self:resetLockDelay()   -- 成功平移（含贴地滑动）→ 重置落地锁定延迟
+        self:markGhostDirty()
         return true
     end
     return false
@@ -308,6 +319,7 @@ function TetrisBoard:rotate(dir)
             p.y = p.y - k[2]
             p.rot = to
             self:resetLockDelay()   -- 成功旋转（含贴地转身）→ 重置落地锁定延迟
+            self:markGhostDirty()
             return true
         end
     end
@@ -323,6 +335,7 @@ function TetrisBoard:softDrop()
         self.grounded = false   -- 又能下落 → 解除贴地锁定状态
         self.groundTimer = 0
         self.score = self.score + TetrisConfig.Score.SoftDropPerCell
+        self:markGhostDirty()
         return true
     end
     return false
@@ -369,6 +382,9 @@ function TetrisBoard:hold()
             x = math.floor((self.cols - size) / 2) + 1,
             y = 1,
         }
+        self:markGhostDirty()   -- Hold 取出暂存块：标记预览需重绘
+        self.grounded = false   -- 取出的块在顶部未落定：重置落地标记
+        self.groundTimer = 0
         -- Hold 取出的方块同样计入「禁止转动」减益
         if self.noRotateNext and self.noRotateNext > 0 then
             self.active.noRotate = true
@@ -417,6 +433,7 @@ function TetrisBoard:lockPiece()
     -- 使其能像普通旧块一样参与 delta 计算与延迟下落。
     self.pendingLockedCells = (#lockedCells > 0) and lockedCells or nil
     self.active = nil
+    self:markGhostDirty()   -- 锁定→无活动块：标记预览需隐藏
 
     -- SK-08「左右对调」：对手当前方块落地 → 解除申请方冷却，并标记下一个方块左右互换
     if self.swapRequested and self.pendingSwapRequester then
@@ -478,6 +495,10 @@ function TetrisBoard:doClear()
     if not self.lockPaused then return false end
     self.lockPaused = false
     local cleared = self:clearLines(true)   -- 1) 消行+道具：只「消除+道具」，不坍塌（坍塌延迟到特效播完后）
+    if cleared > 0 and self.game then
+        -- 按消行数播放音效（仅真人盘有 PlayerState 时生效；AI 盘 GetPlayerState 返回 nil，自动跳过）
+        pcall(function() self.game:PlayLineClearSound(cleared) end)
+    end
     self:resolveGarbageOffset()             -- 2) 抵消：要扔出的 outgoing ←→ 即将升起的 incoming(pendingGarbage)
     if cleared > 0 then
         -- 消除阶段：数据层已「消除+道具」完成（尚未坍塌），转 clearing 阶段；
@@ -819,6 +840,7 @@ function TetrisBoard:tick()
         self.grounded = false
         self.groundTimer = 0
         p.y = p.y + 1
+        self:markGhostDirty()   -- 重力下落一格：预览需跟随
         return true
     end
     -- 落不动：进入/累计「落地锁定延迟」，给玩家在底面滑动/转身的时间（经典 lock delay）。
