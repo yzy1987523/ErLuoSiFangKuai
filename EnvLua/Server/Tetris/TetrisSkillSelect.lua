@@ -126,6 +126,9 @@ function TetrisSkillSelect:ShowPanelFor(ps, visible)
         end
         -- 隐藏其余 3 个已有技能框（未入选技能的容器/背景）
         for _, id in ipairs(cfg.HiddenFrames or {}) do self:ShowFor(ps, id, false) end
+        -- 隐藏“等待对手”提示：它是技能面板（父容器）的子控件，ShowPanelFor 显示父面板时会把它一起带出，
+        -- 故必须在这里（父面板显示之后）再隐藏一次，否则会像上面 3 个框那样被父面板带出而“隐藏失败”。
+        if cfg.WaitHint then self:ShowFor(ps, cfg.WaitHint, false) end
         -- 显示 2 个槽位的按钮 / 图标 / 描述文本，并恢复按钮交互
         for _, id in ipairs(self:SkillButtonIDs()) do
             self:ShowFor(ps, id, true)
@@ -246,18 +249,35 @@ function TetrisSkillSelect:OnStartClicked(ps)
     self:ShowForAll(cfg.StartPanel, false)        -- 隐藏开始界面（整体）
     self:ShowForAll(cfg.StartBtn, false)          -- 隐藏开始按钮（冗余保险）
 
+    -- 点击「开始游戏」后再统一隐藏一次所有“初始不应显示”的组件（Hold/Next/Combo/垃圾/BigTip/
+    -- 技能指示器/道具提示图等），确保进入技能选择前这些控件不会因编辑器默认可见而残留显示。
+    -- HideInitUI 内部对每个棋盘实例执行，AI 盘（无 PlayerState）自动跳过。
+    local mm = self.match
+    if mm and type(mm.list) == "table" then
+        print("[Tetris][Skill] 点击开始游戏后，再次执行 HideInitUI")
+        for _, g in ipairs(mm.list) do
+            if type(g.HideInitUI) == "function" then g:HideInitUI() end
+        end
+    end
+
     -- 单击 StartBtn 后才据单人判定：单人 + AI 难度面板可用 → 先弹 AiPanel（选完难度再出技能面板）；
     -- 否则（双人 / 面板未配置）直接出技能面板。
     -- 惰性 require：避免与 TetrisAIDifficulty 形成加载期循环依赖（其顶部 require 了本模块）。
     local m = self.match
     local isSingle = (m and m.realPlayers or 0) < 2
     local TetrisAIDifficulty = require("EnvLua.Server.Tetris.TetrisAIDifficulty")
+    print(string.format("[Tetris][Skill] 「开始游戏」被点击（realPlayers=%s，isSingle=%s）→ %s",
+        tostring(m and m.realPlayers), tostring(isSingle),
+        (isSingle and TetrisAIDifficulty and TetrisAIDifficulty:Available()) and "弹 AiPanel（延迟一帧显示）" or "直接进技能选择（延迟一帧显示）"))
     if isSingle and TetrisAIDifficulty and TetrisAIDifficulty:Available() then
         local ai = TetrisAIDifficulty:new(self.owner, m)
         m.aiSelect = ai
-        ai:Begin(self.players)
+        -- 延迟一帧再弹 AiPanel：避免“开始游戏”这一下点击穿透到随即出现的难度按钮，
+        -- 否则同一点击会同时触发 OnStartClicked 与 OnPick(Easy)，表现为“没点难度却已选中”。
+        self.owner:AddTimerOnce(0.1, function() ai:Begin(self.players) end)
     else
-        self:ShowSkillPanel()
+        -- 同样延迟一帧，避免点击穿透到技能按钮（双人径直进技能选择时同理）
+        self.owner:AddTimerOnce(0.1, function() self:ShowSkillPanel() end)
     end
 end
 
@@ -279,6 +299,26 @@ function TetrisSkillSelect:RegisterSkills()
     print("[Tetris][Skill] 技能按键已注册（2 槽位随机技能）")
 end
 
+-- 技能选择阶段“等待对手”提示：自己已选完、但仍有对手未选时，给已选完的一方显示；
+-- 全员选完（即将进入 loading）时隐藏。控件 ID 取自 TetrisConfig.SkillSelect.WaitHint（ci() 解析）。
+function TetrisSkillSelect:RefreshWaitHint()
+    print(string.format("[Tetris][WaitHint]================》"))
+    local hintID = TetrisConfig.SkillSelect.WaitHint
+    if not hintID or type(CustomUIAPI) ~= "table" then return end
+    local allChosen = true
+    for _, p in ipairs(self.players) do
+        if not self.choices[p] then allChosen = false break end
+    end
+    for _, p in ipairs(self.players) do
+        -- 仅“自己已选、对手未齐”的一方看到提示（单人局无对手，不会出现）
+        local show = (not allChosen) and (self.choices[p] ~= nil)
+        pcall(function() CustomUIAPI.SetWidgetVisible(p, hintID, show) end)
+        if show then
+            print(string.format("[Tetris][WaitHint] 显示等待对手提示 -> 玩家 %s（对方尚未选完）", tostring(keyOf(p))))
+        end
+    end
+end
+
 function TetrisSkillSelect:OnPick(ps, key)
     if self.done or not ps then return end
     if not self:isParticipant(ps) then return end
@@ -294,6 +334,8 @@ function TetrisSkillSelect:OnPick(ps, key)
             pcall(function() CustomUIAPI.SetWidgetInteraction(ps, id, false) end)
         end
     end
+
+    self:RefreshWaitHint()   -- 更新“等待对手”提示：自己已选、对手未齐则显示
 
     print(string.format("[Tetris][Skill] 玩家 %s 选择：%s", tostring(keyOf(ps)), self:SkillName(key)))
     self:Notify(ps, "已选择技能：" .. self:SkillName(key))
@@ -325,6 +367,7 @@ end
 function TetrisSkillSelect:Finish()
     if self.done then return end
     self.done = true
+    self:RefreshWaitHint()   -- 全员选完，隐藏“等待对手”提示（即将进入 loading）
     -- 不在此隐藏选择界面：保持可见，待 loading 隐藏时由 TetrisMatch 统一隐藏。
     -- 未选择的玩家回填默认技能
     local def = cfgOf().DefaultSkill or "SK02"

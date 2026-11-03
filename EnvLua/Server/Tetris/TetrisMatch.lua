@@ -186,6 +186,23 @@ function TetrisMatch:_retryBackgroundWidgets()
 end
 
 -- 开局：枚举在场玩家 → 分配棋盘 → 互设对手 → 注册输入 → 玩法选择阶段（选完传送+开局）
+-- 统计当前在场真人数量（与 Start / TryStartGameplay 共用同一判定，避免重复）：
+-- 优先用 pawn 数（比 PlayerState 计数更准，可剔除无 pawn 的幽灵态），回退到 PlayerState 数。
+function TetrisMatch:GetRealPlayerCount()
+    local stateCount, pawnCount = 0, 0
+    local okS, pstates = pcall(function() return Game:GetAllPlayerStates() end)
+    if okS and pstates then
+        local okN, n = pcall(function() return pstates:Num() end)
+        if okN and type(n) == "number" then stateCount = n end
+    end
+    local okP, parrs = pcall(function() return Game:GetAllPlayerPawns() end)
+    if okP and parrs then
+        local okN, n = pcall(function() return parrs:Num() end)
+        if okN and type(n) == "number" then pawnCount = n end
+    end
+    return (pawnCount > 0) and pawnCount or stateCount
+end
+
 function TetrisMatch:Start()
     -- ===== 第一阶段：玩家枚举/分配/注册输入/隐藏初始界面（仅首次执行一次）=====
     -- OnRoundStart 可能多次回调 Start，且首次回调时 CreativeInstance 控件可能尚未注入；
@@ -228,15 +245,13 @@ function TetrisMatch:Start()
     -- 仅"有 pawn 的真人"参与分配：引擎单人/测试环境会多报一个无 pawn 的 PlayerState，
     -- 若把它也算进 assigned，会导致：单人被误判为双人（AiPanel 不弹）、且空盘无法变 AI 对手。
     -- pawn 接口不可用时回退到 PlayerState 计数（原行为，无法剔除幽灵态），避免分配为空导致流程中断。
-    local realPlayers, contenders
+    local contenders
     if pawnCount > 0 then
-        realPlayers = pawnCount
         contenders = {}
         for _, p in ipairs(players) do
             if p.hasPawn then contenders[#contenders + 1] = p end
         end
     else
-        realPlayers = #players
         contenders = players
     end
 
@@ -322,27 +337,18 @@ function TetrisMatch:Start()
     -- 技能/玩法选择界面。
     self._enteredGame = false
 
-    -- 开始界面（StartPanel / StartBtn）默认隐藏：在技能选择初始化(Begin)前先强制隐藏，
-    -- 避免编辑器默认设为可见导致 loading 期闪烁；真正的显示由 TetrisSkillSelect:Begin 在初始化时执行。
+    -- 统一隐藏所有“初始不应显示”的 UI 组件（技能选择界面 + 盘面基础 UI + 技能/状态指示器 + 道具提示图）。
+    -- 逻辑集中在 TetrisGame:HideInitUI()，于匹配初始化阶段、技能选择界面出现前，按每个棋盘实例执行一次；
+    -- AI 盘无 PlayerState，在 HideInitUI 内部自动跳过。
     do
-        local scfg = TetrisConfig.SkillSelect or {}
-        local hud = TetrisConfig.ShowHudAfterSkill
         if type(CustomUIAPI) == "table" then
-            for _, ps in ipairs(assigned) do
-                if scfg.StartPanel then pcall(function() CustomUIAPI.SetWidgetVisible(ps, scfg.StartPanel, false) end) end
-                if scfg.StartBtn   then pcall(function() CustomUIAPI.SetWidgetVisible(ps, scfg.StartBtn, false) end) end
-                -- 游戏内 HUD 默认隐藏（选完技能、显示 loading 时才显示）
-                if type(hud) == "table" and type(CreativeInstance) == "table" then
-                    for _, key in ipairs(hud) do
-                        local hid = CreativeInstance[key]
-                        if hid ~= nil then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
-                    end
-                end
+            for _, g in ipairs(self.list) do
+                g:HideInitUI()
             end
         end
     end
 
-        self.realPlayers = realPlayers
+        self.realPlayers = self:GetRealPlayerCount()
     end  -- _setupDone
 
     -- ===== 第二阶段：开局前置阶段 =====
@@ -662,21 +668,9 @@ function TetrisMatch:TryStartGameplay()
     self._started = true
     self:ShowLoading(false)
 
-    -- 单人/双人判定：用"可操作 pawn 数"判定真人（比 GetAllPlayerStates():Num() 更准，
-    -- 单人环境引擎可能多报一个无 pawn 的 PlayerState）。真人 <2 => 单人（多余盘作 AI 对手）；
-    -- >=2 => 双人（正常对战）。盘面恒为 2（spawnKeys 配 2 个出生点）。
-    local stateCount, pawnCount = 0, 0
-    local okS, pstates = pcall(function() return Game:GetAllPlayerStates() end)
-    if okS and pstates then
-        local okN, n = pcall(function() return pstates:Num() end)
-        if okN and type(n) == "number" then stateCount = n end
-    end
-    local okP, parrs = pcall(function() return Game:GetAllPlayerPawns() end)
-    if okP and parrs then
-        local okN, n = pcall(function() return parrs:Num() end)
-        if okN and type(n) == "number" then pawnCount = n end
-    end
-    local realPlayers = (pawnCount > 0) and pawnCount or stateCount
+    -- 单人/双人判定（复用 GetRealPlayerCount，与 Start 同一口径）：
+    -- 真人 <2 => 单人（多余盘作 AI 对手）；>=2 => 双人（正常对战）。盘面恒为 2（spawnKeys 配 2 个出生点）。
+    local realPlayers = self:GetRealPlayerCount()
     local isSingle = realPlayers < 2
     print(string.format("[Tetris][Versus] 模式=%s（盘面数=%d）",
         isSingle and "单人(AI对手)" or "双人", #self.list))

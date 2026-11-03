@@ -820,6 +820,9 @@ TetrisConfig.SkillSelect = {
     IconSK07  = ci("1_CreativeInstance_23643901228761309"),  -- SK-07 图标
     IconSK08  = ci("1_CreativeInstance_23643900267681567"),  -- SK-08 图标
 
+    -- 技能选择阶段“等待对手”提示控件：对手未选完时显示给已选完的一方，进入 loading 时由代码隐藏。
+    WaitHint = ci("1_CreativeInstance_23643900373784727"),
+
     -- 2 个技能槽位（开局从 Pool 随机抽 2 个技能填入）；每个槽位 = 按钮 + 图标 + 描述文本。
     --   以下 UUID 复用编辑器中原 SK02/SK07 的按钮与图标控件，作为「通用槽位」，内容由随机决定。
     SlotButtons = {

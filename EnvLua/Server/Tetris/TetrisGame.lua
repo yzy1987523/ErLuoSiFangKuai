@@ -63,66 +63,26 @@ function TetrisGame:Start()
     end
     self:ScheduleSettle()   -- 先让实例 spawn 完成并把显隐刷到位
 
-    -- 开局先隐藏 Hold / Next 组件：尚未有方块时不应显示空槽（避免首帧闪烁）。
-    do
-        local ui = TetrisConfig.UI
-        local ps = self:GetPlayerState()
-        if ui and ps and type(CustomUIAPI) == "table" then
-            pcall(function() if ui.HoldImg then CustomUIAPI.SetWidgetVisible(ps, ui.HoldImg, false) end end)
-            pcall(function() if ui.NextImg then CustomUIAPI.SetWidgetVisible(ps, ui.NextImg, false) end end)
-            -- Combo 图片：开局先隐藏，避免上局残留的 combo 提示在开局瞬间闪现
-            pcall(function() if ui.ComboImg then CustomUIAPI.SetWidgetVisible(ps, ui.ComboImg, false) end end)
-            -- 垃圾行提示框：开局先隐藏（暂停期间 UpdateHUD 不跑，需主动清，避免上局残留）
-            pcall(function() if ui.GarbageSendHint then CustomUIAPI.SetWidgetVisible(ps, ui.GarbageSendHint, false) end end)
-            pcall(function() if ui.GarbageRecvHint then CustomUIAPI.SetWidgetVisible(ps, ui.GarbageRecvHint, false) end end)
-            -- 中央大图提示组件（BigTipInstance）：开局先隐藏，避免编辑器默认可见导致一开局就显示空大图（仅技能释放时弹出）
-            local bigTip = TetrisConfig.Skill and TetrisConfig.Skill.BigTipInstance
-            if bigTip then pcall(function() CustomUIAPI.SetWidgetVisible(ps, bigTip, false) end) end
-            -- 开局统一先隐藏下列状态/指示器组件（编辑器默认可见，仅在对局中特定时机才显示）：
-            --   SK07 冷却常驻指示器、SK08 左右对调生效指示器、SK01 被限制方提示图
-            local initHidden = {
-                (TetrisConfig.Skills and TetrisConfig.Skills.SK07 and TetrisConfig.Skills.SK07.cdIndicator),
-                (TetrisConfig.Skills and TetrisConfig.Skills.SK08 and TetrisConfig.Skills.SK08.indicator),
-                (TetrisConfig.Skills and TetrisConfig.Skills.SK01 and TetrisConfig.Skills.SK01.rotLockVictimImg),
-                (TetrisConfig.Skills and TetrisConfig.Skills.SK06 and TetrisConfig.Skills.SK06.attackBuffImg),
-            }
-            for _, hid in ipairs(initHidden) do
-                if hid then
-                    -- print(string.format("[DBG][initHidden] run hid=%s psNil=%s", tostring(hid), tostring(ps == nil)))
-                    local ok, err = pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end)
-                    -- if not ok then print(string.format("[DBG][initHidden] FAIL hid=%s err=%s", tostring(hid), tostring(err))) end
-                end
-            end
-            -- 开局先隐藏两处技能提示图（编辑器默认可能可见，仅生效时才显示）：
-            --   SK01 限制旋转 → 施法方 1 图；SK08 左右翻转 → 被翻转方 3 图
-            local sk1 = TetrisConfig.Skills and TetrisConfig.Skills.SK01
-            if sk1 and sk1.rotLockCasterImg then
-                pcall(function() CustomUIAPI.SetWidgetVisible(ps, sk1.rotLockCasterImg, false) end)
-            end
-            local sk8 = TetrisConfig.Skills and TetrisConfig.Skills.SK08
-            if sk8 then
-                for _, id in ipairs(sk8.flipVictimImgs or {}) do
-                    if id then pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end) end
-                end
-            end
-        end
-        -- 取消可能未到期的 combo 隐藏定时器，避免重开后用旧定时器误隐藏新局提示
-        if self._comboHideTimer then
-            pcall(function() self.owner:RemoveTimer(self._comboHideTimer) end)
-            self._comboHideTimer = nil
-        end
-        -- 复位垃圾提示"RECV 正在显示"标记（提示无定时器，仅由垃圾升起触发隐藏）
-        self._recvShowing = false
-        -- 同时复位「已显示类型」标记：重开复用实例时 self._shownHold/_shownNext 残留上一局的值，
-        -- 若新抽到的首块类型恰等于旧标记，UpdateHoldNextUI 会误判"已在显示"而不重新 SetVisible(true)，
-        -- 导致 Hold/Next 一直隐藏。归位为 false 后，下一帧 UpdateHoldNextUI 必重新显示。
-        self._shownHold = false
-        self._shownNext = false
-        -- 复位垃圾提示的 pendingGarbage 边沿跟踪，避免上局残留的 >0 值在新局误触发"升起隐藏"
-        self._prevMyPend = 0
-        self._prevOppPend = 0
-        self._recvHintLabel = nil
+    -- 以下为实例状态复位（与 UI 隐藏无关）。
+    -- 注意：盘面基础 UI / 道具提示图 / HUD 等的“开局先隐藏”已在 TetrisMatch:Start() 的 _setupDone 阶段
+    -- （匹配初始化、技能选择之前）统一执行（见 HideInitUI）；而“技能提示/指示器”组件的隐藏则拆到
+    -- HideSkillHintUI，在本函数（真正开始对局）调用。
+    -- 取消可能未到期的 combo 隐藏定时器，避免重开后用旧定时器误隐藏新局提示
+    if self._comboHideTimer then
+        pcall(function() self.owner:RemoveTimer(self._comboHideTimer) end)
+        self._comboHideTimer = nil
     end
+    -- 复位垃圾提示"RECV 正在显示"标记（提示无定时器，仅由垃圾升起触发隐藏）
+    self._recvShowing = false
+    -- 同时复位「已显示类型」标记：重开复用实例时 self._shownHold/_shownNext 残留上一局的值，
+    -- 若新抽到的首块类型恰等于旧标记，UpdateHoldNextUI 会误判"已在显示"而不重新 SetVisible(true)，
+    -- 导致 Hold/Next 一直隐藏。归位为 false 后，下一帧 UpdateHoldNextUI 必重新显示。
+    self._shownHold = false
+    self._shownNext = false
+    -- 复位垃圾提示的 pendingGarbage 边沿跟踪，避免上局残留的 >0 值在新局误触发"升起隐藏"
+    self._prevMyPend = 0
+    self._prevOppPend = 0
+    self._recvHintLabel = nil
 
     -- 开局预览：把 7 种方块摆在面前排成一排，暂停下落 N 秒供肉眼核对形状，再正式开始。
     -- 仅整体模式(wholePieceAttach)有效；回退模式不进预览，直接开始。
@@ -160,9 +120,9 @@ function TetrisGame:Start()
     self:InitSkillUI()              -- 技能：说明文本 + 蓄能条置零
     self:UpdateNameTags()           -- 名字组件：显示我方 / 对方 名字
     self:UpdateAvatarTags()         -- 头像组件：显示我方 / 对方 头像（开局随机分配）
-    self:HideChargeItemImage()      -- 充能块提示图：开局先隐藏（控件编辑器默认可能可见）
-    self:HideBlastImage()           -- 爆炸道具块提示图：开局先隐藏（透明度置 0）
-    self:HideShiftImage()           -- 位移道具两张提示图：开局先隐藏（透明度置 0）
+    -- 技能提示/指示器组件（SK 状态指示器、WaitHint、BigTip、翻转提示图）的开局隐藏：
+    -- 已拆到 HideSkillHintUI，在此（真正开始对局）调用，与盘面基础 UI 的 HideInitUI（匹配初始化阶段）分开。
+    self:HideSkillHintUI()
     print("[Tetris] Start")
 end
 
@@ -1062,15 +1022,103 @@ function TetrisGame:ShowChargeItemImage()
     end)
 end
 
--- 开局显式隐藏充能块提示图：该控件在编辑器里可能默认可见，而代码从不在开局隐藏它，
--- 会导致「一开局就显示」。此处在 Start 时主动隐藏，确保只在真正消除充能块(ShowChargeItemImage)时才出现。
--- 仅对真人盘（有 PlayerState）生效；AI 盘无 PlayerState 自动跳过。
-function TetrisGame:HideChargeItemImage()
-    local ui = TetrisConfig.UI
-    local id = ui and ui.ChargeItemImg
+-- 隐藏“技能提示/指示器”相关组件（技能状态指示器、中央大图提示、技能翻转提示图）+ 盘面/道具提示
+-- （Combo / 垃圾行提示 / 充能·爆破·位移道具提示图）。这些组件只在真正的对局开始
+-- （TetrisGame:Start）时才隐藏，由 TetrisGame:Start() 调用；与 HideInitUI（匹配初始化阶段，处理
+-- 技能选择界面 + Hold/Next 基础 UI）分开。
+-- 仅对真人盘（有 PlayerState）生效；AI 盘无 ps 自动跳过。每个组件的成功/失败都会打印，便于定位隐藏失败的组件。
+function TetrisGame:HideSkillHintUI()
     local ps = self:GetPlayerState()
-    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
-    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+    if not ps or type(CustomUIAPI) ~= "table" then
+        print(string.format("[DBG][HideSkillHintUI] 跳过：ps=%s customUI=%s", tostring(ps), type(CustomUIAPI)))
+        return
+    end
+    local skills = TetrisConfig.Skills
+    local ui = TetrisConfig.UI
+    local list = {
+        -- 技能/状态指示器（编辑器默认可见，仅在对局中特定时机才显示）
+        { "SK07.cdIndicator",      skills and skills.SK07 and skills.SK07.cdIndicator },
+        { "SK08.indicator",        skills and skills.SK08 and skills.SK08.indicator },
+        { "SK01.rotLockVictimImg", skills and skills.SK01 and skills.SK01.rotLockVictimImg },
+        { "SK06.attackBuffImg",    skills and skills.SK06 and skills.SK06.attackBuffImg },
+        { "SK01.rotLockCasterImg", skills and skills.SK01 and skills.SK01.rotLockCasterImg },
+        { "Skill.BigTipInstance",  TetrisConfig.Skill and TetrisConfig.Skill.BigTipInstance },
+        -- 盘面/道具提示：原属 HideInitUI，现一并在此于对局开始隐藏
+        { "UI.ComboImg",        ui and ui.ComboImg },
+        { "UI.GarbageSendHint", ui and ui.GarbageSendHint },
+        { "UI.GarbageRecvHint", ui and ui.GarbageRecvHint },
+        { "UI.ChargeItemImg",   ui and ui.ChargeItemImg },
+        { "UI.BlastImg",        ui and ui.BlastImg, opacity = true },
+        { "UI.ShiftImg1",       ui and ui.ShiftImg1, opacity = true },
+        { "UI.ShiftImg2",       ui and ui.ShiftImg2, opacity = true },
+    }
+    -- 展开 SK08 被翻转方多图
+    local sk8 = skills and skills.SK08
+    if sk8 and sk8.flipVictimImgs then
+        for i, id in ipairs(sk8.flipVictimImgs) do
+            list[#list + 1] = { "SK08.flipVictimImgs[" .. i .. "]", id }
+        end
+    end
+    local fail = 0
+    for _, e in ipairs(list) do
+        if not self:_hideOne(ps, e[1], e[2], e.opacity, "HideSkillHintUI") then fail = fail + 1 end
+    end
+    print(string.format("[DBG][HideSkillHintUI] 完成 ps=%s 共 %d 项 失败 %d 项", tostring(ps), #list, fail))
+end
+
+-- 统一隐藏“技能选择界面 + 盘面基础 UI（Hold/Next）”组件。于匹配初始化阶段、技能选择界面出现前，
+-- 由 TetrisMatch:Start() 的 _setupDone 对每个棋盘实例调用一次；AI 盘无 PlayerState，内部自动跳过。
+-- 注：技能提示/指示器 + Combo/垃圾/道具提示图已拆到 TetrisGame:HideSkillHintUI()，由 TetrisGame:Start() 调用，
+--     故此处不再处理它们。
+function TetrisGame:HideInitUI()
+    local ps = self:GetPlayerState()
+    if not ps or type(CustomUIAPI) ~= "table" then
+        print(string.format("[DBG][HideInitUI] 跳过：ps=%s customUI=%s", tostring(ps), type(CustomUIAPI)))
+        return
+    end
+    local ui = TetrisConfig.UI
+    local initHidden = {
+        -- 技能选择界面（匹配初始化阶段先藏，WaitHint 另由 ShowPanelFor 在面板显示后兜底重藏）
+        { "SkillSelect.StartPanel",    TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.StartPanel },
+        { "SkillSelect.StartBtn",      TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.StartBtn },
+        { "SkillSelect.WaitHint",      TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.WaitHint },
+        -- 盘面基础 UI：开局前不应显示空槽 / 残留
+        { "UI.HoldImg",            ui and ui.HoldImg },
+        { "UI.NextImg",            ui and ui.NextImg },
+    }
+    -- 展开游戏内 HUD（按 CreativeInstance 键解析；选完技能、显示 loading 时才显示）
+    local hud = TetrisConfig.ShowHudAfterSkill
+    if type(hud) == "table" and type(CreativeInstance) == "table" then
+        for _, key in ipairs(hud) do
+            initHidden[#initHidden + 1] = { "HUD." .. tostring(key), CreativeInstance[key] }
+        end
+    end
+    local fail = 0
+    for _, e in ipairs(initHidden) do
+        if not self:_hideOne(ps, e[1], e[2], e.opacity, "HideInitUI") then fail = fail + 1 end
+    end
+    print(string.format("[DBG][HideInitUI] 完成 ps=%s 共 %d 项 失败 %d 项", tostring(ps), #initHidden, fail))
+end
+
+-- 隐藏单个组件；返回 true 表示成功（含 id 为 nil 的跳过），false 表示 SetWidgetVisible 执行出错。
+-- tag 用于日志前缀（区分调用方 HideInitUI / HideSkillHintUI）。
+function TetrisGame:_hideOne(ps, name, id, opacity, tag)
+    tag = tag or "HideInitUI"
+    if id == nil then
+        print(string.format("[DBG][%s] SKIP name=%s id=nil（未配置，跳过）", tag, name))
+        return true
+    end
+    local ok, err = pcall(function()
+        if opacity then CustomUIAPI.SetWidgetImageOpacity(ps, id, 0) end
+        CustomUIAPI.SetWidgetVisible(ps, id, false)
+    end)
+    if ok then
+        print(string.format("[DBG][%s] OK   name=%s id=%s", tag, name, tostring(id)))
+        return true
+    else
+        print(string.format("[DBG][%s] FAIL name=%s id=%s err=%s", tag, name, tostring(id), tostring(err)))
+        return false
+    end
 end
 
 -- 爆炸（爆破）道具块消除提示：显示 BlastImg 图片 BlastImgDuration 秒后自动隐藏（隐藏时透明度改 0）；
@@ -1100,18 +1148,7 @@ function TetrisGame:ShowBlastImage()
     end)
 end
 
--- 开局显式隐藏爆炸道具块提示图：控件编辑器可能默认可见，而代码从不在开局隐藏它会导致「一开局就显示」；
--- 隐藏时透明度也置 0，确保只在真正消除爆破块(ShowBlastImage)时才以不透明出现。仅对真人盘生效。
-function TetrisGame:HideBlastImage()
-    local ui = TetrisConfig.UI
-    local id = ui and ui.BlastImg
-    local ps = self:GetPlayerState()
-    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
-    pcall(function()
-        CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
-        CustomUIAPI.SetWidgetVisible(ps, id, false)
-    end)
-end
+-- （开局隐藏逻辑已统一并入 TetrisGame:HideInitUI，此方法移除）
 
 -- 道具-爆破块：仅真实消行(含爆破块)时取走"待显示标记"并弹提示图（与 ConsumeItemCharge 并列，由 doClear 触发）。
 function TetrisGame:ConsumeBlastImage()
@@ -1159,21 +1196,7 @@ function TetrisGame:ShowShiftImage()
     end)
 end
 
--- 开局显式隐藏位移道具两张提示图：控件编辑器可能默认可见，而代码从不在开局隐藏它们会导致「一开局就显示」；
--- 隐藏时透明度也置 0，确保只在真正消除位移块(ShowShiftImage)时才以不透明出现。仅对真人盘生效。
-function TetrisGame:HideShiftImage()
-    local ui = TetrisConfig.UI
-    local ps = self:GetPlayerState()
-    if not ps or type(CustomUIAPI) ~= "table" then return end
-    for _, id in ipairs({ ui and ui.ShiftImg1, ui and ui.ShiftImg2 }) do
-        if id then
-            pcall(function()
-                CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
-                CustomUIAPI.SetWidgetVisible(ps, id, false)
-            end)
-        end
-    end
-end
+-- （开局隐藏逻辑已统一并入 TetrisGame:HideInitUI，此方法移除）
 
 -- 道具-位移块：仅真实消行(含位移块)时取走"待显示标记"并弹两张提示图（与 ConsumeItemCharge/ConsumeBlastImage 并列，由 doClear 触发）。
 function TetrisGame:ConsumeShiftImage()
