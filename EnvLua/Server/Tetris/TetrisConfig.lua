@@ -853,6 +853,23 @@ TetrisConfig.NameUI = {
     OppName  = ci("1_CreativeInstance_23643901522693787"),  -- 对方名字组件（显示对手昵称 / AI 角色名）
 }
 
+-- ===================== 帮助/玩法说明界面（开局前置分页 UI） =====================
+-- 控件 UUID 在编辑器 UI Editor 预放置后，从全局表 CreativeInstance 复制。
+-- 3 张说明图（AssetRef 里的图片预设 key），用左/右按钮翻页；第 1 页隐藏“左”、最后 1 张隐藏“右”。
+TetrisConfig.HelpUI = {
+    Panel     = ci("1_CreativeInstance_23643900490162089"),  -- 帮助界面容器（显示玩法）
+    ImageView = ci("1_CreativeInstance_23643901800328935"),  -- 说明图显示组件（内容在 3 张图间切换）
+    BtnLeft   = ci("1_CreativeInstance_23643902106286885"),  -- 左（上一页）
+    BtnRight  = ci("1_CreativeInstance_23643900632610044"),  -- 右（下一页）
+    BtnClose  = ci("1_CreativeInstance_23643898864466685"),  -- 关闭
+    OpenBtn   = ci("1_CreativeInstance_23643902038707456"),  -- 开始界面上的「帮助」按钮（点击重新打开帮助界面）
+    Images = {
+        "23_ImagePreset_181443114082742",  -- 第 1 张
+        "23_ImagePreset_181444632707443",  -- 第 2 张
+        "23_ImagePreset_181443485092233",  -- 第 3 张（末页，隐藏“右”）
+    },
+}
+
 -- ===================== 头像组件（对局 HUD：我方 / 对方 头像显示） =====================
 -- 开局从 AvatarPresets 中随机分配；2 名玩家时洗牌分配保证两者头像不同。
 TetrisConfig.AvatarUI = {

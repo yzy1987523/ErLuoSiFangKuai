@@ -15,6 +15,7 @@ local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
 local PuyoGame = require("EnvLua.Server.Tetris.PuyoGame")
 local TetrisModeSelect = require("EnvLua.Server.Tetris.TetrisModeSelect")
 local TetrisSkillSelect = require("EnvLua.Server.Tetris.TetrisSkillSelect")
+local TetrisHelp = require("EnvLua.Server.Tetris.TetrisHelp")
 local TetrisAIDifficulty = require("EnvLua.Server.Tetris.TetrisAIDifficulty")
 local TetrisBehindWidget = require("EnvLua.Server.Tetris.TetrisBehindWidget")
 local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")
@@ -360,12 +361,21 @@ function TetrisMatch:Start()
     self._phaseInitiated = true
     self.skillSelect = TetrisSkillSelect:new(self.owner, self)
     self.skillSelect:Begin(self.assigned)
+    -- 帮助/玩法说明界面：开局先显示帮助，玩家关闭帮助后才显示「开始游戏」界面。
+    self.help = TetrisHelp:new(self.owner, self)
+    if self.help:Available() then
+        self.help:Begin(self.assigned)   -- 显示帮助；关闭后由 TetrisHelp:HideFor 回调 ShowStartScreenFor
+    else
+        -- 未配置帮助界面：直接显示「开始游戏」界面
+        self.skillSelect:ShowStartScreen()
+    end
 end
 
 -- 技能选择结束（或跳过）：按各玩家所选技能记录后，进入玩法选择（若启用）或直接开局。
 -- skillChoices: [PlayerState] = 技能 key（如 "SK01"）。未选择则回退默认技能。
 function TetrisMatch:OnSkillSelected(skillChoices)
     self.skillChoices = skillChoices or {}
+    if self.help then self.help:HideAll() end  -- 选完技能进入开局：确保帮助界面已关闭
     -- 选完技能：进入开局阶段（_enteredGame 标记，供隐藏 loading 时联动隐藏选择界面）。
     -- loading 在真正开始生成对象时（OnModeSelected）再显示，避免盖住中间的玩法选择界面。
     self._enteredGame = true

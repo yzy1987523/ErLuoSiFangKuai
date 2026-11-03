@@ -43,6 +43,11 @@ local function cfgOf()
     return TetrisConfig.SkillSelect or {}
 end
 
+-- 开始界面上的「帮助」按钮 id（定义在 TetrisConfig.HelpUI.OpenBtn）；帮助未配置时为 nil
+local function helpBtnId()
+    return (TetrisConfig.HelpUI and TetrisConfig.HelpUI.OpenBtn) or nil
+end
+
 -- 阶段是否可用：开关打开且至少放了一个技能按键
 function TetrisSkillSelect:Available()
     local cfg = cfgOf()
@@ -200,10 +205,10 @@ function TetrisSkillSelect:Begin(players)
 
     local cfg = cfgOf()
     if cfg.StartBtn then
-        -- 仅显示「开始界面」（含开始按钮），点击后再出技能选择面板
-        self:ShowForAll(cfg.StartPanel, true)
-        self:ShowForAll(cfg.StartBtn, true)
-        self:RegisterStart()
+        -- 「开始界面」延后显示：本方法不再直接显示，由 Match 控制时机——
+        -- 有「帮助界面」时先弹帮助，玩家关闭帮助后再调用 ShowStartScreenFor 显示开始界面；
+        -- 无帮助界面时 Match 会在 Begin 后立即调用 ShowStartScreen 显示。
+        -- （开始按钮事件注册放在 ShowStartScreen / ShowStartScreenFor 内。）
     else
         -- 无开始按钮：直接显示技能选择面板（对所有参与玩家）
         for _, ps in ipairs(self.players) do self:ShowPanelFor(ps, true) end
@@ -214,6 +219,37 @@ function TetrisSkillSelect:Begin(players)
     -- 若需「无人选则自动兜底开局」，可在此恢复：
     --   self.owner:AddTimerOnce(cfg.TimeoutSec or 20, function() self:OnTimeout() end)
     print(string.format("[Tetris][Skill] 等待 %d 名玩家选择技能（无超时，需全部选完才开局）", #self.players))
+end
+
+-- 显示「开始游戏」界面（含开始按钮 + 帮助按钮），并注册开始按钮事件。
+-- 由 Match 在“无帮助界面”时直接调用；或玩家关闭帮助界面后（ShowStartScreenFor）逐人调用。
+function TetrisSkillSelect:ShowStartScreen()
+    local cfg = cfgOf()
+    if not cfg.StartBtn then return end
+    self:ShowForAll(cfg.StartPanel, true)
+    self:ShowForAll(cfg.StartBtn, true)
+    self:ShowForAll(helpBtnId(), true)
+    self:RegisterStart()
+    print("[Tetris][Skill] 显示开始界面（全部玩家）")
+end
+
+-- 仅对单个玩家显示「开始游戏」界面（玩家关闭自己的帮助界面后调用）
+function TetrisSkillSelect:ShowStartScreenFor(ps)
+    local cfg = cfgOf()
+    if not cfg.StartBtn or not ps then return end
+    self:ShowFor(ps, cfg.StartPanel, true)
+    self:ShowFor(ps, cfg.StartBtn, true)
+    self:ShowFor(ps, helpBtnId(), true)
+    self:RegisterStart()
+end
+
+-- 仅对单个玩家隐藏「开始游戏」界面（玩家点击帮助按钮打开帮助时调用）
+function TetrisSkillSelect:HideStartScreenFor(ps)
+    local cfg = cfgOf()
+    if not ps then return end
+    self:ShowFor(ps, cfg.StartPanel, false)
+    self:ShowFor(ps, cfg.StartBtn, false)
+    self:ShowFor(ps, helpBtnId(), false)
 end
 
 -- ---------------- 输入 ----------------
