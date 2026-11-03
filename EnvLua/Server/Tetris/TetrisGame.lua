@@ -25,7 +25,7 @@ function TetrisGame:new(owner, opts)
     o.index = (opts and opts.index) or 0
     o.opponent = nil         -- 对手实例（环形互指）
     o.lastSeq = 0            -- 已提示过的方块生成序号
-    o.skillBars = 0          -- 当前 bar 数（0~NeedBars-1）；集满 NeedBars 兑换 1 power 后清零
+    o.slotProgress = 0      -- 当前槽蓄能进度（0~NeedBars-1，每消1行+1）；集满 NeedBars 兑换 1 power 后清零；由进度条显示
     o.skillPower = 0         -- 当前 power 数（0~MaxPower）；释放技能消耗 1 个
     o.isAI = false           -- 是否 AI 托管（对手盘自动对战）
     o.aiQuality = nil        -- AI 落子质量（0~1，由 AiPanel 难度写入；nil 时视为 1=最优）
@@ -341,8 +341,8 @@ function TetrisGame:Reset()
     self.running = false
     -- 清空数据层：网格 / 当前块 / 暂存(Hold) / 分数 / 等级；next 队列刷新为全新 7-bag（无残留旧块）
     if self.board then self.board:reset() end
-    -- 重置能量槽（技能 bar / power）
-    self.skillBars = 0
+    -- 重置能量槽（技能 进度 / power）
+    self.slotProgress = 0
     self.skillPower = 0
     self.s07Charged = false   -- 重置 SK07 冷却标记
     self.s08Charged = false   -- 重置 SK08 冷却标记
@@ -918,7 +918,7 @@ end
 function TetrisGame:InitSkillUI()
     local cfg = TetrisConfig.Skill
     if not cfg then return end
-    self.skillBars = math.min(cfg.InitBars or 0, cfg.NeedBars or 3)
+    self.slotProgress = math.min(cfg.InitBars or 0, (cfg.NeedBars or 3) - 1)
     self.skillPower = 0
     local ps = self:GetPlayerState()
     if ps and type(CustomUIAPI) == "table" then
@@ -933,6 +933,22 @@ function TetrisGame:InitSkillUI()
            and def and def.iconKey and cfg.IconImage then
             local imgID = (type(AssetRef) == "table" and AssetRef[def.iconKey]) or def.iconKey
             pcall(function() CustomUIAPI.SetImageWidgetContent(ps, cfg.IconImage, imgID) end)
+        end
+        -- 旧 3 个离散蓄能条(Bars)不再使用，统一隐藏；改用 EnergyBar 进度条表示蓄能进度
+        for _, id in ipairs(cfg.Bars or {}) do
+            pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+        end
+        -- 进度条初始化：量程 0~100（百分比，与引擎进度条接口一致），并置可见
+        if cfg.EnergyBar then
+            local maxv = cfg.NeedBars or 3
+            pcall(function() CustomUIAPI.SetProgressBarWidgetMinValue(ps, cfg.EnergyBar, 0) end)
+            pcall(function() CustomUIAPI.SetProgressBarWidgetMaxValue(ps, cfg.EnergyBar, 100) end)
+            pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.EnergyBar, true) end)
+            -- 倒置渲染：写入值(0~100) = (1 - 逻辑进度) * 100；逻辑进度 = slotProgress / maxv。
+            --   InitBars=1 → 逻辑 1/3 → 写入 67（显示约 0.66）；100=满(无进度)，0=空(已耗尽/满槽)。
+            local prog0 = self.slotProgress or 0
+            local pct0 = math.floor((1 - prog0 / maxv) * 100 + 0.5)
+            pcall(function() CustomUIAPI.SetProgressBarWidgetValue(ps, cfg.EnergyBar, pct0) end)
         end
     end
     if TetrisConfig.HintText then
@@ -962,17 +978,39 @@ function TetrisGame:onLinesCleared(cleared)
     end
     local cfg = TetrisConfig.Skill
     if not cfg then return end
-    local needBars = cfg.NeedBars or 3
+    local fillEvery = cfg.NeedBars or 3     -- 几条蓄能(消几行)填满 1 个能量槽
     local maxPower = cfg.MaxPower or 3
+    local filled = false
     for _ = 1, cleared do
-        if self.skillPower >= maxPower then break end   -- power 已满，不再累积 bar
-        self.skillBars = self.skillBars + 1
-        if self.skillBars >= needBars then
-            self.skillBars = 0
+        if self.skillPower >= maxPower then break end   -- 3 槽全满，不再增加能量进度
+        self.slotProgress = (self.slotProgress or 0) + 1
+        if self.slotProgress >= fillEvery then
+            self.slotProgress = 0
             self.skillPower = math.min(self.skillPower + 1, maxPower)
+            filled = true
         end
     end
     self:UpdateSkillUI()
+    -- 填满一个能量槽的瞬间：倒置进度条先闪到「显示 0.99」(写入 0.01) 再清零(写入 1.0，显示空)，短延时归 0，槽已填满
+    if filled and cfg.EnergyBar then
+        local ps = self:GetPlayerState()
+        local barID = cfg.EnergyBar
+        if ps and type(CustomUIAPI) == "table" then
+            pcall(function() CustomUIAPI.SetProgressBarWidgetValue(ps, barID, 0) end)  -- 写入 0 → 显示「已耗尽/清零」(满槽瞬间闪一下)
+            if self.owner and self.owner.AddTimerOnce then
+                if self._energyFillTimer then
+                    pcall(function() self.owner:RemoveTimer(self._energyFillTimer) end)
+                end
+                local selfRef = self
+                self._energyFillTimer = self.owner:AddTimerOnce(0.7, function()
+                    selfRef._energyFillTimer = nil
+                    if selfRef.slotProgress == 0 then
+                        pcall(function() CustomUIAPI.SetProgressBarWidgetValue(ps, barID, 100) end)  -- 写入 100 → 显示满(下一槽重置)
+                    end
+                end)
+            end
+        end
+    end
 end
 
 -- 显示 Combo 图片：按本次消除行数(cleared)换对应图，ComboImgDuration 秒后自动隐藏；
@@ -1152,10 +1190,15 @@ function TetrisGame:UpdateSkillUI()
     local ps = self:GetPlayerState()
     if not ps or type(CustomUIAPI) ~= "table" then return end
 
-    -- bar 图片：bar0..bar2 分别表示第 1~3 格；bar 数 >= 该格序号则显示
-    local bars = cfg.Bars or {}
-    for i, id in ipairs(bars) do
-        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, self.skillBars >= i) end)
+    -- 能量进度条：替代 3 个离散蓄能条。进度条为「倒置」渲染，故写入值 = 1 - 逻辑进度
+    --   （逻辑进度 0 / 0.33 / 0.66 → 写入 1.0 / 0.67 / 0.34；填满槽后 slotProgress=0 → 写入 1.0 即显示清空）。
+    local barID = cfg.EnergyBar
+    if barID then
+        local prog = self.slotProgress or 0
+        local maxv = cfg.NeedBars or 3
+        -- 倒置渲染：写入值(0~100) = (1 - 逻辑进度) * 100；逻辑进度 = slotProgress / maxv
+        local pct = math.floor((1 - prog / maxv) * 100 + 0.5)
+        pcall(function() CustomUIAPI.SetProgressBarWidgetValue(ps, barID, pct) end)
     end
 
     -- power 图片组件：按 power 数把对应槽位替换为「有 power」图，其余为「无 power」图

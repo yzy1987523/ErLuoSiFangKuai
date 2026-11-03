@@ -55,7 +55,7 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
-        --  [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
+          [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
     },
 }
 
@@ -698,7 +698,7 @@ TetrisConfig.SkillEnabled = true
 TetrisConfig.Skill = {
     NeedBars = 3,                                       -- 集满几个 bar 兑换 1 个 power
     MaxPower = 3,                                       -- 最多持有几个 power
-    InitBars = 2,                                       -- 开局默认预填几条蓄能条（0=不送；< NeedBars，故开局不自动产生 power）
+    InitBars = 2,                                       -- 开局进度条预填的「蓄能格数」(0~NeedBars-1)；=1 → 逻辑进度 1/3 → 倒置渲染显示约 0.66；再消 2 行填满 1 个能量槽
     DescText = ci("1_CreativeInstance_23643899335684710"),   -- 技能说明文本控件
     Desc     = "消除 1 行得 1 bar，集满 3 bar 得 1 power；释放技能消耗 1 power",
     IconImage = ci("1_CreativeInstance_23643899882881827"),   -- 局内技能 icon 图片控件（Image 控件）
@@ -719,6 +719,10 @@ TetrisConfig.Skill = {
     },
     PowerEmptyImg = "23_ImagePreset_181443179020119",    -- 无 power 时显示
     PowerFullImg  = "23_ImagePreset_181443890598929",    -- 有 power 时显示
+
+    -- 能量进度条：替代上面 3 个离散蓄能条(Bars)。min=0, max=1; value = 当前蓄能进度(0 / 0.33 / 0.66，集满槽瞬显 0.99 后清零)。
+    --   每消 1 行 +1/3；集满 NeedBars(3) 行填满 1 个能量槽(skillPower+1)并清零进度；3 槽(MaxPower)全满后不再增加能量进度。
+    EnergyBar = ci("1_CreativeInstance_23643899686708477"),
 
     -- 技能不可用（power=0）时，把技能按钮 BtnSkill 图片调暗（opacity 0~1，越小越暗）；
     -- 引擎 Button 控件无 tint/灰度接口，此为「置灰/不可用」近似。有 power 时恢复 1（不透明）。
