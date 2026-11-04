@@ -109,6 +109,11 @@ function TetrisBoard:reset()
     self.clearing = false              -- 消行动画期间置 true：挂起出块与重力，等动画结束后 finishClear()
     self.lockPaused = false             -- 锁定后、消行前的"落地停顿"期间置 true：挂起出块与重力，停顿结束后由 Game 层调用 doClear()
 
+    -- 落石（道具方块 ITEM_STONE）相关状态
+    self.pendingRockfall = 0        -- 待触发的落石垃圾块数量（对手消除落石块后累加；本方下次方块锁定后消费）
+    self.fallingStone = false       -- 是否处于落石状态（仅落石垃圾块下落，无普通方块）
+    self.stones = nil               -- 落石活动垃圾块列表 { {col=_, row=_}, ... }（已写入 grid 的垃圾格，仅跟踪位置）
+
     self:applyInitialLayout()
     self:spawn()
     return self
@@ -473,6 +478,7 @@ function TetrisBoard:lockPiece()
 
     self.stage = "fall"
     self:applyGarbage()
+    if self:tryEnterRockfall() then return 0 end
     self:spawn()
     return 0
 end
@@ -509,6 +515,10 @@ function TetrisBoard:doClear()
     else
         -- 无消行：垃圾仍照常升起，直接出下一块（无消除特效，无需等待）
         self:applyGarbage()
+        if self:tryEnterRockfall() then
+            self.stage = "fall"
+            return cleared
+        end
         self:spawn()
         self.stage = "fall"
     end
@@ -546,6 +556,14 @@ function TetrisBoard:clearLines(countScore)
                     itemEffects.shiftRows[#itemEffects.shiftRows + 1] = r   -- 记录位移块所在行（数据层坐标）
                 elseif it == PT.ITEM_CHARGE then
                     itemEffects.charge = itemEffects.charge + 1
+                elseif it == PT.ITEM_STONE then
+                    -- 落石：对对手触发落石（其下次方块锁定后生成 5~9 个随机列垃圾块下落）
+                    if countScore ~= false then
+                        local opp = self.game and self.game.opponent
+                        if opp and opp.board then
+                            opp.board:queueRockfall(math.random(5, 9))
+                        end
+                    end
                 end
             end
         end
@@ -562,7 +580,8 @@ function TetrisBoard:clearLines(countScore)
     -- 竖版特效必须按「数据层爆破块坐标（bc.c 列）」锚定，与列内是否还残留方块无关——
     -- 满行可能在 STEP1 已被移除、使该列暂无方块，但不能因此漏播特效。故按整列覆盖记录特效。
     -- 约定（对齐 PlayBlastEffectAt）：bottom=较大行号(盘底 self.rows)，top=较小行号(盘顶 1)，整列高度=(rows-1)*step。
-    if #itemEffects.blast > 0 then
+    -- 爆破：仅真实消行(countScore~=false)时触发清除整列；落石专用消行(countScore=false)不触发任何道具效果
+    if countScore ~= false and #itemEffects.blast > 0 then
         local blastFx = {}
         for _, bc in ipairs(itemEffects.blast) do
             local col = bc.c
@@ -598,8 +617,8 @@ function TetrisBoard:clearLines(countScore)
     -- 这里仅暂存被消除满行集合，供 applyClearCollapse 跳过这些行做压缩。
     self._clearFullRows = fullRows
 
-    -- 道具爆破改动了非整体行移动的格子（爆破清列打洞），渲染层需走逐格全量重排（位移整行右移已延迟到 executePendingShift）
-    if #itemEffects.blast > 0 then
+    -- 道具爆破改动了非整体行移动的格子（爆破清列打洞），渲染层需走逐格全量重排（仅真实消行时）
+    if countScore ~= false and #itemEffects.blast > 0 then
         self.pendingItemFx = true
     end
 
@@ -824,10 +843,118 @@ function TetrisBoard:applyGarbage()
     return count
 end
 
+-- ---------------- 落石（道具方块 ITEM_STONE） ----------------
+-- 对手消除落石块后累加待触发数量；本方下次方块锁定后由 tryEnterRockfall 消费并进入落石状态。
+function TetrisBoard:queueRockfall(n)
+    if not n or n <= 0 then return end
+    self.pendingRockfall = (self.pendingRockfall or 0) + n
+end
+
+-- 进入落石状态：消费 pendingRockfall，在随机不同列生成对应数量垃圾块（写入 grid 顶部空位），
+-- 之后由 Game 层以 FallingStoneInterval 节奏驱动 stepStones 下落。返回 true 表示已进入（替代正常出块）。
+function TetrisBoard:tryEnterRockfall()
+    if self.fallingStone or not self.pendingRockfall or self.pendingRockfall <= 0 then return false end
+    local n = math.min(self.pendingRockfall, self.cols)
+    self.pendingRockfall = nil
+    self.fallingStone = true
+    self.active = nil
+    self.stones = {}
+    -- 选 n 个不同列
+    local cols = {}
+    for i = 1, self.cols do cols[i] = i end
+    for i = #cols, 2, -1 do
+        local j = math.random(1, i)
+        cols[i], cols[j] = cols[j], cols[i]
+    end
+    local pick = math.min(n, self.cols)
+    for i = 1, pick do
+        local col = cols[i]
+        local sr = 1
+        while sr <= self.rows and self.grid[sr][col] ~= nil do sr = sr + 1 end
+        if sr <= self.rows then
+            self.grid[sr][col] = makeCell(COLOR_GARBAGE, nil)
+            self.stones[#self.stones + 1] = { col = col, row = sr }
+        end
+    end
+    self.stage = "fall"
+    print(string.format("[Tetris][Rockfall] 进入落石状态 board=%s 石头数=%d", tostring(self.index), #self.stones))
+    if self.game then
+        pcall(function() self.game:OnRockfallStart() end)
+        if self.game.renderer then pcall(function() self.game.renderer:Update(self, self.game.running) end) end
+    end
+    return true
+end
+
+-- 落石垃圾块下落一格（由 Game 层按 FallingStoneInterval 节奏调用）。
+-- 返回 true 表示仍有石头在下落（继续驱动）；false 表示已无活动石头或已进入消行（停止驱动）。
+function TetrisBoard:stepStones()
+    if not self.fallingStone or self.clearing then return false end
+    if not self.stones or #self.stones == 0 then return false end
+    for i = #self.stones, 1, -1 do
+        local s = self.stones[i]
+        local r, c = s.row, s.col
+        local cell = self.grid[r][c]
+        local nr = r + 1
+        if nr > self.rows or self.grid[nr][c] ~= nil then
+            table.remove(self.stones, i)   -- 落不动：落地（cell 已留在 grid 中），移出活动列表
+        else
+            self.grid[nr][c] = cell        -- 下落一格
+            self.grid[r][c] = nil
+            s.row = nr
+        end
+    end
+    if self:hasFullRows() then
+        self:beginRockfallClear()
+        return false
+    end
+    if #self.stones == 0 then
+        self:onRockfallFallingDone()
+        return false
+    end
+    return true
+end
+
+-- 落石状态中的消行：仅执行消行特效（不计分 / 不送垃圾 / 不触发道具能量），分阶段播放后由 Game 层收尾。
+function TetrisBoard:beginRockfallClear()
+    if not self.fallingStone or self.clearing then return end
+    local cleared = self:clearLines(false)
+    if cleared > 0 and self.game then
+        pcall(function() self.game:PlayLineClearSound(cleared) end)
+    end
+    self.clearing = true
+    self.stage = "clearing"
+    if self.game then pcall(function() self.game:ScheduleRockfallClearResume() end) end
+end
+
+-- 所有石头已落定且未成行：结束落石状态，恢复正常方块下落。
+function TetrisBoard:onRockfallFallingDone()
+    self.fallingStone = false
+    self.stones = nil
+    self.clearing = false
+    self.stage = "fall"
+    if self.game then pcall(function() self.game:OnRockfallEnd() end) end
+    self:spawn()
+end
+
+-- 落石消行结算完毕后的收尾：若还有石头未落定则继续下落，否则结束落石状态、恢复正常方块。
+function TetrisBoard:afterRockfallClear()
+    self.clearing = false
+    self.stage = "fall"
+    if self.fallingStone and (#self.stones or 0) > 0 then
+        if self.game then pcall(function() self.game:ScheduleStoneFall() end) end
+        return
+    end
+    self.fallingStone = false
+    self.stones = nil
+    if self.game then pcall(function() self.game:OnRockfallEnd() end) end
+    self:spawn()
+end
+
 -- ---------------- 重力 tick ----------------
 -- 每个重力周期调用一次：能下落则下落一格，否则锁定
 function TetrisBoard:tick()
     if self.isGameOver then return false end
+    if self.fallingStone then return false end  -- 落石状态：普通方块重力暂停，由独立石头下落定时器驱动
     if self.clearing then return false end  -- 消行动画期间暂停重力与出块，等 finishClear()
     if self.lockPaused then return false end  -- 落地停顿期间暂停重力与出块，等 Game 层 doClear()
     if not self.active then
@@ -864,6 +991,7 @@ function TetrisBoard:finishClear()
     if not self.clearing then return false end
     self.clearing = false
     self.stage = "fall"
+    if self:tryEnterRockfall() then return true end
     self:spawn()
     return true
 end

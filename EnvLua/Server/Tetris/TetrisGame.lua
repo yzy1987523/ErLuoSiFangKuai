@@ -425,7 +425,57 @@ function TetrisGame:ScheduleClearResume()
     end)
 end
 
+-- 落石开始：启动垃圾块下落循环（按 FallingStoneInterval 节奏）。
+function TetrisGame:OnRockfallStart()
+    self:ScheduleStoneFall()
+end
+
+function TetrisGame:OnRockfallEnd()
+    -- 落石结束：如需弹提示图 / 清理可在此加；当前仅需恢复普通下落
+end
+
+-- 独立驱动落石垃圾块下落（节奏与重力解耦，由 FallingStoneInterval 控制）。
+function TetrisGame:ScheduleStoneFall()
+    if not self.running or not self.board or not self.board.fallingStone then return end
+    if self.board.clearing then return end
+    local interval = (TetrisConfig.Timing and TetrisConfig.Timing.FallingStoneInterval) or 0.25
+    self.owner:AddTimerOnce(interval, function()
+        if not self.running or not self.board or not self.board.fallingStone then return end
+        if self.board.clearing then return end
+        local more = self.board:stepStones()
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
+        if more and not self.board.clearing then
+            self:ScheduleStoneFall()
+        end
+    end)
+end
+
+-- 落石消行专用收尾调度：只做坍塌（不做位移 / 升普通垃圾），ClearDelay 后由 afterRockfallClear 收尾。
+-- 用 _rockfallClearScheduled 防重入。
+function TetrisGame:ScheduleRockfallClearResume()
+    if self._rockfallClearScheduled then return end
+    self._rockfallClearScheduled = true
+    local cfg = TetrisConfig.Clear or {}
+    local effectDur = cfg.EffectDuration or 0.5
+    local clearDelay = cfg.ClearDelay or 0.65
+    self.owner:AddTimerOnce(effectDur, function()
+        if not self.running or not self.board then return end
+        self.board:applyClearCollapse()      -- 仅坍塌（落石消行不做位移 / 不升普通垃圾）
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
+        if self.board:isOver() then self:OnGameOver() end
+    end)
+    self.owner:AddTimerOnce(clearDelay, function()
+        self._rockfallClearScheduled = false
+        if not self.running or not self.board then return end
+        self.board:afterRockfallClear()
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
+        self:CheckPieceSpawned()
+        if self.board:isOver() then self:OnGameOver() end
+    end)
+end
+
 function TetrisGame:maybeScheduleClearResume()
+    if self.board and self.board.fallingStone then return end  -- 落石状态：不触发常规消行收尾（由落石专用流程接管）
     if self.board and self.board.clearing then
         self:ScheduleClearResume()
     end

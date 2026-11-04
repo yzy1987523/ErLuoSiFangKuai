@@ -55,7 +55,7 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
-          [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
+          --[20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
     },
 }
 
@@ -68,6 +68,7 @@ TetrisConfig.PieceType = {
     ITEM_BLAST = 9,   -- 爆破块：消除时清除以本格为中心的 5×5 区域
     ITEM_SHIFT = 10,  -- 位移块：消除时所有行整体右移 1 列
     ITEM_CHARGE = 11, -- 充能块：消除时立即 +1 power
+    ITEM_STONE = 12,  -- 落石块：消除时对对手触发「落石」状态（其下次方块锁定后生成随机列垃圾块下落）
 }
 
 TetrisConfig.Pieces = {
@@ -135,6 +136,7 @@ TetrisConfig.Pieces = {
     [TetrisConfig.PieceType.ITEM_BLAST] = { name = "BLAST", shape = { { 1 } } },
     [TetrisConfig.PieceType.ITEM_SHIFT] = { name = "SHIFT", shape = { { 1 } } },
     [TetrisConfig.PieceType.ITEM_CHARGE] = { name = "CHARGE", shape = { { 1 } } },
+    [TetrisConfig.PieceType.ITEM_STONE]  = { name = "STONE",  shape = { { 1 } } },  -- 落石块：道具方块（单格）
 }
 
 -- ===================== 道具方块（单格 + 3 种道具） =====================
@@ -146,7 +148,7 @@ TetrisConfig.Pieces = {
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
     Prob = 0.15,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
-    Types = { 9, 10, 11 },             -- 与 PieceType.ITEM_* 对应（当前 3 种，之后扩充只加 PieceImages，方块恒为灰块）
+    Types = { 9, 10, 11, 12 },         -- 与 PieceType.ITEM_* 对应（含落石 12）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
     BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
     BlastRadius = 2,                    -- 【已废弃】爆破改为消除一整列，不再按半径；保留字段仅供参考
@@ -224,6 +226,7 @@ TetrisConfig.Timing = {
     LockResetLimit = 15,       -- 落地后「移动/旋转重置」延迟的最大次数（超过后不再重置，防止无限拖延）
     LinesPerLevel = 10,       -- 每消除多少行升 1 级
     MaxLevel = 15,
+    FallingStoneInterval = 0.25,  -- 落石状态中垃圾块下落间隔（秒/格），单独配置；默认 0.25
 }
 
 -- ===================== 计分 =====================
@@ -634,6 +637,7 @@ TetrisConfig.PieceImages = {
     [9]  = "23_ImagePreset_181444441905046",   -- 爆破块
     [10] = "23_ImagePreset_181443652373081",   -- 位移块
     [11] = "23_ImagePreset_181442081947966",   -- 充能块
+    [12] = "23_ImagePreset_181444567644458",   -- 落石块（道具方块 ITEM_STONE）
 }
 
 -- Hold / Next 图片底色（白色底图，由 SetImageWidgetColor 叠加 tint 出各色）。
