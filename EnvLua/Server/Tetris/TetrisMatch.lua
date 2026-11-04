@@ -9,6 +9,8 @@ pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
 pcall(require, "EnvLua.Core.LuaHint.GameOutcomeAPI")
 pcall(require, "EnvLua.Core.LuaHint.BattleDataAPI")
 pcall(require, "EnvLua.Core.LuaHint.PlayerAPI")
+pcall(require, "EnvLua.Core.LuaHint.RankAPI")      -- 排行榜 Domain API（SubmitScore/GetTopN/GetPlayerScore...）
+pcall(require, "EnvLua.Core.Define.CommonDefine")   -- 注入全局表 CustomRank（排行榜类型枚举）
 
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisGame = require("EnvLua.Server.Tetris.TetrisGame")
@@ -329,6 +331,9 @@ function TetrisMatch:Start()
 
     -- 输入路由：每个按钮注册一次，按点击者 PlayerState 分发（避免每个实例重复注册互相覆盖）
     self:RegisterInput()
+
+    -- 排行榜 关闭/打开 按钮：在开始界面显示前即注册一次（保证开战前也能点 OpenBtn 打开排行榜；ShowSettle 里也有调用，_lbReg 守卫保证只注册一次）
+    self:RegisterLeaderboardButtons()
 
     -- 存下已分配玩家，供技能选择结束后继续玩法选择使用
     self.assigned = assigned
@@ -871,6 +876,10 @@ function TetrisMatch:OnPlayerOut(loser)
     if self.over then return end
     local winner = loser.opponent
     self.winner = winner
+    -- 胜者若为真人玩家（有 PlayerState），则胜利次数 +1 并上传排行榜
+    if winner and winner.playerState then
+        self:SubmitWin(winner.playerState)
+    end
     -- 胜负 + 分数上报从「弹窗前」改到「点击结束游戏按钮时」执行（见 RegisterExitBtn），
     -- 这里只记录胜者并弹结算面板。
     self:EndMatch("lose", false)
@@ -934,6 +943,7 @@ function TetrisMatch:EndMatch(reason, early)
     --     if g.running then g:Stop() end
     -- end
     self:ShowSettle(reason)
+    self:ShowLeaderboard()   -- 结算同时拉取并显示「胜利次数」排行榜（关闭按钮可隐藏）
     -- if early then self:CallEndGameAPI() end
     -- print(string.format("[Tetris][Versus] 结算 reason=%s early=%s 胜者=%s",
     --     tostring(reason), tostring(early),
@@ -1025,6 +1035,7 @@ function TetrisMatch:ShowSettle(reason)
         end
     end
     self:RegisterResetBtn()   -- 注册「重置游戏」按钮点击（仅一次）
+    self:RegisterLeaderboardButtons()  -- 注册排行榜 关闭/打开 按钮（仅一次）
     print("[Tetris][Settle] 结算面板已弹出 reason=" .. tostring(reason))
 end
 
@@ -1058,6 +1069,111 @@ function TetrisMatch:CallEndGameAPI()
         pcall(function() self:Stop() end)
         print("[Tetris][Settle] 未配置 EndGameCall，回退 Match.Stop()（OnRoundEnd）")
     end
+end
+
+-- ===================== 排行榜（胜利次数榜） =====================
+-- 解析排行榜类型（CustomRank[RankType]；未注入时回退数字 1~5）
+function TetrisMatch:LeaderboardRankType()
+    local key = (TetrisConfig.Leaderboard and TetrisConfig.Leaderboard.RankType) or "Rank1"
+    if type(CustomRank) == "table" and CustomRank[key] ~= nil then
+        return CustomRank[key]
+    end
+    local map = { Rank1 = 1, Rank2 = 2, Rank3 = 3, Rank4 = 4, Rank5 = 5 }
+    return map[key] or 1
+end
+
+-- 胜利次数 +1 并上传排行榜（SubmitScore 为覆盖式：先取旧值 +1 再提交）
+function TetrisMatch:SubmitWin(ps)
+    if not ps or type(RankAPI) ~= "table" then return end
+    local rt = self:LeaderboardRankType()
+    local cur = 0
+    pcall(function() cur = RankAPI.GetPlayerScore(ps, rt) or 0 end)
+    if type(cur) ~= "number" then cur = 0 end
+    local newVal = cur + 1
+    pcall(function() RankAPI.SubmitScore(ps, rt, newVal) end)
+    if TetrisConfig.Debug and TetrisConfig.Debug.PrintLeaderboard then
+        local nm = ""
+        pcall(function() nm = tostring(ps.PlayerName) end)
+        print(string.format("[Tetris][Leaderboard] %s 胜利次数 %d → %d（已上传）", nm, cur, newVal))
+    end
+end
+
+-- 拉取胜利次数前十名并填表；ps 为空则对所有玩家展示（Panel 显隐 + 名次名字/胜利数）
+function TetrisMatch:ShowLeaderboard(ps)
+    local cfg = TetrisConfig.Leaderboard
+    if not cfg then return end
+    local rt = self:LeaderboardRankType()
+    -- 主动刷新一次，使刚提交的胜利次数尽快进入快照（刷新回调会把最新数据写入 self._lbCache）
+    if type(RankAPI) == "table" and type(RankAPI.RefreshRank) == "function" then
+        pcall(function() RankAPI.RefreshRank(rt) end)
+    end
+    local list = self._lbCache
+    if type(list) ~= "table" then
+        list = {}
+        pcall(function() list = RankAPI.GetTopN(rt, 10) or {} end)
+    end
+    if TetrisConfig.Debug and TetrisConfig.Debug.PrintLeaderboard then
+        print(string.format("[Tetris][Leaderboard] 显示前十，共 %d 条", #(list or {})))
+    end
+    local targets = ps and { ps } or self:AllPlayerStates()
+    for _, p in ipairs(targets) do
+        if cfg.Panel then pcall(function() CustomUIAPI.SetWidgetVisible(p, cfg.Panel, true) end) end
+        for i = 1, 10 do
+            local entry = list[i]
+            -- 人数不足该名次（榜上不足 10 人）时，名字与数量显示为空
+            local name = (entry and entry.Name) or ""
+            local val  = (entry and entry.Value) or ""
+            local nameId = cfg.NameText and cfg.NameText[i]
+            local winId  = cfg.WinText  and cfg.WinText[i]
+            if nameId then pcall(function() CustomUIAPI.SetTextContent(p, nameId, tostring(name)) end) end
+            if winId  then pcall(function() CustomUIAPI.SetTextContent(p, winId,  tostring(val))  end) end
+        end
+    end
+end
+
+-- 隐藏排行榜面板（关闭按钮回调；ps 为空则对所有玩家隐藏）
+function TetrisMatch:HideLeaderboard(ps)
+    local cfg = TetrisConfig.Leaderboard
+    if not cfg or not cfg.Panel then return end
+    if ps then
+        pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.Panel, false) end)
+    else
+        for _, p in ipairs(self:AllPlayerStates()) do
+            pcall(function() CustomUIAPI.SetWidgetVisible(p, cfg.Panel, false) end)
+        end
+    end
+end
+
+-- 排行榜 关闭/打开 按钮点击注册（仅一次）；并注册排行榜刷新回调缓存最新快照
+function TetrisMatch:RegisterLeaderboardButtons()
+    local cfg = TetrisConfig.Leaderboard
+    if not cfg then return end
+    if self._lbReg then return end
+    self._lbReg = true
+    local owner = self.owner
+    if not owner or type(owner.AddVPEvent) ~= "function" then return end
+    local clickId = (type(RcEventIdDefine) == "table" and RcEventIdDefine.CustomUIClicked) or 120000
+    local selfRef = self
+    if cfg.CloseBtn then
+        owner:AddVPEvent(clickId, function(_self, ps)
+            selfRef:HideLeaderboard(ps)
+        end, selfRef, cfg.CloseBtn, nil)
+    end
+    if cfg.OpenBtn then
+        owner:AddVPEvent(clickId, function(_self, ps)
+            selfRef:ShowLeaderboard(ps)
+        end, selfRef, cfg.OpenBtn, nil)
+    end
+    -- 排行榜数据刷新回调：缓存最新快照，供显示时填充（避免刚提交的胜利次数因快照滞后而不显示）
+    local rt = selfRef:LeaderboardRankType()
+    if type(RankAPI) == "table" and type(RankAPI.AddRankUpdateCallback) == "function" then
+        pcall(function()
+            RankAPI.AddRankUpdateCallback(rt, function(_rt, data)
+                selfRef._lbCache = data
+            end)
+        end)
+    end
+    print("[Tetris][Leaderboard] 排行榜按钮/刷新回调已注册")
 end
 
 -- 对局时间上限计时：到点触发 timeup 结算

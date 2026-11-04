@@ -972,6 +972,44 @@ TetrisConfig.Settle = {
     OutcomeType = { Win = 1, Lose = 2, Draw = 3 },
 }
 
+-- ===================== 排行榜（胜利次数榜） =====================
+-- 使用引擎排行榜 Domain API（RankAPI，全局可直接调用）：以 CustomRank[RankType] 作为「胜利次数」榜。
+--   · 结算时若玩家胜利 → 胜利次数 +1 并 SubmitScore 上传（见 TetrisMatch:SubmitWin）。
+--   · 显示时 GetTopN 取前十名，按名次填入 NameText[i] / WinText[i]（见 TetrisMatch:ShowLeaderboard）。
+-- 下方 UUID 均为「占位符」，请替换为编辑器里对应控件的真实 InstanceUUID（CreativeInstance 表的 key）。
+TetrisConfig.Leaderboard = {
+    RankType = "Rank1",            -- 使用的排行榜类型：CustomRank[RankType]（Rank1~Rank5）；与其它榜冲突时改 Rank2..Rank5
+    Panel    = ci("1_CreativeInstance_23643899491022044"),  -- 排行榜面板（父级 Widget，整体显隐）【占位符】
+    CloseBtn = ci("1_CreativeInstance_23643898643509751"),  -- 关闭按钮：点击隐藏 Panel【占位符】
+    OpenBtn  = ci("1_CreativeInstance_23643900829394542"),  -- 打开排行榜按钮：点击拉取前十并显示 Panel
+    -- 10 个「名次名字」文本控件（对应排名 1~10）
+    NameText = {
+        ci("1_CreativeInstance_23643901424354642"),
+        ci("1_CreativeInstance_23643899797613861"),
+        ci("1_CreativeInstance_23643899720537054"),
+        ci("1_CreativeInstance_23643899914726166"),
+        ci("1_CreativeInstance_23643898867319784"),
+        ci("1_CreativeInstance_23643900468150134"),
+        ci("1_CreativeInstance_23643900389663295"),
+        ci("1_CreativeInstance_23643901695509631"),
+        ci("1_CreativeInstance_23643898127140728"),
+        ci("1_CreativeInstance_23643902196946070"),
+    },
+    -- 10 个「胜利数量」文本控件（与 NameText 一一对应）；第10个 UUID 缺失，暂留占位
+    WinText = {
+        ci("1_CreativeInstance_23643898566382304"),
+        ci("1_CreativeInstance_23643900651930017"),
+        ci("1_CreativeInstance_23643899212710441"),
+        ci("1_CreativeInstance_23643899121421071"),
+        ci("1_CreativeInstance_23643898759460289"),
+        ci("1_CreativeInstance_23643901573291172"),
+        ci("1_CreativeInstance_23643901598421050"),
+        ci("1_CreativeInstance_23643900837876014"),
+        ci("1_CreativeInstance_23643902214048815"),
+        ci("1_CreativeInstance_23643898337195608"),
+    },
+}
+
 -- ===================== 双人对战（经典对攻） =====================
 -- 固定 2 名玩家：各自出生点前方一块棋盘，各自独立控制；
 -- 消行给对手底部塞垃圾行，先顶出者判负（最后存活胜）。
