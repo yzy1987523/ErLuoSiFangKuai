@@ -65,7 +65,11 @@ function TetrisBoard:reset()
         self.grid[r] = {}
     end
 
-    self.bag = {}                 -- 7-bag 随机袋
+    self.bag = {}                 -- 7-bag 随机袋（普通方块）
+    self.itemBag = nil            -- 道具小洗牌袋（空时按需 refillItemBag）
+    self._lastItemType = nil      -- 上一个道具类型（袋边界保护用）
+    self.sinceItem = 0            -- 自上次道具落地以来落下的普通方块数（道具概率计数，见 nextPieceType）
+    self._firstItemDone = false   -- 调试：首块强制道具是否已触发（每局重置）
     self.active = nil             -- 当前下落方块 { type, rot, x, y }
     self.grounded = false         -- 当前方块是否已贴地（正在累计落地锁定延迟）
     self.groundTimer = 0          -- 贴地累计时间（秒，按重力周期累加）
@@ -166,14 +170,58 @@ function TetrisBoard:refillBag()
     end
 end
 
+-- 道具洗牌袋：把 Item.Types 完整拷贝后 Fisher-Yates 洗牌；袋内每种道具各出现一次，
+-- 保证均匀且「袋内不会连续重复」。袋耗尽后再 refill；并做袋边界保护避免跨袋连续重复。
+function TetrisBoard:refillItemBag()
+    self.itemBag = {}
+    local types = (TetrisConfig.Item and TetrisConfig.Item.Types) or {}
+    for _, x in ipairs(types) do
+        self.itemBag[#self.itemBag + 1] = x
+    end
+    for i = #self.itemBag, 2, -1 do
+        local j = math.random(1, i)
+        self.itemBag[i], self.itemBag[j] = self.itemBag[j], self.itemBag[i]
+    end
+    -- 袋边界保护：若新袋首与上一个道具类型相同（多种道具时偶有），交换首元素，确保不连续重复
+    if #self.itemBag > 1 and self.itemBag[1] == self._lastItemType then
+        local k = math.random(2, #self.itemBag)
+        self.itemBag[1], self.itemBag[k] = self.itemBag[k], self.itemBag[1]
+    end
+end
+
 function TetrisBoard:nextPieceType()
-    -- 道具方块：以 Item.Prob 概率产出（等概率取 Types 中一种），否则走 7-bag
     local icfg = TetrisConfig.Item
-    if icfg and icfg.Prob and icfg.Prob > 0 and icfg.Types and #icfg.Types > 0 then
-        if math.random() < icfg.Prob then
-            return icfg.Types[math.random(1, #icfg.Types)]
+    -- 【调试】开启后本局第一个方块强制为指定道具（FirstItemType），便于单独测试某一种道具效果（绕过 warmup）
+    if icfg and icfg.DebugFirstItem and not self._firstItemDone then
+        self._firstItemDone = true
+        local ft = icfg.FirstItemType or (icfg.Types and icfg.Types[1]) or 9
+        self._lastItemType = ft
+        return ft
+    end
+    -- 道具概率（基于「自上次道具落地以来落下的普通方块数」sinceItem，见 ItemWarmup/ItemStartProb/ItemIncPerPiece/ItemMaxProb）：
+    --   前 ItemWarmup 个必为普通；之后概率 = ItemStartProb + (sinceItem-ItemWarmup)*ItemIncPerPiece（封顶 ItemMaxProb）。
+    --   注意：计数与清零都在 lockPiece（方块真正落地）时处理，此处只读取判定、不修改 sinceItem。
+    if icfg then
+        local warmup = icfg.ItemWarmup or 10
+        local startP = icfg.ItemStartProb or 0.5
+        local incP   = icfg.ItemIncPerPiece or 0.1
+        local maxP   = icfg.ItemMaxProb or 1.0
+        local n = self.sinceItem or 0
+        if n >= warmup then
+            local p = startP + (n - warmup) * incP
+            if p > maxP then p = maxP end
+            if math.random() < p then
+                -- 本次生成道具：从独立道具小洗牌袋取具体类型（sinceItem 在该道具真正落地时清零）
+                if not self.itemBag or #self.itemBag == 0 then
+                    self:refillItemBag()
+                end
+                local t = table.remove(self.itemBag, 1)
+                self._lastItemType = t
+                return t
+            end
         end
     end
+    -- 普通方块：走 7-bag（sinceItem 的 +1 在 lockPiece 落地时累加）
     if #self.bag == 0 then
         self:refillBag()
     end
@@ -439,6 +487,13 @@ function TetrisBoard:lockPiece()
     self.pendingLockedCells = (#lockedCells > 0) and lockedCells or nil
     self.active = nil
     self:markGhostDirty()   -- 锁定→无活动块：标记预览需隐藏
+
+    -- 道具概率计数（基于「落地方块数」）：普通方块 +1；道具方块清零（概率与累计从头再来）
+    if TetrisConfig.IsItemType(p.type) then
+        self.sinceItem = 0
+    else
+        self.sinceItem = (self.sinceItem or 0) + 1
+    end
 
     -- SK-08「左右对调」：对手当前方块落地 → 解除申请方冷却，并标记下一个方块左右互换
     if self.swapRequested and self.pendingSwapRequester then

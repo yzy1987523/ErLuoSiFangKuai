@@ -140,16 +140,26 @@ TetrisConfig.Pieces = {
 }
 
 -- ===================== 道具方块（单格 + 3 种道具） =====================
--- 每个下落方块有 Prob 概率为「道具方块」；是则等概率取 Types 中一种。
+-- 道具方块：按「自上次道具落地以来落下的普通方块数(sinceItem)」决定概率（见下方 ItemWarmup/ItemStartProb/ItemIncPerPiece/ItemMaxProb）：
+--   前 ItemWarmup 个普通方块必为普通（道具不出现）；之后道具概率 = ItemStartProb + (sinceItem-ItemWarmup)*ItemIncPerPiece（封顶 ItemMaxProb）；
+--   一个道具真正落地后 sinceItem 清零，重新走 Warmup。具体道具类型仍由独立小洗牌袋(Types)均匀分配、不连续重复。
 -- 三种道具（格值见 PieceType.ITEM_*，避开垃圾块 8）：
 --   9  = 爆破块：消除含本格的方块时，清除本格所在的【一整列】（跳过本应整体消除的满行），并在该列最下方块处播放竖版消除特效
 --   10 = 位移块：消除含本格的方块时，所有行整体向右平移 1 列（每行从最右格起右移 1，目标格被占/越界则跳过）
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
-    Prob = 0.15,                       -- 单个方块为道具方块的概率（≈每 100 个 15 个）
+    DebugFirstItem = false,            -- 【调试】true = 本局第一个方块强制为 FirstItemType（便于单独测试某一种道具效果）
+    FirstItemType = 9,                 -- 【调试】DebugFirstItem 开启时，首块强制的道具类型（与 PieceType.ITEM_* 对应，默认 9=爆破）
+    -- 道具概率（基于「落地方块数」，替代旧的概率/大袋方案）：
+    ItemWarmup = 10,                  -- 前 N 个普通方块必为普通（道具不出现）
+    ItemStartProb = 0.5,              -- 第 N+1 个起，道具起始概率（0.5 = 50%）
+    ItemIncPerPiece = 0.1,            -- 每多落 1 个普通方块，道具概率 +10%（封顶见下）
+    ItemMaxProb = 1.0,                -- 道具概率上限（1.0 = 100%，此后必出道具；改小可保留不确定性）
     Types = { 9, 10, 11, 12 },         -- 与 PieceType.ITEM_* 对应（含落石 12）
     TypeMin = 9,                        -- 道具类别下界：格值 >= TypeMin 即视为道具（与类型无关、可无限扩充）
+
+    -- （道具出块改由上方 ItemWarmup/ItemStartProb/ItemIncPerPiece/ItemMaxProb 控制；旧的 BigBag / Prob 方案已废弃）
     BlockModelKey = "50_CreativeAsset_115324270",  -- 道具方块本体：灰色 1×1 立方（复用垃圾块灰模 ColorModelIDs[8]）
     BlastRadius = 2,                    -- 【已废弃】爆破改为消除一整列，不再按半径；保留字段仅供参考
 
