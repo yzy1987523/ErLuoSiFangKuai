@@ -483,16 +483,31 @@ end
 
 -- ---------------- 调试：上屏输出 ----------------
 
+-- 是否「本地玩家」所控制的盘面：仅本地盘才把 2D HUD（名字/分数/Hold/Next/头像/技能/垃圾提示等）
+-- 写到屏幕控件，避免双人 / 测试环境中两块盘同时写同一套 2D 控件，导致名字、分数交替错乱。
+-- 判定：本盘分配到的真人 PlayerState 是否等于「首个玩家」（即本地玩家）。AI 盘无 playerState → 非本地。
+function TetrisGame:IsLocalBoard()
+    local ps = self.playerState   -- 分配阶段写入的真人 PlayerState；AI 盘为 nil
+    if not ps then return false end
+    local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+    if not (ok and arr and arr.Num and arr:Num() > 0) then return true end  -- 取不到本地玩家时按"本地"处理，避免 2D HUD 完全不显示
+    return arr:Get(0) == ps
+end
+
 -- 惰性获取 PlayerState。上屏 API 的首参必须是 PlayerState。
 -- GetAllPlayerStates 返回 LuaArray，要用 :Num()/:Get(i)，下标从 0 起。
 function TetrisGame:GetPlayerState()
     if self.isAI then return nil end   -- AI 盘不向任何玩家写 HUD/相机
-    if self.playerState then return self.playerState end
-    local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
-    if ok and arr and arr:Num() > 0 then
-        self.playerState = arr:Get(0)
+    if self.playerState then
+        -- 仅本地盘返回 PlayerState；非本地（对手）盘返回 nil → 所有 2D HUD 写入自动跳过，
+        -- 避免两块盘争用同一套 2D 控件（名字/分数交替）。对手信息改由本地盘经 self.opponent 读取显示。
+        if not self:IsLocalBoard() then return nil end
+        return self.playerState
     end
-    return self.playerState
+    -- 重要：不再把「首个玩家」偷赋给无 playerState 的盘。这类盘要么是 AI 盘（顶部 isAI 已拦截），
+    -- 要么是不该写 HUD 的盘；此前偷赋会让对手盘被误判为"我方"（名字/分数错乱、AI 不动）。
+    -- 真人盘在分配阶段必已被写入 playerState，无需此处兜底；无 playerState 直接返回 nil。
+    return nil
 end
 
 function TetrisGame:SendScreenMessage(content)
@@ -695,6 +710,26 @@ function TetrisGame:PlayLineClearSound(cleared)
     -- AudioAPI.PlayAudio(TargetObject, AudioID, Duration, Volume, bAllMap, bShowMark, AudiencePlayerState)
     --   TargetObject=ps(玩家自身)，bAllMap=true 全图播放但 AudiencePlayerState=ps 仅该玩家可闻（类 UI 音效，不受相机距离影响）
     --   Duration=3 为播放时长上限（秒），若需"整段自然播放"可按实际音频长度调整
+    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, 1, true, false, ps) end)
+end
+
+-- 道具消除后释放能力时播放对应音效（按 PieceType 对应 TetrisConfig.ItemSounds）。
+-- 仅对真人盘(有 PlayerState)播放；资源未注册则跳过（不报错）。
+function TetrisGame:PlayItemSound(itemType)
+    if not itemType then return end
+    local keys = TetrisConfig.ItemSounds
+    if not keys then return end
+    local key = keys[itemType]
+    if not key then return end
+    local ref = (type(AssetRef) == "table") and AssetRef[key]
+    if not ref then
+        if TetrisConfig.Debug and TetrisConfig.Debug.PrintClearSound then
+            print(string.format("[Tetris][Item][WARN] 道具音效资源未注册 AssetRef[%s]，跳过", tostring(key)))
+        end
+        return
+    end
+    local ps = self:GetPlayerState()
+    if not ps or type(AudioAPI) ~= "table" then return end
     pcall(function() AudioAPI.PlayAudio(ps, ref, 3, 1, true, false, ps) end)
 end
 
@@ -1691,6 +1726,7 @@ function TetrisGame:ConsumeItemCharge()
     self.skillPower = math.min(self.skillPower + n, maxPower)
     self:UpdateSkillUI()
     self:ShowChargeItemImage()   -- 充能块消除：显示提示图片 1 秒（仅真人盘有 PlayerState 时生效）
+    self:PlayItemSound(TetrisConfig.PieceType.ITEM_CHARGE)   -- 充能块释放能力音效
     if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
         print(string.format("[Tetris][Item] 充能块 +%d power（当前 %d）", n, self.skillPower))
     end

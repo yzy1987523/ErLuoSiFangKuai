@@ -245,6 +245,18 @@ function TetrisMatch:Start()
             end
         end
     end
+    -- 去重：同一玩家（相同 playerKey）只保留一份。引擎单人/测试环境可能把同一本地玩家
+    -- 报多次（或带幽灵态副本），若不剔除，两块盘会被分配到同一个 PlayerState → 都写成"真人盘"，
+    -- 导致 AI 盘身份丢失（isAI=false）：对手名显示成我名、双方分数来回切、AI 永远不动。
+    do
+        local seen, uniq = {}, {}
+        for _, p in ipairs(players) do
+            local k = playerKeyOf(p.ps)
+            if not seen[k] then seen[k] = true; uniq[#uniq + 1] = p end
+        end
+        players = uniq
+    end
+
     -- 仅"有 pawn 的真人"参与分配：引擎单人/测试环境会多报一个无 pawn 的 PlayerState，
     -- 若把它也算进 assigned，会导致：单人被误判为双人（AiPanel 不弹）、且空盘无法变 AI 对手。
     -- pawn 接口不可用时回退到 PlayerState 计数（原行为，无法剔除幽灵态），避免分配为空导致流程中断。
@@ -317,6 +329,18 @@ function TetrisMatch:Start()
     local assigned = {}
     for _, g in ipairs(self.list) do
         if g.playerState then assigned[#assigned + 1] = g.playerState end
+    end
+
+    -- 诊断：打印去重后实际玩家数、各盘分配到的 playerKey（isAI 在 BuildGames 才定，此处看 playerState 是否为空）
+    if TetrisConfig.Debug then
+        local keys = {}
+        for _, p in ipairs(players) do keys[#keys + 1] = tostring(playerKeyOf(p.ps)) end
+        local boardInfo = {}
+        for i, g in ipairs(self.list) do
+            boardInfo[#boardInfo + 1] = string.format("#%d ps=%s", i, g.playerState and tostring(playerKeyOf(g.playerState)) or "nil(AI)")
+        end
+        print(string.format("[Tetris][Alloc] 去重后玩家数=%d（keys=%s）；盘面分配：%s",
+            #players, table.concat(keys, ","), table.concat(boardInfo, " | ")))
     end
 
     -- 互设对手（环形：2 人时互为对手；>2 时循环到下一个）

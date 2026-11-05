@@ -176,6 +176,15 @@ TetrisConfig.Item = {
     },
 }
 
+-- 道具消除后释放能力时的音效（按 PieceType 对应）：爆破/位移/充能/落石。
+-- 键为 SoundPreset 资源标识，经 AssetRef 解析为句柄后由 TetrisGame:PlayItemSound 播放；资源未注册则跳过。
+TetrisConfig.ItemSounds = {
+    [9]  = "19_SoundPreset_181439257054372",  -- 爆破块消除→爆破能力音效
+    [10] = "19_SoundPreset_181438153456570",  -- 位移块消除→位移能力音效
+    [11] = "19_SoundPreset_181438477818720",  -- 充能块消除→充能能力音效
+    [12] = "19_SoundPreset_181437270571482",  -- 落石块消除→落石能力音效
+}
+
 -- 判断格值是否为「道具块」：单一类别，格值 >= Item.TypeMin 即道具（灰色块 + 3D 图，与类型无关、可无限扩充）。
 -- 垃圾块 = 8 已 < TypeMin，普通方块 1..7 也更小的范围，故不会误判。
 TetrisConfig.IsItemType = function(v)

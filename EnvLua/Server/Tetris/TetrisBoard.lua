@@ -617,6 +617,8 @@ function TetrisBoard:clearLines(countScore)
                         local opp = self.game and self.game.opponent
                         if opp and opp.board then
                             opp.board:queueRockfall(math.random(5, 9))
+                            -- 落石能力释放音效（仅真实消行时触发）
+                            if self.game then pcall(function() self.game:PlayItemSound(PT.ITEM_STONE) end) end
                         end
                     end
                 end
@@ -648,6 +650,8 @@ function TetrisBoard:clearLines(countScore)
             end
         end
         if #blastFx > 0 then self.pendingBlastFx = blastFx end
+        -- 爆破能力释放音效（仅真实消行 countScore~=false 时触发，落石专用消行不会走到这里）
+        if self.game then pcall(function() self.game:PlayItemSound(PT.ITEM_BLAST) end) end
     end
     -- 2D 提示图标记：仅真实消行(countScore~=false)时累计，供上层 TetrisGame 在 doClear 后弹图（避免开局预处理消除误触发）
     if countScore ~= false and #itemEffects.blast > 0 then
@@ -746,6 +750,8 @@ end
 function TetrisBoard:executePendingShift()
     if not self.pendingShiftExec then return end
     self.pendingShiftExec = nil
+    -- 位移能力释放音效（真正执行整行右移时播放）
+    if self.game then pcall(function() self.game:PlayItemSound(TetrisConfig.PieceType.ITEM_SHIFT) end) end
     local moved = false
     for r = 1, self.rows do
         for c = self.cols, 1, -1 do
