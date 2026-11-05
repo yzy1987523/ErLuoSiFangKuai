@@ -8,6 +8,7 @@ local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 local TetrisBoard = require("EnvLua.Server.Tetris.TetrisBoard")
 local TetrisRenderer = require("EnvLua.Server.Tetris.TetrisRenderer")
 local TetrisAI = require("EnvLua.Server.Tetris.TetrisAI")
+local TetrisAudio = require("EnvLua.Server.Tetris.TetrisAudio")   -- 音效/BGM 音量（GetSFXVolume）
 
 local TetrisGame = {}
 TetrisGame.__index = TetrisGame
@@ -710,7 +711,9 @@ function TetrisGame:PlayLineClearSound(cleared)
     -- AudioAPI.PlayAudio(TargetObject, AudioID, Duration, Volume, bAllMap, bShowMark, AudiencePlayerState)
     --   TargetObject=ps(玩家自身)，bAllMap=true 全图播放但 AudiencePlayerState=ps 仅该玩家可闻（类 UI 音效，不受相机距离影响）
     --   Duration=3 为播放时长上限（秒），若需"整段自然播放"可按实际音频长度调整
-    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, 1, true, false, ps) end)
+    --   Volume 乘以音效音量（TetrisAudio.GetSFXVolume，0~1），实现音效音量控制
+    local vol = (type(TetrisAudio) == "table" and TetrisAudio.GetSFXVolume()) or 1
+    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, vol, true, false, ps) end)
 end
 
 -- 道具消除后释放能力时播放对应音效（按 PieceType 对应 TetrisConfig.ItemSounds）。
@@ -730,7 +733,8 @@ function TetrisGame:PlayItemSound(itemType)
     end
     local ps = self:GetPlayerState()
     if not ps or type(AudioAPI) ~= "table" then return end
-    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, 1, true, false, ps) end)
+    local vol = (type(TetrisAudio) == "table" and TetrisAudio.GetSFXVolume()) or 1
+    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, vol, true, false, ps) end)
 end
 
 function TetrisGame:CheckPieceSpawned()

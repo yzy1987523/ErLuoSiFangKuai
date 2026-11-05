@@ -116,6 +116,8 @@ function TetrisAIDifficulty:OnPick(ps, level)
     if self.done or not ps then return end
     self.done = true
     self.match.aiDifficulty = level
+    -- 选完 AI 难度：立即按所选难度切换 BGM（PickBGMId 现在返回 DifficultyBGM[level]；同 id 不重切，无间隙）
+    pcall(function() if self.match and self.match.RefreshBGM then self.match:RefreshBGM() end end)
     -- 玩家已选 AI 难度：立即按所选难度刷新远景背景挂件的"对手标识图"（之前默认按 -1 显示真人图）
     pcall(function()
         if self.match and self.match.RefreshBackgroundOpponentImages then

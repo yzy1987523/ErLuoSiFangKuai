@@ -21,6 +21,8 @@ local TetrisHelp = require("EnvLua.Server.Tetris.TetrisHelp")
 local TetrisAIDifficulty = require("EnvLua.Server.Tetris.TetrisAIDifficulty")
 local TetrisBehindWidget = require("EnvLua.Server.Tetris.TetrisBehindWidget")
 local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")
+local TetrisAudio = require("EnvLua.Server.Tetris.TetrisAudio")                 -- 音效/BGM 音量状态
+local TetrisSoundSettings = require("EnvLua.Server.Tetris.TetrisSoundSettings")  -- 声音控制面板
 
 local TetrisMatch = {}
 TetrisMatch.__index = TetrisMatch
@@ -398,6 +400,17 @@ function TetrisMatch:Start()
         -- 未配置帮助界面：直接显示「开始游戏」界面
         self.skillSelect:ShowStartScreen()
     end
+
+    -- 声音控制面板：建立实例 + 注册 5 个调节按钮 + 注册「打开」入口
+    -- （控件需在编辑器预放置并把 UUID 填到 TetrisConfig.SoundSettings；未放置则内部自动跳过）
+    TetrisAudio.Init(self.owner, TetrisConfig.Audio)
+    self.soundSettings = TetrisSoundSettings:new(self.owner, self)
+    self.soundSettings:RegisterButtons()
+    self.soundSettings:RegisterOpenBtn()
+
+    -- 开始界面（含帮助界面）即开始播放 BGM：此时尚未选 AI 难度，PickBGMId 回退默认 BGMId。
+    -- 后续选完 AI 难度会在 OnPick 里再次 RefreshBGM 按难度切曲（同 id 不重切，无间隙）。
+    self:RefreshBGM()
 end
 
 -- 技能选择结束（或跳过）：按各玩家所选技能记录后，进入玩法选择（若启用）或直接开局。
@@ -730,6 +743,13 @@ function TetrisMatch:TryStartGameplay()
     end
     self:StartMatchTimer()
 
+    -- 进局时再次确认 BGM：菜单阶段已按默认/已选难度播起，此处同 id 不重切（无间隙）；
+    -- 若菜单阶段因故未播，这里也会补全启动。
+    do
+        print(string.format("[Tetris][Sound][DEBUG] TryStartGameplay 再次确认 BGM：bgmId=%s", tostring(self:PickBGMId())))
+    end
+    self:RefreshBGM()
+
     -- ② 游戏 UI 就绪后，再隐藏菜单（技能选择界面 / 玩法选择界面）
     if self._enteredGame then
         if self.skillSelect then self.skillSelect:ShowAll(false) end
@@ -966,6 +986,26 @@ function TetrisMatch:AllPlayerStates()
     return out
 end
 
+-- 按当前 AI 难度选择 BGM 资源键（DifficultyBGM），非 AI 对局(-1)或无匹配时回退默认 BGMId
+function TetrisMatch:PickBGMId()
+    local cfg = TetrisConfig.Audio
+    if not cfg then return nil end
+    local diff = self.aiDifficulty
+    if diff and cfg.DifficultyBGM and cfg.DifficultyBGM[diff] then
+        return cfg.DifficultyBGM[diff]
+    end
+    return cfg.BGMId
+end
+
+-- 按当前难度刷新各真人玩家的 BGM（同 id 不重切，避免间隙）。
+-- 目标用 self.assigned（真人 PlayerState 列表），这样在「开始界面 / AI 难度选择」等尚未建盘阶段也能切曲。
+function TetrisMatch:RefreshBGM()
+    local id = self:PickBGMId()
+    for _, ps in ipairs(self.assigned or {}) do
+        TetrisAudio.StartBGM(ps, id)
+    end
+end
+
 -- 整局结束：停所有棋盘 + 弹结算面板；early=true 时额外调用「结束游戏」API
 function TetrisMatch:EndMatch(reason, early)
     self.over = true
@@ -975,6 +1015,8 @@ function TetrisMatch:EndMatch(reason, early)
     self:ShowSettle(reason)
     -- 结算只做「上传胜负结果」，不再自动弹排行榜（排行榜仅在点击「打开」按钮时出现）
     self:SubmitMatchResults()
+    -- 整局结束：停掉所有 BGM（避免结算/重开时残留）
+    TetrisAudio.StopAllBGM()
     -- if early then self:CallEndGameAPI() end
     -- print(string.format("[Tetris][Versus] 结算 reason=%s early=%s 胜者=%s",
     --     tostring(reason), tostring(early),
@@ -1258,6 +1300,8 @@ end
 -- 结算界面「重置游戏」按钮：不清算/不退出对局，而是清空所有盘面并暂停下落，
 -- 回到「开始游戏」界面，等待玩家点击开始 → 技能选择 → 重新开局。
 function TetrisMatch:ResetGame()
+    -- 重开前先停掉上一局 BGM（TryStartGameplay 会为各真人重新启动）
+    TetrisAudio.StopAllBGM()
     local cfg = TetrisConfig.Settle
     local players = self:AllPlayerStates()
     if type(CustomUIAPI) == "table" then

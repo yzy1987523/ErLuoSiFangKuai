@@ -1131,4 +1131,41 @@ TetrisConfig.Puyo = {
     SceneObjects = TetrisConfig.SceneObjects,
 }
 
+-- ===================== 音频控制（音效音量 / 背景音乐音量） =====================
+-- 引擎 AudioAPI 没有全局音量接口，音量只能每次 PlayAudio 时按 Volume(0~1) 传入；
+-- 本模块据此维护 SFX/BGM 两套音量，并在改 BGM 音量时"停了重播"以套用。
+TetrisConfig.Audio = {
+    -- 默认 BGM 的 SoundPreset 资源键（在 vscode 插件注册的预设 Key）。
+    BGMId = "19_SoundPreset_181438040768165",
+    -- 按 AI 难度切换的 BGM（共 3 个文件）。当前先用默认占位，后续替换为各自的 SoundPreset Key；
+    -- 取值键为 TetrisMatch.aiDifficulty（"Easy"/"Normal"/"Hard"），非 AI 对局(-1)走默认 BGMId。
+    DifficultyBGM = {
+        Easy   = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
+        Normal = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
+        Hard   = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
+    },
+    Step = 0.1,   -- 每次点击增减幅度（0.1 = 10%，0~1 共 10 档）
+}
+
+-- 声音控制面板：5 个按键 + 打开入口 + 可选音量百分比文本。
+-- 以下 UUID 均为编辑器 UI Editor 中预放置的控件，按 CreativeInstance 全局表取（未放置则对应项为 nil → 自动跳过）。
+--   PanelKey      面板容器（承载 5 个按键与文本）
+--   BtnClose     关闭（仅收起面板，不改音量）
+--   BtnBgmDown/Up 减少/增加 背景音乐音量
+--   BtnSfxDown/Up 减少/增加 音效音量
+--   OpenBtn      打开声音面板的入口按钮（放在开始界面或常驻 HUD 上，由你决定）
+--   BgmText/SfxText 显示当前音量百分比的文本（可选，未放置则跳过）
+TetrisConfig.SoundSettings = {
+    Enabled = true,    -- 开关：控件已放置，启用本面板
+    PanelKey = ci("1_CreativeInstance_23643901336117929"),   -- 面板容器
+    BtnClose = ci("1_CreativeInstance_23643899277285886"),   -- 关闭（仅收起面板，不改音量）
+    BtnBgmDown = ci("1_CreativeInstance_23643900208512335"), -- 减少 背景音乐音量
+    BtnBgmUp   = ci("1_CreativeInstance_23643900508509317"), -- 增加 背景音乐音量
+    BtnSfxDown = ci("1_CreativeInstance_23643901685117635"), -- 减少 音效音量
+    BtnSfxUp   = ci("1_CreativeInstance_23643899927873497"), -- 增加 音效音量
+    OpenBtn = ci("1_CreativeInstance_23643902006366678"),   -- 打开/重新打开面板入口（开始界面上的按钮）
+    BgmText = ci("1_CreativeInstance_23643902335526508"),    -- BGM 音量百分比文本
+    SfxText = ci("1_CreativeInstance_23643900218483727"),    -- 音效音量百分比文本
+}
+
 return TetrisConfig
