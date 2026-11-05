@@ -403,6 +403,7 @@ TetrisConfig.Render = {
             [9] = "23_ImagePreset_181441211138765",   -- 道具(占位复用垃圾图)
             [10] = "23_ImagePreset_181441211138765",  -- 道具(占位复用垃圾图)
             [11] = "23_ImagePreset_181441211138765",  -- 道具(占位复用垃圾图)
+            [12] = "23_ImagePreset_181444567644458",  -- 落石(与 PieceImages[12] 同源)
         },
         Opacity = 1,                              -- 半透明，和实时下落块区分
         ParkLocM = { X = 0, Y = 0, Z = -200 },       -- 无活动块时 Actor 停放位置（图片隐藏，位置不重要）
@@ -614,10 +615,10 @@ TetrisConfig.UI = {
 -- ===================== 消行音效（按消行数播放，AssetRef 句柄由 SoundPreset Key 解析） =====================
 --   1 行 / 2 行 / 3 行 / 4 行及以上 分别对应不同音效；键为 SoundPreset 资源标识，需经 AssetRef 解析为句柄。
 TetrisConfig.ClearSounds = {
-    [1] = "19_SoundPreset_181436666164240",
-    [2] = "19_SoundPreset_181437172922024",
-    [3] = "19_SoundPreset_181437746770248",
-    [4] = "19_SoundPreset_181439233974659",   -- 4 行及以上统一用此音效
+    [1] = "19_SoundPreset_181439305408215",
+    [2] = "19_SoundPreset_181436910389471",
+    [3] = "19_SoundPreset_181439222657359",
+    [4] = "19_SoundPreset_181439483548969",   -- 4 行及以上统一用此音效
 }
 
 -- ===================== 输入手感（长按 / 自动横移 DAS-）ARR） =====================
@@ -984,7 +985,7 @@ TetrisConfig.Settle = {
 
 -- ===================== 排行榜（胜利次数榜） =====================
 -- 使用引擎排行榜 Domain API（RankAPI，全局可直接调用）：以 CustomRank[RankType] 作为「胜利次数」榜。
---   · 结算时若玩家胜利 → 胜利次数 +1 并 SubmitScore 上传（见 TetrisMatch:SubmitWin）。
+--   · 结算时统一上传胜负结果：胜者 +1、败者 -1（见 TetrisMatch:SubmitMatchResults → SubmitScore）。
 --   · 显示时 GetTopN 取前十名，按名次填入 NameText[i] / WinText[i]（见 TetrisMatch:ShowLeaderboard）。
 -- 下方 UUID 均为「占位符」，请替换为编辑器里对应控件的真实 InstanceUUID（CreativeInstance 表的 key）。
 TetrisConfig.Leaderboard = {

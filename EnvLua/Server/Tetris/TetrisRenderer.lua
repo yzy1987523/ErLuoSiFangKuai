@@ -995,13 +995,22 @@ function TetrisRenderer:PreloadGhostImages()
     if not self._ghostImgWidget then return end
     local cfg = TetrisConfig.Render.Ghost
     if not (cfg and cfg.ImageKeys) then return end
-    for _, key in pairs(cfg.ImageKeys) do
-        local aRef = (type(AssetRef) == "table" and AssetRef[key]) or nil
-        local cRef = (type(CreativeAsset) == "table" and CreativeAsset[key]) or nil
-        local imgID = aRef or cRef
-        if imgID then
-            pcall(function() self._ghostImgWidget:SetImageContent(imgID) end)
-        end
+    local keys = {}
+    for _, key in pairs(cfg.ImageKeys) do keys[#keys + 1] = key end
+    -- 错峰预加载：每张图间隔 50ms 单独 SetImageContent，确保各自异步加载真正发起并被缓存
+    -- （同帧连设多张只会让最后一张生效，其余未必缓存，导致切换时仍要现加载而显示上一个方块的图）。
+    for i, key in ipairs(keys) do
+        local delay = 0.05 * (i - 1)
+        pcall(function()
+            if self.owner and self.owner.AddTimerOnce then
+                self.owner:AddTimerOnce(delay, function()
+                    local aRef = (type(AssetRef) == "table" and AssetRef[key]) or nil
+                    local cRef = (type(CreativeAsset) == "table" and CreativeAsset[key]) or nil
+                    local imgID = aRef or cRef
+                    if imgID then pcall(function() self._ghostImgWidget:SetImageContent(imgID) end) end
+                end)
+            end
+        end)
     end
     self._ghostPreloaded = true
 end
@@ -1014,9 +1023,27 @@ function TetrisRenderer:RenderGhost(board, running)
         self:SetGhostVisible(false)
         return
     end
+    -- 贴图异步加载竞态修复：方块类型切换后，无论本帧是否 dirty，都在固定窗口内（约 90 帧）持续重设贴图，
+    -- 直到新贴图异步加载完成，避免“沿用上一个方块的图、尺寸对但图没换”（尺寸是同步设置，始终正确）。
+    if self._ghostImgWidget and self._ghostImgRetryN and self._ghostImgRetryN > 0 then
+        self._ghostImgRetryN = self._ghostImgRetryN + 1
+        if self._ghostImgRetryN > (self._ghostImgRetryMax or 90) then
+            self._ghostImgRetryN = 0
+        else
+            local p2 = board:getActive()
+            if p2 then
+                local k2 = cfg.ImageKeys and cfg.ImageKeys[p2.type]
+                local a2 = (type(AssetRef) == "table" and k2 and AssetRef[k2]) or nil
+                local c2 = (type(CreativeAsset) == "table" and k2 and CreativeAsset[k2]) or nil
+                local id2 = a2 or c2
+                if id2 then pcall(function() self._ghostImgWidget:SetImageContent(id2) end) end
+            end
+        end
+    end
     local p = board:getActive()
     if not p then
         self:SetGhostVisible(false)
+        self._ghostImgRetryN = 0
         self._ghostLastType = nil
         self._ghostLogPiece = nil   -- 无活动块：清空标记，下一个新块会重新打印落点
         self._ghostShowPending = nil
@@ -1025,6 +1052,7 @@ function TetrisRenderer:RenderGhost(board, running)
     -- 方块落地瞬间即移走预览（不再等到锁定）：落定但未锁定期间隐藏，待新块落下后再显示
     if p and board.grounded then
         self:SetGhostVisible(false)
+        self._ghostImgRetryN = 0
         return
     end
     -- 事件驱动：仅在活动块状态变化(脏标记)或处于待显示窗口时才做昂贵的重定位/设图；其余帧直接跳过。
@@ -1125,7 +1153,7 @@ function TetrisRenderer:RenderGhost(board, running)
             -- 直到贴图稳定显示，避免预览首显时图片错乱/空白（硬降快速出块尤其明显）。
             if self._ghostImgRetryType ~= p.type then
                 self._ghostImgRetryType = p.type
-                self._ghostImgRetryN = 0
+                self._ghostImgRetryN = 1   -- 开启“持续重设贴图”窗口，克服异步加载竞态（与游玩速度解耦）
             end
             if self._ghostImgRetryN < 20 then
                 self._ghostImgRetryN = self._ghostImgRetryN + 1

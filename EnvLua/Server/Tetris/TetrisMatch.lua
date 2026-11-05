@@ -675,13 +675,13 @@ function TetrisMatch:StepBuild()
     end
 end
 
--- 尝试开局落方块：仅在 loading 已到时 且 方框已生成完 后执行一次（隐藏 loading + 各盘 Start）。
+-- 尝试开局落方块：仅在 loading 已到时 且 方框已生成完 后执行一次。
+-- 顺序：① 各盘 Start() 把游戏 UI 全部显示就位 → ② 藏菜单 → ③ 最后才藏 loading（遮罩盖到最后，避免空窗/闪帧）。
 function TetrisMatch:TryStartGameplay()
     if self._started then return end
     if not self._loadingTimeUp then return end
     if not self._borderDone then return end
     self._started = true
-    self:ShowLoading(false)
 
     -- 单人/双人判定（复用 GetRealPlayerCount，与 Start 同一口径）：
     -- 真人 <2 => 单人（多余盘作 AI 对手）；>=2 => 双人（正常对战）。盘面恒为 2（spawnKeys 配 2 个出生点）。
@@ -690,6 +690,7 @@ function TetrisMatch:TryStartGameplay()
     print(string.format("[Tetris][Versus] 模式=%s（盘面数=%d）",
         isSingle and "单人(AI对手)" or "双人", #self.list))
 
+    -- ① 先让游戏 UI 全部就位（分数/名字/头像/技能 HUD；Hold/Next 复位后由 tick 显示；技能提示图保持隐藏）
     for _, g in ipairs(self.list) do
         if g.playerState then
             g:Start()
@@ -704,6 +705,15 @@ function TetrisMatch:TryStartGameplay()
         end
     end
     self:StartMatchTimer()
+
+    -- ② 游戏 UI 就绪后，再隐藏菜单（技能选择界面 / 玩法选择界面）
+    if self._enteredGame then
+        if self.skillSelect then self.skillSelect:ShowAll(false) end
+        if self.modeSelect then self.modeSelect:ShowUI(false) end
+    end
+
+    -- ③ 最后才隐藏 loading（游戏界面与菜单都已处理妥当，遮罩盖到最后）
+    self:ShowLoading(false)
     print("[Tetris][Versus] 对局开始（loading 隐藏后）")
 end
 
@@ -876,12 +886,8 @@ function TetrisMatch:OnPlayerOut(loser)
     if self.over then return end
     local winner = loser.opponent
     self.winner = winner
-    -- 胜者若为真人玩家（有 PlayerState），则胜利次数 +1 并上传排行榜
-    if winner and winner.playerState then
-        self:SubmitWin(winner.playerState)
-    end
-    -- 胜负 + 分数上报从「弹窗前」改到「点击结束游戏按钮时」执行（见 RegisterExitBtn），
-    -- 这里只记录胜者并弹结算面板。
+    -- 胜负结果的上传改到结算时统一处理（见 EndMatch → SubmitMatchResults：胜者 +1 / 败者 -1），
+    -- 这里仅记录胜者并弹结算面板。
     self:EndMatch("lose", false)
 end
 
@@ -943,7 +949,8 @@ function TetrisMatch:EndMatch(reason, early)
     --     if g.running then g:Stop() end
     -- end
     self:ShowSettle(reason)
-    self:ShowLeaderboard()   -- 结算同时拉取并显示「胜利次数」排行榜（关闭按钮可隐藏）
+    -- 结算只做「上传胜负结果」，不再自动弹排行榜（排行榜仅在点击「打开」按钮时出现）
+    self:SubmitMatchResults()
     -- if early then self:CallEndGameAPI() end
     -- print(string.format("[Tetris][Versus] 结算 reason=%s early=%s 胜者=%s",
     --     tostring(reason), tostring(early),
@@ -1053,8 +1060,14 @@ function TetrisMatch:RegisterResetBtn()
     owner:AddVPEvent(clickId, function(_self, ps)
         -- 仅在对局已结束（结算面板已弹）时生效，避免对局中误触
         if not selfRef.over then return end
-        print("[Tetris][Settle] 「重置游戏」按钮被点击（" .. tostring(ps) .. "），清空盘面并回到开始界面")
-        selfRef:ResetGame()
+        -- 包在 pcall 里：避免重置逻辑报错直接卡死引擎事件循环（点击退出本应只是回到开始界面）
+        local ok, err = pcall(function()
+            print("[Tetris][Settle] 「重置游戏」按钮被点击（" .. tostring(ps) .. "），清空盘面并回到开始界面")
+            selfRef:ResetGame()
+        end)
+        if not ok then
+            print("[Tetris][Settle][ERROR] 重置游戏失败：" .. tostring(err))
+        end
     end, selfRef, cfg.ExitBtn, nil)
     print("[Tetris][Settle] 「重置游戏」按钮点击已注册")
 end
@@ -1082,19 +1095,38 @@ function TetrisMatch:LeaderboardRankType()
     return map[key] or 1
 end
 
--- 胜利次数 +1 并上传排行榜（SubmitScore 为覆盖式：先取旧值 +1 再提交）
-function TetrisMatch:SubmitWin(ps)
+-- 通用：把某玩家在排行榜的分数调整 delta 后覆盖提交（先取旧值 + delta 再提交）
+function TetrisMatch:SubmitScore(ps, delta)
     if not ps or type(RankAPI) ~= "table" then return end
     local rt = self:LeaderboardRankType()
     local cur = 0
     pcall(function() cur = RankAPI.GetPlayerScore(ps, rt) or 0 end)
     if type(cur) ~= "number" then cur = 0 end
-    local newVal = cur + 1
+    local newVal = cur + delta
+    if newVal < 0 then newVal = 0 end   -- 避免负分：胜利次数最低为 0（败者 -1 不会让胜场数变成负数）
     pcall(function() RankAPI.SubmitScore(ps, rt, newVal) end)
     if TetrisConfig.Debug and TetrisConfig.Debug.PrintLeaderboard then
         local nm = ""
         pcall(function() nm = tostring(ps.PlayerName) end)
-        print(string.format("[Tetris][Leaderboard] %s 胜利次数 %d → %d（已上传）", nm, cur, newVal))
+        print(string.format("[Tetris][Leaderboard] %s 分数 %d → %d（delta=%d，已上传）", nm, cur, newVal, delta))
+    end
+end
+
+-- 结算时统一上传胜负结果：胜者 +1、败者 -1（测试阶段无论胜负都上传；失败 -1）。
+-- 仅上传有真人 PlayerState 的盘面（AI 盘无 PlayerState，跳过）。
+function TetrisMatch:SubmitMatchResults()
+    if type(RankAPI) ~= "table" then return end
+    if not self.winner then
+        if TetrisConfig.Debug and TetrisConfig.Debug.PrintLeaderboard then
+            print("[Tetris][Leaderboard] 无明确胜者，跳过结算上传")
+        end
+        return
+    end
+    for _, g in ipairs(self.list) do
+        if g.playerState then
+            local delta = (g == self.winner) and 1 or -1
+            self:SubmitScore(g.playerState, delta)
+        end
     end
 end
 
@@ -1213,6 +1245,9 @@ function TetrisMatch:ResetGame()
                 local hid = (type(CreativeInstance) == "table" and CreativeInstance[key]) or nil
                 if hid ~= nil then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
             end
+            -- 顺手隐藏可能已打开的排行榜面板（避免盖在开始界面上）
+            local lbCfg = TetrisConfig.Leaderboard
+            if lbCfg and lbCfg.Panel then pcall(function() CustomUIAPI.SetWidgetVisible(ps, lbCfg.Panel, false) end) end
         end
     end
     -- 逐个盘面：清空 / 暂停下落 / 重置能量（立即清屏；重开局时 BuildGames 会重建新实例）
@@ -1227,7 +1262,21 @@ function TetrisMatch:ResetGame()
     -- 重新显示「开始游戏」界面（StartPanel + StartBtn），点击开始 → 技能选择 → 重新开局
     -- 之后流程会再次走 OnModeSelected（重置 _started/_loadingTimeUp/_borderDone），可正常重开局
     if self.skillSelect then
+        -- 复用同一技能选择实例：Begin 仅重置状态并隐藏面板，不会重新显示「开始界面」
+        -- （显示开始界面原是 Start() 开局阶段做的，重开不会重走）。这里手动补上：
+        --   1) 清除 _startReg，让开始按钮能重新注册；2) Begin；3) 按配置显式显示开始界面（或直达技能面板）
+        self.skillSelect._startReg = false
         self.skillSelect:Begin(self.assigned or {})
+        local sCfg = TetrisConfig.SkillSelect
+        if sCfg and sCfg.StartBtn then
+            self.skillSelect:ShowStartScreen()
+        else
+            -- 无开始按钮：直接显示技能选择面板（对每个已分配玩家）
+            for _, ps in ipairs(self.assigned or {}) do
+                pcall(function() self.skillSelect:ShowPanelFor(ps, true) end)
+            end
+            pcall(function() self.skillSelect:RegisterSkills() end)
+        end
     end
     print("[Tetris][Settle] 已重置游戏，回到开始界面")
 end
