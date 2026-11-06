@@ -1210,6 +1210,23 @@ function TetrisMatch:SubmitMatchResults()
     end
 end
 
+-- 把 list 填进某玩家(p)的排行榜行（名次名字/胜利数）；list 为 { {Name,Value}, ... }
+function TetrisMatch:RenderLeaderboardRows(p, list)
+    local cfg = TetrisConfig.Leaderboard
+    if not cfg or not p then return end
+    list = list or {}
+    for i = 1, 10 do
+        local entry = list[i]
+        -- 人数不足该名次（榜上不足 10 人）时，名字与数量显示为空
+        local name = (entry and entry.Name) or ""
+        local val  = (entry and entry.Value) or ""
+        local nameId = cfg.NameText and cfg.NameText[i]
+        local winId  = cfg.WinText  and cfg.WinText[i]
+        if nameId then pcall(function() CustomUIAPI.SetTextContent(p, nameId, tostring(name)) end) end
+        if winId  then pcall(function() CustomUIAPI.SetTextContent(p, winId,  tostring(val))  end) end
+    end
+end
+
 -- 拉取胜利次数前十名并填表；ps 为空则对所有玩家展示（Panel 显隐 + 名次名字/胜利数）
 function TetrisMatch:ShowLeaderboard(ps)
     local cfg = TetrisConfig.Leaderboard
@@ -1228,18 +1245,11 @@ function TetrisMatch:ShowLeaderboard(ps)
         print(string.format("[Tetris][Leaderboard] 显示前十，共 %d 条", #(list or {})))
     end
     local targets = ps and { ps } or self:AllPlayerStates()
+    if not self._lbOpen then self._lbOpen = {} end
     for _, p in ipairs(targets) do
         if cfg.Panel then pcall(function() CustomUIAPI.SetWidgetVisible(p, cfg.Panel, true) end) end
-        for i = 1, 10 do
-            local entry = list[i]
-            -- 人数不足该名次（榜上不足 10 人）时，名字与数量显示为空
-            local name = (entry and entry.Name) or ""
-            local val  = (entry and entry.Value) or ""
-            local nameId = cfg.NameText and cfg.NameText[i]
-            local winId  = cfg.WinText  and cfg.WinText[i]
-            if nameId then pcall(function() CustomUIAPI.SetTextContent(p, nameId, tostring(name)) end) end
-            if winId  then pcall(function() CustomUIAPI.SetTextContent(p, winId,  tostring(val))  end) end
-        end
+        self._lbOpen[p] = true   -- 标记该玩家排行榜面板当前打开
+        self:RenderLeaderboardRows(p, list)
     end
 end
 
@@ -1247,12 +1257,20 @@ end
 function TetrisMatch:HideLeaderboard(ps)
     local cfg = TetrisConfig.Leaderboard
     if not cfg or not cfg.Panel then return end
-    if ps then
-        pcall(function() CustomUIAPI.SetWidgetVisible(ps, cfg.Panel, false) end)
-    else
-        for _, p in ipairs(self:AllPlayerStates()) do
-            pcall(function() CustomUIAPI.SetWidgetVisible(p, cfg.Panel, false) end)
-        end
+    local targets = ps and { ps } or self:AllPlayerStates()
+    if not self._lbOpen then self._lbOpen = {} end
+    for _, p in ipairs(targets) do
+        pcall(function() CustomUIAPI.SetWidgetVisible(p, cfg.Panel, false) end)
+        self._lbOpen[p] = nil   -- 清除打开标记
+    end
+end
+
+-- 主动拉取一次排行榜数据（在开始界面显示时调用，提前让数据就绪，避免首次打开空白）
+function TetrisMatch:RefreshLeaderboard()
+    if type(RankAPI) ~= "table" then return end
+    local rt = self:LeaderboardRankType()
+    if type(RankAPI.RefreshRank) == "function" then
+        pcall(function() RankAPI.RefreshRank(rt) end)
     end
 end
 
@@ -1276,12 +1294,18 @@ function TetrisMatch:RegisterLeaderboardButtons()
             selfRef:ShowLeaderboard(ps)
         end, selfRef, cfg.OpenBtn, nil)
     end
-    -- 排行榜数据刷新回调：缓存最新快照，供显示时填充（避免刚提交的胜利次数因快照滞后而不显示）
+    -- 排行榜数据刷新回调：缓存最新快照；若某玩家排行榜面板当前打开，则用新数据重绘（修复首次打开空白）
     local rt = selfRef:LeaderboardRankType()
     if type(RankAPI) == "table" and type(RankAPI.AddRankUpdateCallback) == "function" then
         pcall(function()
             RankAPI.AddRankUpdateCallback(rt, function(_rt, data)
                 selfRef._lbCache = data
+                -- 数据到达：若面板正打开，立即用新数据重绘行（无需关闭再打开）
+                if selfRef._lbOpen then
+                    for p, _ in pairs(selfRef._lbOpen) do
+                        if p then selfRef:RenderLeaderboardRows(p, data) end
+                    end
+                end
             end)
         end)
     end

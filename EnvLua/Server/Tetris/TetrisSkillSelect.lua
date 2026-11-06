@@ -227,6 +227,10 @@ function TetrisSkillSelect:ShowStartScreen()
     self:ShowForAll(cfg.StartBtn, true)
     self:ShowOpenBtnForAll(true)   -- OpenBtn 在开始界面上，随开始界面显示
     self:RegisterStart()
+    -- 开始界面显示即主动拉取排行榜数据，提前让数据就绪（修复首次打开空白）
+    if self.match and type(self.match.RefreshLeaderboard) == "function" then
+        self.match:RefreshLeaderboard()
+    end
     print("[Tetris][Skill] 显示开始界面（全部玩家）")
 end
 
@@ -255,6 +259,10 @@ function TetrisSkillSelect:ShowStartScreenFor(ps)
     self:ShowFor(ps, cfg.StartBtn, true)
     self:ShowOpenBtnFor(ps, true)   -- OpenBtn 在开始界面上，随开始界面显示
     self:RegisterStart()
+    -- 开始界面显示即主动拉取排行榜数据，提前让数据就绪（修复首次打开空白）
+    if self.match and type(self.match.RefreshLeaderboard) == "function" then
+        self.match:RefreshLeaderboard()
+    end
 end
 
 -- 仅对单个玩家隐藏「开始游戏」界面（玩家点击帮助按钮打开帮助时调用）
