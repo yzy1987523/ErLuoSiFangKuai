@@ -936,6 +936,53 @@ TetrisConfig.DetailHelp = {
     },
 }
 
+-- ===================== 多语言界面（由开始界面的 OpenBtn 打开） =====================
+-- 4 个按钮：关闭、切换中文、切换英文、切换阿拉伯文；3 个语言标志图片（对应 zh/en/ar）。
+-- 内部预留若干「内容组件」：每个含 图片组件 + 3 种语言图片资源(imgs={zh,en,ar})，
+--   文本组件 + 3 种语言文本(texts={zh,en,ar})；切换语言时遍历这些组件按当前语言设置。
+-- 组件 ID / 资源键 / 文本 待编辑器放置后填入（逻辑已做 nil 容错）。
+TetrisConfig.LangUI = {
+    Enabled  = true,
+    OpenBtn  = ci("1_CreativeInstance_23643899479386204"),   -- 打开多语言界面的按钮（在开始界面上，待填）
+    Panel    = ci("1_CreativeInstance_23643899759141283"),   -- 多语言界面容器（待填）
+    BtnClose = ci("1_CreativeInstance_23643899218128574"),   -- 关闭界面（待填）
+    -- 3 个切换语言按钮，顺序固定 = {中文, 英文, 阿拉伯文}
+    BtnLang  = {
+        ci("1_CreativeInstance_23643899219233003"),  -- 切换中文
+        ci("1_CreativeInstance_23643901746964797"),  -- 切换英文
+        ci("1_CreativeInstance_23643899396547479"),  -- 切换阿拉伯文
+    },
+    -- 3 个语言标志图片，顺序固定 = {中文, 英文, 阿拉伯文}
+    LangIndicators = {
+        ci("1_CreativeInstance_23643899207371602"),  -- 中文标志
+        ci("1_CreativeInstance_23643901449614918"),  -- 英文标志
+        ci("1_CreativeInstance_23643900928254313"),  -- 阿拉伯文标志
+    },
+    -- 语言键（与上面顺序一一对应，供代码索引 imgs/texts 用）
+    LangKeys = { "zh", "en", "ar" },
+    -- 预留内容组件（数量按实际展示条目，可自行增删）
+    --   每项可含：文本组件(txt)+3 语文本(texts)；图片组件(img)+3 语图(imgs)；
+    --            按钮组件(btn)+3 语常态图(btnNormal)；3 语按下图(btnPressed)可留空（默认与常态同图，按下态用编辑器颜色区分）。字段按需填，缺失自动跳过。
+    Contents = {
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 4 项：按钮（按下/常态同图，按下态用编辑器颜色区分）
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = ci("1_CreativeInstance_23643901825073557"),
+          btnNormal = { "23_ImagePreset_181443359919190", "23_ImagePreset_181441611429037", "23_ImagePreset_181441068320999" },
+          btnPressed = { nil, nil, nil } },
+        -- 第 5 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643902239482253"),
+          imgs = { "23_ImagePreset_181444995847832", "23_ImagePreset_181443883931870", "23_ImagePreset_181441930317548" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+    },
+}
+
 -- ===================== 头像组件（对局 HUD：我方 / 对方 头像显示） =====================
 -- 开局从 AvatarPresets 中随机分配；2 名玩家时洗牌分配保证两者头像不同。
 TetrisConfig.AvatarUI = {

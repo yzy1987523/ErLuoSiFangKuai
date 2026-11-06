@@ -19,6 +19,7 @@ local TetrisModeSelect = require("EnvLua.Server.Tetris.TetrisModeSelect")
 local TetrisSkillSelect = require("EnvLua.Server.Tetris.TetrisSkillSelect")
 local TetrisHelp = require("EnvLua.Server.Tetris.TetrisHelp")
 local TetrisDetailHelp = require("EnvLua.Server.Tetris.TetrisDetailHelp")  -- 详细帮助界面（由准备阶段界面的 OpenBtn 打开）
+local TetrisLang = require("EnvLua.Server.Tetris.TetrisLang")                -- 多语言界面（由开始界面的 OpenBtn 打开）
 local TetrisAIDifficulty = require("EnvLua.Server.Tetris.TetrisAIDifficulty")
 local TetrisBehindWidget = require("EnvLua.Server.Tetris.TetrisBehindWidget")
 local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")
@@ -398,6 +399,11 @@ function TetrisMatch:Start()
     self.detailHelp = TetrisDetailHelp:new(self.owner, self)
     self.detailHelp.players = self.assigned
     self.detailHelp:Register()
+
+    -- 多语言界面（由开始界面的 OpenBtn 打开；控件为占位时 Available=false，Register 内部跳过）。
+    self.langUI = TetrisLang:new(self.owner, self)
+    self.langUI.players = self.assigned
+    self.langUI:Register()
 
     -- 准备阶段空闲展示版：开局前置默认显示；玩家关闭后才显示「开始游戏」界面。
     self.help = TetrisHelp:new(self.owner, self)

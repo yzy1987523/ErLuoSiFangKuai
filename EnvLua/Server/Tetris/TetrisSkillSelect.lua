@@ -230,11 +230,14 @@ function TetrisSkillSelect:ShowStartScreen()
     print("[Tetris][Skill] 显示开始界面（全部玩家）")
 end
 
--- OpenBtn 在开始界面上：显隐随开始界面（实际由 TetrisDetailHelp 控制）
+-- OpenBtn 在开始界面上：显隐随开始界面（实际由 TetrisDetailHelp / TetrisLang 控制）
 function TetrisSkillSelect:ShowOpenBtnFor(ps, v)
     local mm = self.match
     if mm and mm.detailHelp and type(mm.detailHelp.ShowOpenBtnFor) == "function" then
         mm.detailHelp:ShowOpenBtnFor(ps, v)
+    end
+    if mm and mm.langUI and type(mm.langUI.ShowOpenBtnFor) == "function" then
+        mm.langUI:ShowOpenBtnFor(ps, v)
     end
 end
 
