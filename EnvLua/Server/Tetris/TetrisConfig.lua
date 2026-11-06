@@ -877,20 +877,62 @@ TetrisConfig.NameUI = {
     OppName  = ci("1_CreativeInstance_23643901522693787"),  -- 对方名字组件（显示对手昵称 / AI 角色名）
 }
 
--- ===================== 帮助/玩法说明界面（开局前置分页 UI） =====================
--- 控件 UUID 在编辑器 UI Editor 预放置后，从全局表 CreativeInstance 复制。
--- 3 张说明图（AssetRef 里的图片预设 key），用左/右按钮翻页；第 1 页隐藏“左”、最后 1 张隐藏“右”。
+-- ===================== 准备阶段空闲展示版（开局前置，默认显示） =====================
+-- 仅作"准备阶段空闲展示"：显示 Panel + BtnClose；不再使用分页说明图。
+-- OpenBtn 已移至 TetrisConfig.DetailHelp（点它打开详细帮助，归 TetrisDetailHelp 配置/接管）。
 TetrisConfig.HelpUI = {
-    Panel     = ci("1_CreativeInstance_23643900490162089"),  -- 帮助界面容器（显示玩法）
-    ImageView = ci("1_CreativeInstance_23643901800328935"),  -- 说明图显示组件（内容在 3 张图间切换）
-    BtnLeft   = ci("1_CreativeInstance_23643902106286885"),  -- 左（上一页）
-    BtnRight  = ci("1_CreativeInstance_23643900632610044"),  -- 右（下一页）
-    BtnClose  = ci("1_CreativeInstance_23643898864466685"),  -- 关闭
-    OpenBtn   = ci("1_CreativeInstance_23643902038707456"),  -- 开始界面上的「帮助」按钮（点击重新打开帮助界面）
-    Images = {
-        "23_ImagePreset_181443114082742",  -- 第 1 张
-        "23_ImagePreset_181444632707443",  -- 第 2 张
-        "23_ImagePreset_181443485092233",  -- 第 3 张（末页，隐藏“右”）
+    Panel     = ci("1_CreativeInstance_23643900490162089"),  -- 空闲展示容器
+    BtnClose  = ci("1_CreativeInstance_23643898864466685"),  -- 关闭（隐藏本界面，回到「开始游戏」界面）
+}
+
+-- ===================== 详细帮助界面（由准备阶段界面的 OpenBtn 打开） =====================
+-- 组件先用占位符(nil)，待编辑器放置后填入；逻辑已做 nil 容错，未放置的控件自动跳过。
+-- 结构：Panel 容器 + BtnClose（关闭，回到准备阶段界面）+ OpenBtn（打开详细帮助，显示在准备阶段界面上）
+--       + 3 个页面切换按钮(PageBtns[1..3]) + 3 个页面对应组件(Pages[1..3])；切页 = 显隐对应组件（同屏只显当前页）。
+TetrisConfig.DetailHelp = {
+    Enabled  = true,
+    Panel    = ci("1_CreativeInstance_23643898466317305"),   -- 详细帮助容器（占位）
+    BtnClose = ci("1_CreativeInstance_23643901562637431"),   -- 关闭详细帮助（返回准备阶段界面）
+    OpenBtn  = ci("1_CreativeInstance_23643902038707456"),  -- 打开详细帮助的按钮（显示在准备阶段界面上）
+    PageBtns = {
+        ci("1_CreativeInstance_23643901984393669"),  -- 第 1 页切换按钮（技能）
+        ci("1_CreativeInstance_23643902160078595"),  -- 第 2 页切换按钮（道具）
+        ci("1_CreativeInstance_23643899504006738"),  -- 第 3 页切换按钮（操作）
+    },
+    PageIndicators = {
+        ci("1_CreativeInstance_23643901100643124"),  -- 第 1 页标志图片（技能）
+        ci("1_CreativeInstance_23643900640296115"),  -- 第 2 页标志图片（道具）
+        ci("1_CreativeInstance_23643899393863098"),  -- 第 3 页标志图片（操作）
+    },
+    Pages    = {
+        ci("1_CreativeInstance_23643898276804644"),  -- 第 1 页容器（技能）
+        ci("1_CreativeInstance_23643900769436086"),  -- 第 2 页容器（道具）
+        ci("1_CreativeInstance_23643898304704134"),  -- 第 3 页容器（操作）
+    },
+    -- 每页内容项：{ img=图片组件(占位), res=图片资源键(占位), txt=文本组件(占位), text=文本内容(占位) }
+    --   第 1 页=技能说明（5 个技能），第 2 页=道具说明（4 种道具），第 3 页=操作按钮说明（5 类操作）
+    PageContents = {
+        {  -- 第 1 页：技能（SK01/02/06/07/08）
+            { img = ci("1_CreativeInstance_23643901306979515"), res = "23_ImagePreset_181442919461175", txt = ci("1_CreativeInstance_23643902245452647"), text = nil },  -- SK01 禁止转动
+            { img = ci("1_CreativeInstance_23643901865567224"), res = "23_ImagePreset_181443391878538", txt = ci("1_CreativeInstance_23643898771416427"), text = nil },  -- SK02 清除最下方两行
+            { img = ci("1_CreativeInstance_23643901942877834"), res = "23_ImagePreset_181443140642203", txt = ci("1_CreativeInstance_23643900012773396"), text = nil },  -- SK06 攻势
+            { img = ci("1_CreativeInstance_23643898870755047"), res = "23_ImagePreset_181445135603547", txt = ci("1_CreativeInstance_23643901590396102"), text = nil },  -- SK07 赠送技能
+            { img = ci("1_CreativeInstance_23643898174165902"), res = "23_ImagePreset_181441605832442", txt = ci("1_CreativeInstance_23643900325879210"), text = nil },  -- SK08 左右对调
+        },
+        {  -- 第 2 页：道具（爆破/位移/充能/落石）
+            { img = ci("1_CreativeInstance_23643899065290183"), res = "23_ImagePreset_181444441905046", txt = ci("1_CreativeInstance_23643900275400453"), text = nil },  -- 爆破块
+            { img = ci("1_CreativeInstance_23643900306043465"), res = "23_ImagePreset_181443652373081", txt = ci("1_CreativeInstance_23643901526573817"), text = nil },  -- 位移块
+            { img = ci("1_CreativeInstance_23643900464223690"), res = "23_ImagePreset_181442081947966", txt = ci("1_CreativeInstance_23643900507838519"), text = nil },  -- 充能块
+            { img = ci("1_CreativeInstance_23643902127812457"), res = "23_ImagePreset_181444567644458", txt = ci("1_CreativeInstance_23643901725221346"), text = nil },  -- 落石块
+        },
+        {  -- 第 3 页：操作按钮（左移/右移/旋转/技能/硬降(软硬同键)/Hold，共 6 项）
+            { img = ci("1_CreativeInstance_23643900331463788"), res = nil, txt = ci("1_CreativeInstance_23643899504547328"), text = nil },  -- 左移            
+            { img = ci("1_CreativeInstance_23643899249902371"), res = nil, txt = ci("1_CreativeInstance_23643901224091916"), text = nil },  -- 右移
+            { img = ci("1_CreativeInstance_23643901270217712"), res = nil, txt = ci("1_CreativeInstance_23643898265479795"), text = nil },  -- 旋转
+            { img = ci("1_CreativeInstance_23643899549320807"), res = nil, txt = ci("1_CreativeInstance_23643899214347528"), text = nil },  -- 技能
+            { img = ci("1_CreativeInstance_23643901424318540"), res = nil, txt = ci("1_CreativeInstance_23643900076850751"), text = nil },  -- 硬降
+            { img = ci("1_CreativeInstance_23643898275467445"), res = nil, txt = ci("1_CreativeInstance_23643900145816676"), text = nil },  -- Hold
+        },
     },
 }
 
@@ -1140,8 +1182,8 @@ TetrisConfig.Audio = {
     -- 按 AI 难度切换的 BGM（共 3 个文件）。当前先用默认占位，后续替换为各自的 SoundPreset Key；
     -- 取值键为 TetrisMatch.aiDifficulty（"Easy"/"Normal"/"Hard"），非 AI 对局(-1)走默认 BGMId。
     DifficultyBGM = {
-        Easy   = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
-        Normal = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
+        Easy   = "19_SoundPreset_181438040768165",   
+        Normal = "19_SoundPreset_181440656203011",   
         Hard   = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
     },
     Step = 0.1,   -- 每次点击增减幅度（0.1 = 10%，0~1 共 10 档）

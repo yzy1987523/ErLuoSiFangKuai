@@ -43,10 +43,7 @@ local function cfgOf()
     return TetrisConfig.SkillSelect or {}
 end
 
--- 开始界面上的「帮助」按钮 id（定义在 TetrisConfig.HelpUI.OpenBtn）；帮助未配置时为 nil
-local function helpBtnId()
-    return (TetrisConfig.HelpUI and TetrisConfig.HelpUI.OpenBtn) or nil
-end
+-- 注：帮助「打开」按钮(HelpUI.OpenBtn) 现由 TetrisDetailHelp 接管，不再属于开始游戏界面
 
 -- 阶段是否可用：开关打开且至少放了一个技能按键
 function TetrisSkillSelect:Available()
@@ -228,9 +225,23 @@ function TetrisSkillSelect:ShowStartScreen()
     if not cfg.StartBtn then return end
     self:ShowForAll(cfg.StartPanel, true)
     self:ShowForAll(cfg.StartBtn, true)
-    self:ShowForAll(helpBtnId(), true)
+    self:ShowOpenBtnForAll(true)   -- OpenBtn 在开始界面上，随开始界面显示
     self:RegisterStart()
     print("[Tetris][Skill] 显示开始界面（全部玩家）")
+end
+
+-- OpenBtn 在开始界面上：显隐随开始界面（实际由 TetrisDetailHelp 控制）
+function TetrisSkillSelect:ShowOpenBtnFor(ps, v)
+    local mm = self.match
+    if mm and mm.detailHelp and type(mm.detailHelp.ShowOpenBtnFor) == "function" then
+        mm.detailHelp:ShowOpenBtnFor(ps, v)
+    end
+end
+
+function TetrisSkillSelect:ShowOpenBtnForAll(v)
+    for _, ps in ipairs(self.players) do
+        self:ShowOpenBtnFor(ps, v)
+    end
 end
 
 -- 仅对单个玩家显示「开始游戏」界面（玩家关闭自己的帮助界面后调用）
@@ -239,7 +250,7 @@ function TetrisSkillSelect:ShowStartScreenFor(ps)
     if not cfg.StartBtn or not ps then return end
     self:ShowFor(ps, cfg.StartPanel, true)
     self:ShowFor(ps, cfg.StartBtn, true)
-    self:ShowFor(ps, helpBtnId(), true)
+    self:ShowOpenBtnFor(ps, true)   -- OpenBtn 在开始界面上，随开始界面显示
     self:RegisterStart()
 end
 
@@ -249,7 +260,7 @@ function TetrisSkillSelect:HideStartScreenFor(ps)
     if not ps then return end
     self:ShowFor(ps, cfg.StartPanel, false)
     self:ShowFor(ps, cfg.StartBtn, false)
-    self:ShowFor(ps, helpBtnId(), false)
+    self:ShowOpenBtnFor(ps, false)   -- OpenBtn 随开始界面隐藏
 end
 
 -- ---------------- 输入 ----------------
