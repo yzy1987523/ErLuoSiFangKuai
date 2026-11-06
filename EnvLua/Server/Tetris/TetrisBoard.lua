@@ -196,11 +196,13 @@ function TetrisBoard:nextPieceType()
         self._firstItemDone = true
         local ft = icfg.FirstItemType or (icfg.Types and icfg.Types[1]) or 9
         self._lastItemType = ft
+        self.sinceItem = 0   -- 强制首块为道具：计数按"生成道具"处理（清零）
         return ft
     end
-    -- 道具概率（基于「自上次道具落地以来落下的普通方块数」sinceItem，见 ItemWarmup/ItemStartProb/ItemIncPerPiece/ItemMaxProb）：
+    -- 道具概率（基于「自上次道具生成以来落下的普通方块数」sinceItem，见 ItemWarmup/ItemStartProb/ItemIncPerPiece/ItemMaxProb）：
     --   前 ItemWarmup 个必为普通；之后概率 = ItemStartProb + (sinceItem-ItemWarmup)*ItemIncPerPiece（封顶 ItemMaxProb）。
-    --   注意：计数与清零都在 lockPiece（方块真正落地）时处理，此处只读取判定、不修改 sinceItem。
+    --   注意：sinceItem 的 +1/清零均在「生成时」(本函数内)处理——出道具立即清零、出普通立即 +1；
+    --         这样队列中一旦生成道具，其后补入的块必为普通，从根上保证「道具间至少隔 ItemWarmup 个普通块」。
     if icfg then
         local warmup = icfg.ItemWarmup or 10
         local startP = icfg.ItemStartProb or 0.5
@@ -211,20 +213,22 @@ function TetrisBoard:nextPieceType()
             local p = startP + (n - warmup) * incP
             if p > maxP then p = maxP end
             if math.random() < p then
-                -- 本次生成道具：从独立道具小洗牌袋取具体类型（sinceItem 在该道具真正落地时清零）
+                -- 本次生成道具：从独立道具小洗牌袋取具体类型；计数在生成时清零（见函数头注释）
                 if not self.itemBag or #self.itemBag == 0 then
                     self:refillItemBag()
                 end
                 local t = table.remove(self.itemBag, 1)
                 self._lastItemType = t
+                self.sinceItem = 0   -- 道具生成即清零：后续队列中的块必为普通，杜绝连续道具
                 return t
             end
         end
     end
-    -- 普通方块：走 7-bag（sinceItem 的 +1 在 lockPiece 落地时累加）
+    -- 普通方块：走 7-bag（sinceItem 计数在生成时累加，见函数头注释）
     if #self.bag == 0 then
         self:refillBag()
     end
+    self.sinceItem = (self.sinceItem or 0) + 1   -- 普通方块生成即 +1（道具生成路径已清零）
     return table.remove(self.bag, 1)
 end
 
@@ -487,13 +491,6 @@ function TetrisBoard:lockPiece()
     self.pendingLockedCells = (#lockedCells > 0) and lockedCells or nil
     self.active = nil
     self:markGhostDirty()   -- 锁定→无活动块：标记预览需隐藏
-
-    -- 道具概率计数（基于「落地方块数」）：普通方块 +1；道具方块清零（概率与累计从头再来）
-    if TetrisConfig.IsItemType(p.type) then
-        self.sinceItem = 0
-    else
-        self.sinceItem = (self.sinceItem or 0) + 1
-    end
 
     -- SK-08「左右对调」：对手当前方块落地 → 解除申请方冷却，并标记下一个方块左右互换
     if self.swapRequested and self.pendingSwapRequester then
