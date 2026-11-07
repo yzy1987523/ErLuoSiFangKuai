@@ -484,31 +484,27 @@ end
 
 -- ---------------- 调试：上屏输出 ----------------
 
--- 是否「本地玩家」所控制的盘面：仅本地盘才把 2D HUD（名字/分数/Hold/Next/头像/技能/垃圾提示等）
--- 写到屏幕控件，避免双人 / 测试环境中两块盘同时写同一套 2D 控件，导致名字、分数交替错乱。
--- 判定：本盘分配到的真人 PlayerState 是否等于「首个玩家」（即本地玩家）。AI 盘无 playerState → 非本地。
+-- 是否「本地玩家」所控制的盘面（历史遗留判定，2D HUD 已不再依赖它，见 GetPlayerState）。
+-- 保留供诊断/兼容：判定本盘分配到的真人 PlayerState 是否为「首个玩家」。AI 盘无 playerState → 非本地。
 function TetrisGame:IsLocalBoard()
     local ps = self.playerState   -- 分配阶段写入的真人 PlayerState；AI 盘为 nil
     if not ps then return false end
     local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
-    if not (ok and arr and arr.Num and arr:Num() > 0) then return true end  -- 取不到本地玩家时按"本地"处理，避免 2D HUD 完全不显示
+    if not (ok and arr and arr.Num and arr:Num() > 0) then return true end  -- 取不到本地玩家时按"本地"处理
     return arr:Get(0) == ps
 end
 
 -- 惰性获取 PlayerState。上屏 API 的首参必须是 PlayerState。
 -- GetAllPlayerStates 返回 LuaArray，要用 :Num()/:Get(i)，下标从 0 起。
+-- 【真人对战修复】CustomUIAPI.SetTextContent / SetWidgetVisible 的首参 PlayerState 是「按玩家个性化」：
+-- 传谁就只改谁的屏幕控件（nil 才广播，见 LuaHint/CustomUIAPI.lua）。因此每块真人盘都应该用
+-- 自己在分配阶段拿到的 playerState 写各自的 2D HUD，天然互不冲突，无需「仅本地盘写」的门控。
+-- 旧的 IsLocalBoard 门控会让第 2 名玩家那块盘返回 nil，导致其名字/分数/头像/技能/初始隐藏
+-- 等整条 2D HUD 写入线全部跳过（表现为那一方屏幕一直是编辑器默认内容、开局该隐藏的 UI 没隐藏）。
+-- AI 盘(isAI=true)无 playerState，仍返回 nil，不写任何玩家 HUD；单人模式行为不变。
 function TetrisGame:GetPlayerState()
-    if self.isAI then return nil end   -- AI 盘不向任何玩家写 HUD/相机
-    if self.playerState then
-        -- 仅本地盘返回 PlayerState；非本地（对手）盘返回 nil → 所有 2D HUD 写入自动跳过，
-        -- 避免两块盘争用同一套 2D 控件（名字/分数交替）。对手信息改由本地盘经 self.opponent 读取显示。
-        if not self:IsLocalBoard() then return nil end
-        return self.playerState
-    end
-    -- 重要：不再把「首个玩家」偷赋给无 playerState 的盘。这类盘要么是 AI 盘（顶部 isAI 已拦截），
-    -- 要么是不该写 HUD 的盘；此前偷赋会让对手盘被误判为"我方"（名字/分数错乱、AI 不动）。
-    -- 真人盘在分配阶段必已被写入 playerState，无需此处兜底；无 playerState 直接返回 nil。
-    return nil
+    if self.isAI then return nil end
+    return self.playerState
 end
 
 function TetrisGame:SendScreenMessage(content)
@@ -1181,6 +1177,7 @@ function TetrisGame:HideSkillHintUI()
         { "UI.BlastImg",        ui and ui.BlastImg, opacity = true },
         { "UI.ShiftImg1",       ui and ui.ShiftImg1, opacity = true },
         { "UI.ShiftImg2",       ui and ui.ShiftImg2, opacity = true },
+        { "UI.StoneImg",        ui and ui.StoneImg, opacity = true },
     }
     -- 垃圾行图片提示（最多 12 组件）：开局先全部隐藏，由 UpdateGarbageHints 按语言+行数重新点亮
     local gh = TetrisConfig.GarbageHint
@@ -1356,6 +1353,32 @@ function TetrisGame:ConsumeShiftImage()
     if not b or not b.pendingShiftImg then return end
     b.pendingShiftImg = nil
     self:ShowShiftImage()
+end
+
+-- 落石道具块消除提示：显示 StoneImg 图片 StoneImgDuration 秒后自动隐藏（隐藏时透明度改 0）；
+-- 连消时取消上一次未到期的隐藏定时器，刷新为满窗口。仅对真人盘（有 PlayerState）生效。
+-- 由 TetrisBoard:clearLines 在真实消行触发落石能力时直接调用（与落石释放音效同时机）。
+function TetrisGame:ShowStoneImage()
+    local ui = TetrisConfig.UI
+    local id = ui and ui.StoneImg
+    local ps = self:GetPlayerState()
+    if not id or not ps or type(CustomUIAPI) ~= "table" then return end
+    pcall(function()
+        CustomUIAPI.SetWidgetVisible(ps, id, true)
+        CustomUIAPI.SetWidgetImageOpacity(ps, id, 1)
+    end)
+    if self._stoneHideTimer then
+        pcall(function() self.owner:RemoveTimer(self._stoneHideTimer) end)
+        self._stoneHideTimer = nil
+    end
+    local dur = (ui and ui.StoneImgDuration) or 1.7
+    self._stoneHideTimer = self.owner:AddTimerOnce(dur, function()
+        pcall(function()
+            CustomUIAPI.SetWidgetImageOpacity(ps, id, 0)
+            CustomUIAPI.SetWidgetVisible(ps, id, false)
+        end)
+        self._stoneHideTimer = nil
+    end)
 end
 
 -- 刷新技能 UI：bar 图片按当前 bar 数显隐；power 图片组件按当前 power 数换「有/无」图

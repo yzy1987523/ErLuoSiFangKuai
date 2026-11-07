@@ -641,8 +641,18 @@ TetrisConfig.UI = {
     --   ShiftImg1 / ShiftImg2 = 图片控件实例（CreativeInstance），消除位移块时同时显示；
     --   ShiftImgDuration     = 显示时长（秒），到点自动隐藏（隐藏时透明度改 0）。
     ShiftImg1 = ci("1_CreativeInstance_23643900945912659"),
-    ShiftImg2 = ci("1_CreativeInstance_23643899521674335"),
+    ShiftImg2 = ci("1_CreativeInstance_23643900333628969"),
     ShiftImgDuration = 1.7,   -- 显示时长（秒）
+
+    -- 道具消除提示图登记（编辑器编号 02/03/04 → PieceType 10/11/12；三个 ID 见 TetrisConfig.ItemHintImages）：
+    --   01 爆破(9)  = BlastImg                    （沿用现有，本次不动）
+    --   02 位移(10) = 23643900333628969          （仅登记；显示逻辑仍用 ShiftImg1/ShiftImg2，本次不动）
+    --   03 充能(11) = 23643901123532648          （仅登记；与 UI.ChargeItemImg 同一控件，显示逻辑不动）
+    --   04 落石(12) = 23643899521674335          （= UI.StoneImg，本次新增落石消除提示）
+    -- 落石道具消除提示图片：道具-落石块(ITEM_STONE=12)被消除时显示 StoneImgDuration 秒后自动隐藏
+    --   （见 TetrisGame:ShowStoneImage；隐藏时透明度改 0，开局初始化时隐藏）。
+    StoneImg = ci("1_CreativeInstance_23643899521674335"),
+    StoneImgDuration = 1.7,   -- 显示时长（秒）
 
     -- 垃圾行提示框（对战 / 人机）：根据双方 board.pendingGarbage 显示「即将发 / 即将收垃圾」。
     -- 即将给对手扔垃圾：对手盘 pendingGarbage>0（我刚发起的攻击尚未在对手盘落地）。
@@ -652,6 +662,17 @@ TetrisConfig.UI = {
 
     -- 对手分数文本控件：显示 self.opponent.board.score（对战 / 人机通用）
     OpponentScoreLabel = ci("1_CreativeInstance_23643901631192115"),
+}
+
+-- ===================== 道具消除提示图登记（编辑器编号 02/03/04） =====================
+-- 三个提示控件 ID 与道具的对应关系（键为 PieceType.ITEM_*）。
+--   02 位移(10)、03 充能(11)：仅登记，显示逻辑沿用 UI.ShiftImg1/2、UI.ChargeItemImg，本次未改。
+--   04 落石(12)：本次接入提示（UI.StoneImg / TetrisGame:ShowStoneImage），消除落石块时显示 1.7s 后隐藏；
+--                该控件同时是 UI.ShiftImg2（与位移提示共用），故两个提示各自独立计时显隐。
+TetrisConfig.ItemHintImages = {
+    [TetrisConfig.PieceType.ITEM_SHIFT]  = ci("1_CreativeInstance_23643900333628969"),  -- 02 位移(10)
+    [TetrisConfig.PieceType.ITEM_CHARGE] = ci("1_CreativeInstance_23643901123532648"),  -- 03 充能(11)
+    [TetrisConfig.PieceType.ITEM_STONE]  = ci("1_CreativeInstance_23643899521674335"),  -- 04 落石(12)
 }
 
 -- ===================== 垃圾行图片提示（替代 UI.GarbageSendHint/RecvHint 文本提示） =====================
@@ -857,7 +878,7 @@ TetrisConfig.Skills = {
         desc = "接下来 1 次消行结算时，攻击行数 +1（单消亦从 0 行变为 1 行）",
         imageKey = "23_ImagePreset_181441732151158",   -- 中央大图提示图片预设
         iconKey  = "23_ImagePreset_181443140642203",   -- 技能图标（局内 HUD / 选择按钮）
-        attackBuffImg = ci("1_CreativeInstance_23643899894524727"),   -- 攻势消行触发时显示的图片提示（1.7s 后隐藏），ci() 转数字 key
+        attackBuffImg = ci("1_CreativeInstance_23643900207729698"),   -- 攻势消行触发时显示的图片提示（1.7s 后隐藏），ci() 转数字 key
     },
     SK07 = {
         key = "SK07", name = "赠送技能", type = "buff", selectDesc = "额外消除一行",
@@ -948,6 +969,17 @@ TetrisConfig.SkillSelect = {
     },
 }
 
+-- 技能描述文本多语言（技能选择界面 2 个槽位 + 帮助页第 1 页共用）：按技能 key → 语言索引取短描述。
+--   zh(1) 回退 Skills[key].selectDesc（中文版已在代码中，不重复给）；en(2)/ar(3) 取自 doc/技能.xls Sheet2 行 0~4。
+--   槽位显示哪 2 个技能是开局随机决定的，故必须运行时按「技能+语言」取，不能登记到 LangUI.Contents。
+TetrisConfig.SkillSelectTexts = {
+    SK01 = { [2] = "Restrict Opponent's Rotation",         [3] = "تقييد دوران مكعب الخصم" },
+    SK02 = { [2] = "Clear the Bottom Two Rows",            [3] = "امحُ الصفين السفليين" },
+    SK06 = { [2] = "Boost the Next Garbage Attack",        [3] = "عزّز هجوم العوائق التالي" },
+    SK07 = { [2] = "Clear One Extra Row",                  [3] = "امحُ صفًا إضافيًا" },
+    SK08 = { [2] = "Reverse Opponent's Movement Controls", [3] = "اعكس اتجاهات تحكم الخصم" },
+}
+
 -- ===================== 名字组件（对局 HUD：我方 / 对方 名字显示） =====================
 TetrisConfig.NameUI = {
     SelfName = ci("1_CreativeInstance_23643899410907749"),  -- 我方名字组件（显示自己昵称）
@@ -1011,6 +1043,51 @@ TetrisConfig.DetailHelp = {
             { img = ci("1_CreativeInstance_23643898275467445"), res = nil, txt = ci("1_CreativeInstance_23643900145816676"), text = nil },  -- Hold
         },
     },
+}
+
+-- 帮助界面 3 页文本多语言：HelpTexts[页码][项索引][语言1=zh,2=en,3=ar]。
+--   与 PageContents 同序（页1=5技能 / 页2=4道具 / 页3=6操作）；中文取自 doc/技能.xls Sheet2「游戏内描述」列，
+--   en/ar 取自同表 English / العربية 列。zh 也配齐：原来 PageContents.text 全为 nil（靠编辑器预设），
+--   切回中文时必须有值可写，否则会残留上一语言的文字。
+--   注：页3 严格按 doc/技能.xls Sheet2「按键」段的数量(4 条)与顺序填：
+--       KEY-01 HOLD / KEY-02 旋转 / KEY-03 下落 / KEY-04 技能，不做与 PageContents 组件标签的语义映射。
+--       超出 4 条的组件项在 _applyItems 中取不到文案 → 跳过（保持编辑器预设文本）。
+TetrisConfig.HelpTexts = {
+    [1] = {  -- 技能 5 项（与 Skills/PageContents[1] 同序：SK01/SK02/SK06/SK07/SK08）
+        { [1] = "限制对手旋转",   [2] = "Restrict Opponent's Rotation",         [3] = "تقييد دوران مكعب الخصم" },
+        { [1] = "消除下方两行",   [2] = "Clear the Bottom Two Rows",            [3] = "امحُ الصفين السفليين" },
+        { [1] = "强化下次垃圾",   [2] = "Boost the Next Garbage Attack",        [3] = "عزّز هجوم العوائق التالي" },
+        { [1] = "额外消除一行",   [2] = "Clear One Extra Row",                  [3] = "امحُ صفًا إضافيًا" },
+        { [1] = "对调对手方向",   [2] = "Reverse Opponent's Movement Controls", [3] = "اعكس اتجاهات تحكم الخصم" },
+    },
+    [2] = {  -- 道具 4 项（爆破/位移/充能/落石）
+        { [1] = "消除所在行和列",     [2] = "Clear This Block’s Row and Column",        [3] = "امحُ صف هذا المكعب وعموده" },
+        { [1] = "右移一列",           [2] = "Shift Right by One Column",                [3] = "إزاحة عمود واحد إلى اليمين" },
+        { [1] = "技能充能增加一格",   [2] = "Gain One Skill Charge",                    [3] = "احصل على شحنة مهارة واحدة" },
+        { [1] = "向对手随机投落垃圾", [2] = "Drop Garbage Blocks Randomly on Opponent", [3] = "أسقط مكعبات عوائق عشوائيًا على الخصم" },
+    },
+    [3] = {  -- 按 xls「按键」段 4 条 + 原顺序：KEY-01 HOLD / KEY-02 旋转 / KEY-03 下落 / KEY-04 技能
+        { [1] = "暂存当前方块",       [2] = "Hold the Current Block",                [3] = "احتفظ بالمكعب الحالي" },
+        { [1] = "旋转当前方块",       [2] = "Rotate the Current Block",             [3] = "أدر المكعب الحالي" },
+        { [1] = "当前方块直接落底",   [2] = "Drop the Current Block to the Bottom",  [3] = "أسقط المكعب الحالي مباشرة إلى القاع" },
+        { [1] = "消耗充能槽释放技能", [2] = "Spend Skill Charge to Activate a Skill", [3] = "استهلك شحنة لتفعيل مهارة" },
+    },
+}
+
+-- 帮助文本宽度适配：文本框宽度有限，长文案会溢出，故写入前按字符数折行（插入 \n）。
+--   X（每行上限）= 当前语言下「全部帮助文本中最长一条」的 UTF-8 字符数 × Ratio（默认 0.5，即减半）；
+--   某条文本字符数超过 X 时才折行。计数按字符而非字节（中文 3 字节/字、阿语 2 字节/字，不能用 #s）。
+--   XByLang 可按语言写死覆盖（1=zh,2=en,3=ar）：填了就直接用该值，不再动态计算。
+--   MinChars 为阈值下限保护，避免最长文本很短时把文案切成过多行。
+--   FontSizeByLang = 按语言设置文本控件字号（CustomUIAPI.SetTextWidgetFontSize）；FontSize 为兜底。
+TetrisConfig.HelpWrap = {
+    Enabled  = true,
+    Ratio    = 0.5,   -- 减半（仅对未在 XByLang 指定的语言生效）
+    MinChars = 4,
+    XByLang  = { [1] = 6 },   -- 中文固定每行 6 字；en/ar 仍按「最长减半」动态算
+    FontSize        = 15,                      -- 未指定语言的兜底字号
+    FontSizeByLang  = { [1] = 15, [2] = 13, [3] = 15 },  -- 英文 13，中文/阿语 15
+    DebugWrap       = true,  -- true：日志打印折行前后的可见化文本（空格显示为 ·，换行显示为 ⏎），用于排查行首空格/对齐
 }
 
 -- ===================== 多语言界面（由开始界面的 OpenBtn 打开） =====================
@@ -1122,17 +1199,17 @@ TetrisConfig.LangUI = {
           img = ci("1_CreativeInstance_23643899321563373"),
           imgs = { "23_ImagePreset_181445178467336", "23_ImagePreset_181441290735191", "23_ImagePreset_181444704242649" },
           btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
-        -- 第 19 项：图片（3 语图）
+        -- 第 19 项：图片（3 语图）— 道具提示 02 位移(10) 登记控件 23643900333628969
         { txt = nil, texts = { nil, nil, nil },
           img = ci("1_CreativeInstance_23643900333628969"),
           imgs = { "23_ImagePreset_181443783028840", "23_ImagePreset_181443910718973", "23_ImagePreset_181441027321745" },
           btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
-        -- 第 20 项：图片（3 语图）— 同时是 UI.ChargeItemImg（充能块消除提示图）
+        -- 第 20 项：图片（3 语图）— 道具提示 03 充能(11)，同时是 UI.ChargeItemImg（充能块消除提示图）
         { txt = nil, texts = { nil, nil, nil },
           img = ci("1_CreativeInstance_23643901123532648"),
           imgs = { "23_ImagePreset_181443187283701", "23_ImagePreset_181442698241599", "23_ImagePreset_181443060841879" },
           btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
-        -- 第 21 项：图片（3 语图）— 同时是 UI.ShiftImg2（位移道具提示图）
+        -- 第 21 项：图片（3 语图）— 道具提示 04 落石(12)，同时是 UI.StoneImg / UI.ShiftImg2（共用同一控件）
         { txt = nil, texts = { nil, nil, nil },
           img = ci("1_CreativeInstance_23643899521674335"),
           imgs = { "23_ImagePreset_181443238290613", "23_ImagePreset_181444532518774", "23_ImagePreset_181444569072640" },

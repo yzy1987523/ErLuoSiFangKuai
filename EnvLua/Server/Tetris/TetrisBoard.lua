@@ -618,6 +618,8 @@ function TetrisBoard:clearLines(countScore)
                             opp.board:queueRockfall(math.random(5, 9))
                             -- 落石能力释放音效（仅真实消行时触发）
                             if self.game then pcall(function() self.game:PlayItemSound(PT.ITEM_STONE) end) end
+                            -- 落石道具消除提示图：显示 StoneImg 1.7s 后自动隐藏（仅真人盘生效）
+                            if self.game then pcall(function() self.game:ShowStoneImage() end) end
                         end
                     end
                 end

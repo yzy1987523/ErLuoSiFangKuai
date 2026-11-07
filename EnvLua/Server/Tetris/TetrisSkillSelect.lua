@@ -148,11 +148,14 @@ function TetrisSkillSelect:ShowPanelFor(ps, visible)
     end
 end
 
--- 把 2 个槽位的图标设为对应技能的 iconKey 图片，并把描述文本设为技能的 selectDesc
+-- 把 2 个槽位的图标设为对应技能的 iconKey 图片，并把描述文本设为「该技能 + 当前语言」的短描述。
+-- 中文(zh) 回退 def.selectDesc；en/ar 取 TetrisConfig.SkillSelectTexts[key][lang]（doc/技能.xls）。
 function TetrisSkillSelect:ApplySlotContent(ps)
     if not ps or type(CustomUIAPI) ~= "table" then return end
     local cfg = cfgOf()
     if not cfg then return end
+    local langUI = self.match and self.match.langUI
+    local lang = (langUI and type(langUI.LangIndexOf) == "function" and langUI:LangIndexOf(ps)) or 2
     local skills = self.slotSkills or {}
     for i = 1, 2 do
         local key = skills[i]
@@ -164,8 +167,10 @@ function TetrisSkillSelect:ApplySlotContent(ps)
                 local imgID = (type(AssetRef) == "table" and AssetRef[def.iconKey]) or def.iconKey
                 pcall(function() CustomUIAPI.SetImageWidgetContent(ps, iconWid, imgID) end)
             end
-            if descWid and def and def.selectDesc then
-                pcall(function() CustomUIAPI.SetTextContent(ps, descWid, def.selectDesc) end)
+            if descWid and def then
+                local byLang = TetrisConfig.SkillSelectTexts and TetrisConfig.SkillSelectTexts[key]
+                local txt = (byLang and byLang[lang]) or def.selectDesc
+                if txt then pcall(function() CustomUIAPI.SetTextContent(ps, descWid, txt) end) end
             end
         end
     end

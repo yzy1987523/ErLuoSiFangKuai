@@ -27,11 +27,18 @@ TetrisLang.Texts = {
     SkillNoPower  = { [1] = "技能 power 不足，无法释放！", [2] = "Not enough skill power to release!", [3] = "طاقة المهارة غير كافية، لا يمكن إطلاقها!" },
 }
 
+-- 取玩家当前语言索引：1=zh,2=en,3=ar（未设置/越界回退面板默认 en=2）。
+-- 供其它模块（技能选择界面、帮助界面）按语言取动态文案。
+function TetrisLang:LangIndexOf(ps)
+    local n = (ps and self._lang and self._lang[ps]) or 2
+    return (n == 1 or n == 2 or n == 3) and n or 2
+end
+
 -- 按玩家当前语言解析文本：取 Texts[key][语言索引]；语言 = self._lang[ps]（未设置时回退面板默认 en=2）。
 function TetrisLang:Tr(key, ps)
     local t = TetrisLang.Texts and TetrisLang.Texts[key]
     if not t then return "" end
-    local n = (ps and self._lang and self._lang[ps]) or 2
+    local n = self:LangIndexOf(ps)
     return t[n] or t[2] or t[1] or ""
 end
 
@@ -104,11 +111,26 @@ function TetrisLang:HideFor(ps)
     for _, i in ipairs(cfg.LangIndicators or {}) do self:ShowIndicatorFor(ps, i, false) end
 end
 
--- 切换语言到第 n 个（1=zh, 2=en, 3=ar）：记录 + 应用（标志图 + 内容）
+-- 重刷「运行时动态文本」界面：技能选择界面 2 个槽位描述 + 帮助界面当前页文本。
+-- 这两处文案按当前语言实时取，不属于 LangUI.Contents（静态注册表），故需单独刷新。
+function TetrisLang:RefreshDynamicTexts(ps)
+    local mm = self.match
+    if not mm then return end
+    if mm.skillSelect and type(mm.skillSelect.ApplySlotContent) == "function" then
+        pcall(function() mm.skillSelect:ApplySlotContent(ps) end)
+    end
+    if mm.detailHelp and type(mm.detailHelp.ApplyPageContent) == "function" then
+        local cur = mm.detailHelp._cur and mm.detailHelp._cur[ps]
+        if cur then pcall(function() mm.detailHelp:ApplyPageContent(ps, cur) end) end
+    end
+end
+
+-- 切换语言到第 n 个（1=zh, 2=en, 3=ar）：记录 + 应用（标志图 + 内容 + 动态文本界面）
 function TetrisLang:SwitchLang(ps, n)
     if not ps or not n then return end
     self._lang[ps] = n
     self:ApplyLang(ps, n)
+    self:RefreshDynamicTexts(ps)
     print(string.format("[Tetris][Lang] 玩家 %s 切换语言 -> %s", tostring(keyOf(ps)), tostring((cfgOf().LangKeys or {})[n])))
 end
 
@@ -159,11 +181,14 @@ function TetrisLang:ApplyContents(ps, n)
     end
 end
 
--- 开局统一刷新：对每位玩家按其当前语言（未设置回退 en=2）刷新 Contents 内容。
+-- 开局统一刷新：对每位玩家按其当前语言（未设置回退 en=2）刷新 Contents 内容 + 动态文本界面。
 -- 只换内容不碰显隐，故不会把面板标志图显示出来；保证玩家从未打开语言面板时，多语言组件也已按当前语言设好。
 function TetrisLang:ApplyContentsForAll()
     for _, ps in ipairs(self.players or {}) do
-        if ps then self:ApplyContents(ps, self._lang[ps] or 2) end
+        if ps then
+            self:ApplyContents(ps, self:LangIndexOf(ps))
+            self:RefreshDynamicTexts(ps)
+        end
     end
 end
 

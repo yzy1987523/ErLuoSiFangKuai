@@ -799,7 +799,14 @@ function TetrisRenderer:FrontBoardWidgetRot()
     return self.rot
 end
 
--- 从盘面前方 3D 大框 Actor 上，按候选名列表找到某个图片子控件，返回其 InstanceUUID（全局）。
+-- 从盘面前方 3D 大框 Actor 上，按候选名列表找到图片子控件。
+-- 【真人对战修复】WidgetComponent:GetUserWidgetObject(PlayerCharacter) 是「按玩家角色」返回各自的 UMG
+-- 实例（见 LuaHint/WoWWidgetComponentBase.lua），不同玩家看到的是不同实例。旧实现取到第一个命中的 pawn
+-- 就 break，只写了首个玩家那一份，导致第 2 名玩家的 Hold/Next/backlight 一直是编辑器默认图、且开局不被隐藏。
+-- 现改为遍历所有 pawn 逐个解析，返回 { {idx=<pawn索引>, widget=<图片控件对象>}, ... }；
+-- 一个都没解析到时返回 nil，由调用方下一帧重试（组件异步初始化窗口）。
+-- 缓存按「控件名 + pawn 数量」分桶、以 pawn 索引为键：稳态不重复反射查找；人数变化自动重建。
+-- 不用 pawn 对象作键，避免引擎包装对象不稳定导致的缓存失效与无限增长。
 function TetrisRenderer:FindFrontWidgetImageChild(childNames)
     if type(childNames) == "string" then childNames = { childNames } end
     local actor = self._frontWidgetActor
@@ -819,7 +826,10 @@ function TetrisRenderer:FindFrontWidgetImageChild(childNames)
         end)
     end
     if not wc then
-        print("[Tetris][FrontWidget][WARN] 找不到 UI 组件(WidgetComponent)")
+        if not self._frontWidgetNoCompLogged then
+            self._frontWidgetNoCompLogged = true
+            print("[Tetris][FrontWidget][WARN] 找不到 UI 组件(WidgetComponent)")
+        end
         return nil
     end
     local plist
@@ -830,22 +840,18 @@ function TetrisRenderer:FindFrontWidgetImageChild(childNames)
     if not plist or type(plist.Num) ~= "function" or plist:Num() <= 0 then
         return nil  -- 暂无玩家，下一帧重试
     end
-    local uw
-    for i = 0, plist:Num() - 1 do
-        local pawn = plist:Get(i)
-        if pawn then
-            pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
-            if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
-            if uw then break end
-        end
-    end
-    if not uw then
-        print("[Tetris][FrontWidget][WARN] wc:GetUserWidgetObject 所有玩家均返回空（组件可能尚未初始化，下一帧重试）")
-        return nil
-    end
-    -- 你的 UMG 结构是 ui → front → hold / next，所以先按名直接查（递归），失败再尝试经中间容器（如 front）二级查找
+    local n = plist:Num()
+    -- 你的 UMG 结构是 ui → front → hold / next，所以先按名直接查，失败再尝试经中间容器（如 front）二级查找
     local cname = (type(TetrisConfig.BigFrame3D) == "table") and TetrisConfig.BigFrame3D.FrontContainerName
-    local function tryFind(name)
+    local cacheKey = table.concat(childNames, "|") .. "|" .. tostring(cname)
+    local cache = self._frontChildCache
+    if not cache then cache = {}; self._frontChildCache = cache end
+    local bucket = cache[cacheKey]
+    if not bucket or bucket.n ~= n then
+        bucket = { n = n }
+        cache[cacheKey] = bucket
+    end
+    local function tryFind(uw, name)
         local t
         pcall(function() t = uw:GetWidgetFromName(name) end)
         if not t and cname then
@@ -855,19 +861,40 @@ function TetrisRenderer:FindFrontWidgetImageChild(childNames)
         end
         return t
     end
-    local tw
-    for _, cn in ipairs(childNames) do
-        local t = tryFind(cn)
-        if t then tw = t; break end
+    local found = {}
+    for i = 0, n - 1 do
+        local tw = bucket[i]   -- 该 pawn 已解析成功：直接复用，稳态零反射开销
+        if tw == nil then      -- 未解析或组件尚未初始化：本帧重试，成功后缓存
+            local pawn = plist:Get(i)
+            if pawn then
+                local uw
+                pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
+                if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
+                if uw then
+                    for _, cn in ipairs(childNames) do
+                        local t = tryFind(uw, cn)
+                        if t then tw = t; break end
+                    end
+                end
+                if tw then bucket[i] = tw end
+            end
+        end
+        if tw then found[#found + 1] = { idx = i, widget = tw } end
     end
-    if not tw then
-        print(string.format("[Tetris][FrontWidget][WARN] uw:GetWidgetFromName 未命中: %s", table.concat(childNames, ",")))
+    if #found == 0 then
+        if not bucket.warned then
+            bucket.warned = true
+            print(string.format("[Tetris][FrontWidget][WARN] 所有玩家均未定位到子控件: %s（下一帧重试）", table.concat(childNames, ",")))
+        end
         return nil
     end
-    print(string.format("[Tetris][FrontWidget] 定位成功 childNames=%s", table.concat(childNames, ",")))
+    if not bucket.logged then
+        bucket.logged = true
+        print(string.format("[Tetris][FrontWidget] 定位成功 childNames=%s 实例数=%d/%d", table.concat(childNames, ","), #found, n))
+    end
     -- 返回图片控件对象（WoWCustomUIImage）：世界空间 WidgetComponent 的图片子控件必须用对象方法
     -- SetImageContent / SetImageColor / SetVisible 操作（CustomUIAPI.SetImageWidget* 仅适用于 2D HUD 命名实例，对这类控件无效）。
-    return tw
+    return found
 end
 
 -- ---------------- 落点预览 Ghost（方案A：单图标 + 旋转 Actor 表达朝向） ----------------
@@ -1197,12 +1224,10 @@ function TetrisRenderer:SetFrontWidgetHoldNext(holdType, nextType)
     self._pendingFrontHold = holdType
     self._pendingFrontNext = nextType
     if not self._frontWidgetActor then return end
-    if not self._frontHoldWidget then
-        self._frontHoldWidget = self:FindFrontWidgetImageChild(cfg.HoldImageChildName or { "hold" })
-    end
-    if not self._frontNextWidget then
-        self._frontNextWidget = self:FindFrontWidgetImageChild(cfg.NextImageChildName or { "next" })
-    end
+    -- 【真人对战修复】取「所有玩家」的 UMG 图片控件实例（FindFrontWidgetImageChild 内部按 pawn 索引缓存，
+    -- 稳态无额外反射开销）。旧实现只缓存首个玩家那一份 widget，其余玩家一直显示默认图。
+    local holdWidgets = self:FindFrontWidgetImageChild(cfg.HoldImageChildName or { "hold" })
+    local nextWidgets = self:FindFrontWidgetImageChild(cfg.NextImageChildName or { "next" })
     local imgs = TetrisConfig.PieceImages
     local tints = TetrisConfig.PieceTint
     local function resolveImg(t)
@@ -1216,29 +1241,36 @@ function TetrisRenderer:SetFrontWidgetHoldNext(holdType, nextType)
     -- 直接操作图片控件对象（WoWCustomUIImage）：SetImageContent / SetImageColor / SetVisible。
     -- 无内容时 SetVisible(false) 隐藏（初始/未持有/队列未就绪均不显示空框）；有内容时显示并注入贴图+染色。
     -- 贴图/染色仅在类型变化时才刷新（变更检测），避免每帧重载贴图导致闪烁。
-    local function setImg(widget, t, lastKey)
-        if not widget then return end
+    -- 变更检测必须按 pawn 索引分别记录：若沿用单值 self[lastKey]，第 1 个实例设完就会跳过其余实例。
+    local function setImg(items, t, lastByIndex)
+        if not items then return end
         local imgID = resolveImg(t)
         local visible = (imgID ~= nil)
-        pcall(function() widget:SetVisible(visible) end)
-        if not visible then
-            self[lastKey] = nil
-            return
-        end
-        if self[lastKey] == t then return end   -- 类型未变，跳过贴图重载
-        self[lastKey] = t
         local colorVec
-        if isItem(t) then
-            colorVec = Game:ConstructFVectorByLuaTable({ X = 1, Y = 1, Z = 1 })   -- 道具：白色
-        else
-            local c = (t and tints) and tints[t]
-            if c then colorVec = Game:ConstructFVectorByLuaTable({ X = c.X, Y = c.Y, Z = c.Z }) end
+        if visible then
+            if isItem(t) then
+                colorVec = Game:ConstructFVectorByLuaTable({ X = 1, Y = 1, Z = 1 })   -- 道具：白色
+            else
+                local c = (t and tints) and tints[t]
+                if c then colorVec = Game:ConstructFVectorByLuaTable({ X = c.X, Y = c.Y, Z = c.Z }) end
+            end
         end
-        pcall(function() widget:SetImageContent(imgID) end)
-        if colorVec then pcall(function() widget:SetImageColor(colorVec) end) end
+        for _, it in ipairs(items) do
+            local widget = it.widget
+            pcall(function() widget:SetVisible(visible) end)
+            if not visible then
+                lastByIndex[it.idx] = nil
+            elseif lastByIndex[it.idx] ~= t then   -- 该实例类型未变，跳过贴图重载
+                lastByIndex[it.idx] = t
+                pcall(function() widget:SetImageContent(imgID) end)
+                if colorVec then pcall(function() widget:SetImageColor(colorVec) end) end
+            end
+        end
     end
-    setImg(self._frontHoldWidget, holdType, "_frontHoldLastType")
-    setImg(self._frontNextWidget, nextType, "_frontNextLastType")
+    if not self._frontHoldLastByIndex then self._frontHoldLastByIndex = {} end
+    if not self._frontNextLastByIndex then self._frontNextLastByIndex = {} end
+    setImg(holdWidgets, holdType, self._frontHoldLastByIndex)
+    setImg(nextWidgets, nextType, self._frontNextLastByIndex)
 end
 
 -- 设置盘面前方 3D 大框上的「攻势高亮」(backlight) 显隐。
@@ -1247,14 +1279,19 @@ function TetrisRenderer:SetFrontBacklight(visible)
     local cfg = TetrisConfig.BigFrame3D
     if not (cfg and cfg.Enabled) then return end
     if not self._frontWidgetActor then return end
-    if not self._frontBacklightWidget then
-        self._frontBacklightWidget = self:FindFrontWidgetImageChild(cfg.BacklightChildName or { "backlight", "Backlight" })
-    end
-    if not self._frontBacklightWidget then return end
+    -- 【真人对战修复】对所有玩家的 UMG 实例逐个显隐；状态缓存按 pawn 索引记录，
+    -- 既保留「状态未变则跳过」，又保证后解析出来的玩家实例不会被漏设（单值缓存会漏）。
+    local items = self:FindFrontWidgetImageChild(cfg.BacklightChildName or { "backlight", "Backlight" })
+    if not items then return end
     local v = (visible == true)
-    if self._frontBacklightShown == v then return end   -- 状态未变则跳过
-    self._frontBacklightShown = v
-    pcall(function() self._frontBacklightWidget:SetVisible(v) end)
+    local shown = self._frontBacklightShownByIndex
+    if not shown then shown = {}; self._frontBacklightShownByIndex = shown end
+    for _, it in ipairs(items) do
+        if shown[it.idx] ~= v then
+            shown[it.idx] = v
+            pcall(function() it.widget:SetVisible(v) end)
+        end
+    end
 end
 
 -- 将盘面前方 3D 大框重定位到当前盘面基底（应对 ResolveOrigin 重新解析、基准变化）。
