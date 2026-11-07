@@ -11,10 +11,11 @@
 local TetrisAudio = {}
 
 TetrisAudio.SFXVolume = 1          -- 音效音量（0~1）
-TetrisAudio.BGMVolume = 1          -- 背景音乐音量（0~1）
-TetrisAudio.Step = 0.1             -- 每次点击增减幅度（10 档）
+TetrisAudio.BGMVolume = 0.6        -- 背景音乐默认音量（60%；档位上限仍为 100%，见 BGMVolumeMax）
+TetrisAudio.BGMVolumeMax = 1          -- BGM 音量档位上限（实际传给 PlayAudio 的最大音量 = 100%）
+TetrisAudio.Step = 0.1             -- 每次点击增减幅度（10 档，范围 0~BGMVolumeMax）
 TetrisAudio.BGMId = nil            -- 默认 BGM 的 SoundPreset 资源键
-TetrisAudio.DefaultAudioLen = 150  -- 音频时长估算(秒)：无法运行时获取，默认 2 分半；到点重播
+TetrisAudio.DefaultAudioLen = 140  -- 音频时长估算(秒)：无法运行时获取，默认 2 分半；到点重播
 TetrisAudio._owner = nil           -- WoWObject（用于 AddTimerOnce 循环续播定时器）
 -- [psKey] = { uuid = 实例UUID, id = 当前播放的 bgmId, timer = 循环续播定时器 id }
 TetrisAudio._instances = {}
@@ -44,7 +45,7 @@ function TetrisAudio.ChangeSFX(delta)
 end
 
 function TetrisAudio.ChangeBGM(delta)
-    TetrisAudio.BGMVolume = math.max(0, math.min(1, TetrisAudio.BGMVolume + (delta or 0)))
+    TetrisAudio.BGMVolume = math.max(0, math.min(TetrisAudio.BGMVolumeMax, TetrisAudio.BGMVolume + (delta or 0)))
     TetrisAudio.ApplyBGM()   -- 重新播放所有已开 BGM 以套用新音量
     return TetrisAudio.BGMVolume
 end
