@@ -521,6 +521,25 @@ TetrisConfig.BigFrame3D = {
     BacklightChildName = { "backlight", "Backlight", "BackLight", "Glow" },
 }
 
+-- ===================== 盘面背面黑底背板（BoardBackdrop3D） =====================
+-- 与 BigFrame3D 同构，但位于「盘面背面（远离玩家一侧）」= 盘心 - boardForward * DistanceBehindM，
+-- 用作盘面/方块的实心黑底背景，避免被环境透视。每个盘面（双盘各一）各生成一个带 WidgetComponent 的 Actor，
+-- 其 UMG 为纯黑填充（不需要 Hold/Next/backlight 子控件）。生成/重定位复用 BigFrame3D 同款逻辑。
+-- 资源键(PresetKey)占位为 nil 时本模块自动跳过，不会创建/报错。
+TetrisConfig.BoardBackdrop3D = {
+    Enabled = true,                                       -- 是否生成盘面背面黑底背板
+    -- 黑底背板 Actor 预设键（46_ActorPreset_*，带 WidgetComponent 的 UMG，UMG 内填纯黑底色/图片）。
+    -- 【占位】在编辑器里创建带 WidgetComponent 的 ActorPreset（UMG 放一个黑色 Image/底色），注册后填入其键；nil 时自动跳过。
+    PresetKey = nil,
+    DistanceBehindM = 0.5,                                 -- 盘心沿 -boardForward（盘面背面、远离玩家）的距离；调大让背板更靠后
+    Scale = { X = 2.52, Y = 2.52, Z = 2.52},               -- 整体缩放（影响 WidgetComponent 的世界尺寸；按需比盘面大一圈）
+    SideOffsetM = 0,                                       -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
+    HeightOffsetM = 0,                                     -- 沿世界 +Z 的额外抬高
+    -- 按棋盘 index 的偏置旋转（绕竖直/Yaw 轴，单位°）：默认与 BigFrame3D 同朝向；
+    -- 若希望黑底正面朝玩家(透过盘缘可见)，可把对应 index 设为 180（翻正）。
+    RotationBiasByIndex = { [1] = 0, [2] = 0 },
+}
+
 -- ===================== 远景背景 3D UI 挂件（背景图 WidgetComponent Actor） =====================
 -- 需求：每个盘面（双盘各一）的「背后更远处」各生成 1 个带 WidgetComponent 的 Actor，用于显示远景背景图。
 -- 生成方式完全照搬 BehindBoardWidget（仅依赖出生点装置 + ActorPreset(AssetRef)），纯背景、不挂接 renderer、
