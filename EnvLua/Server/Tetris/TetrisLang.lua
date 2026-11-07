@@ -94,17 +94,14 @@ function TetrisLang:CloseFor(ps)
 end
 
 -- 仅隐藏本界面（不回显开始界面）
+-- 注：Contents 是「全局多语言组件注册表」，只换内容、不控制显隐，不属于面板内容；
+--     此处只隐藏面板自身的容器/按钮/语言标志，不触碰 Contents（关闭面板不应藏掉常驻多语言组件）。
 function TetrisLang:HideFor(ps)
     local cfg = cfgOf()
     self:ShowFor(ps, cfg.Panel, false)
     self:ShowFor(ps, cfg.BtnClose, false)
     for _, b in ipairs(cfg.BtnLang or {}) do self:ShowFor(ps, b, false) end
     for _, i in ipairs(cfg.LangIndicators or {}) do self:ShowIndicatorFor(ps, i, false) end
-    for _, c in ipairs(cfg.Contents or {}) do
-        self:ShowFor(ps, c and c.img, false)
-        self:ShowFor(ps, c and c.txt, false)
-        self:ShowFor(ps, c and c.btn, false)
-    end
 end
 
 -- 切换语言到第 n 个（1=zh, 2=en, 3=ar）：记录 + 应用（标志图 + 内容）
@@ -115,16 +112,24 @@ function TetrisLang:SwitchLang(ps, n)
     print(string.format("[Tetris][Lang] 玩家 %s 切换语言 -> %s", tostring(keyOf(ps)), tostring((cfgOf().LangKeys or {})[n])))
 end
 
--- 应用第 n 种语言：标志图片(透明度) + 内容组件(图片资源 / 文本)
+-- 应用第 n 种语言：1) 面板语言标志图片显隐 + 2) 全局多语言组件(Contents)换内容
 function TetrisLang:ApplyLang(ps, n)
     local cfg = cfgOf()
     local inds = cfg.LangIndicators or {}
-    local langKey = (cfg.LangKeys or {})[n]
     -- 1) 标志图片：只显示第 n 个，其余改为透明
     for i, iid in ipairs(inds) do
         self:ShowIndicatorFor(ps, iid, i == n)
     end
-    -- 2) 内容组件：按当前语言设置每个组件的图片资源与文本
+    -- 2) 全局多语言组件换内容（只换内容，不控制显隐）
+    self:ApplyContents(ps, n)
+end
+
+-- 只刷新全局多语言组件 Contents 的内容（图片/文本/按钮图），不触碰显隐、不触碰面板标志图。
+-- 供 ApplyLang 调用；也可单独用于「开局按已定语言统一刷一次」（玩家未打开过语言面板时同样生效）。
+function TetrisLang:ApplyContents(ps, n)
+    local cfg = cfgOf()
+    local langKey = (cfg.LangKeys or {})[n]
+    if not ps or type(CustomUIAPI) ~= "table" then return end
     for _, c in ipairs(cfg.Contents or {}) do
         if c and c.img and c.imgs then
             local ref = c.imgs[n] or (langKey and c.imgs[langKey])
@@ -151,6 +156,14 @@ function TetrisLang:ApplyLang(ps, n)
                 pcall(function() CustomUIAPI.SetButtonPressedImage(ps, c.btn, rp) end)
             end
         end
+    end
+end
+
+-- 开局统一刷新：对每位玩家按其当前语言（未设置回退 en=2）刷新 Contents 内容。
+-- 只换内容不碰显隐，故不会把面板标志图显示出来；保证玩家从未打开语言面板时，多语言组件也已按当前语言设好。
+function TetrisLang:ApplyContentsForAll()
+    for _, ps in ipairs(self.players or {}) do
+        if ps then self:ApplyContents(ps, self._lang[ps] or 2) end
     end
 end
 

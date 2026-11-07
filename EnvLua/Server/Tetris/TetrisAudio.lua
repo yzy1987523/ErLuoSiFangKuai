@@ -10,7 +10,7 @@
 --   · 关闭按钮只收起面板、不改音量（音量最低可到 0 = 静音，但不影响"关闭"语义）。
 local TetrisAudio = {}
 
-TetrisAudio.SFXVolume = 1          -- 音效音量（0~1）
+TetrisAudio.SFXVolume = 0.6          -- 音效音量（0~1）
 TetrisAudio.BGMVolume = 0.6        -- 背景音乐默认音量（60%；档位上限仍为 100%，见 BGMVolumeMax）
 TetrisAudio.BGMVolumeMax = 1          -- BGM 音量档位上限（实际传给 PlayAudio 的最大音量 = 100%）
 TetrisAudio.Step = 0.1             -- 每次点击增减幅度（10 档，范围 0~BGMVolumeMax）

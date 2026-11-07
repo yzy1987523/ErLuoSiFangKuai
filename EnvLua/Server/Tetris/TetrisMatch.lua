@@ -755,6 +755,11 @@ function TetrisMatch:TryStartGameplay()
             g:Start()
         end
     end
+    -- 开局按每位玩家当前语言统一刷新全局多语言组件(Contents)：只换内容不碰显隐，
+    -- 保证玩家未打开过语言面板（默认 en=2）时，常驻多语言组件也已按当前语言设好图/文。
+    if self.langUI and type(self.langUI.ApplyContentsForAll) == "function" then
+        self.langUI:ApplyContentsForAll()
+    end
     self:StartMatchTimer()
 
     -- 进局时再次确认 BGM：菜单阶段已按默认/已选难度播起，此处同 id 不重切（无间隙）；

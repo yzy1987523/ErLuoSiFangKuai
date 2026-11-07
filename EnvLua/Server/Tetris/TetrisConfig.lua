@@ -882,6 +882,18 @@ TetrisConfig.Skills = {
     },
 }
 
+-- 技能「中央大图提示」多语言图片表：按技能 key → 语言索引取图（1=zh, 2=en, 3=ar）。
+--   中文(zh)沿用各技能原有的 imageKey，故此处只配 en/ar；语言=1 或缺项时回退 imageKey。
+--   该组件(Skill.BigTipInstance)由 TetrisGame:ShowSkillBigTip 在技能释放瞬间独占换图，
+--   因此不登记到 LangUI.Contents（否则开局设的图会被释放技能时覆盖）。
+TetrisConfig.SkillBigTipImages = {
+    SK01 = { [2] = "23_ImagePreset_181444105767028", [3] = "23_ImagePreset_181442632941610" },  -- 禁止转动
+    SK02 = { [2] = "23_ImagePreset_181442677176419", [3] = "23_ImagePreset_181443930345123" },  -- 清除最下方两行
+    SK06 = { [2] = "23_ImagePreset_181444965585201", [3] = "23_ImagePreset_181444928691876" },  -- 攻势
+    SK07 = { [2] = "23_ImagePreset_181442246961813", [3] = "23_ImagePreset_181443992119071" },  -- 赠送技能
+    SK08 = { [2] = "23_ImagePreset_181440920142887", [3] = "23_ImagePreset_181440939148006" },  -- 左右对调
+}
+
 -- ===================== 技能选择（开局前置 UI：开始游戏 → 三选一） =====================
 -- 流程：开局先显示「开始游戏」按钮 → 点击后显示 3 个技能按钮（各自带技能图片）
 -- → 点击任一技能 → 该玩家 3 个按钮全部失效 → 全部选完 / 超时 → 进入玩法选择或直接开局。
@@ -1003,9 +1015,10 @@ TetrisConfig.DetailHelp = {
 
 -- ===================== 多语言界面（由开始界面的 OpenBtn 打开） =====================
 -- 4 个按钮：关闭、切换中文、切换英文、切换阿拉伯文；3 个语言标志图片（对应 zh/en/ar）。
--- 内部预留若干「内容组件」：每个含 图片组件 + 3 种语言图片资源(imgs={zh,en,ar})，
---   文本组件 + 3 种语言文本(texts={zh,en,ar})；切换语言时遍历这些组件按当前语言设置。
--- 组件 ID / 资源键 / 文本 待编辑器放置后填入（逻辑已做 nil 容错）。
+-- Contents = 全局多语言组件注册表（面板内不需要内容，专门登记游戏中所有需随语言换内容的组件）：
+--   每项含 图片组件(img)+3 语图(imgs) / 文本组件(txt)+3 语文本(texts) / 按钮组件(btn)+3 语图(btnNormal,btnPressed)。
+--   只负责「按当前语言换内容」，不控制显隐：组件显隐仍由各自业务逻辑管理，关闭面板不会隐藏它们。
+--   语言切换(ApplyLang) 与开局(ApplyContentsForAll) 时都会遍历刷新；字段缺失自动跳过。
 TetrisConfig.LangUI = {
     Enabled  = true,
     OpenBtn  = ci("1_CreativeInstance_23643899479386204"),   -- 打开多语言界面的按钮（在开始界面上，待填）
@@ -1025,9 +1038,8 @@ TetrisConfig.LangUI = {
     },
     -- 语言键（与上面顺序一一对应，供代码索引 imgs/texts 用）
     LangKeys = { "zh", "en", "ar" },
-    -- 预留内容组件（数量按实际展示条目，可自行增删）
-    --   每项可含：文本组件(txt)+3 语文本(texts)；图片组件(img)+3 语图(imgs)；
-    --            按钮组件(btn)+3 语常态图(btnNormal)；3 语按下图(btnPressed)可留空（默认与常态同图，按下态用编辑器颜色区分）。字段按需填，缺失自动跳过。
+    -- 全局多语言组件注册表（按需增删条目）：每项可含 文本(txt/texts)、图片(img/imgs)、按钮(btn/btnNormal,btnPressed)；
+    --   btnPressed 可留空（默认与常态同图，按下态用编辑器颜色区分）。字段按需填，缺失自动跳过；只换内容，不控制显隐。
     Contents = {
         { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
           btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
@@ -1045,6 +1057,99 @@ TetrisConfig.LangUI = {
           img = ci("1_CreativeInstance_23643902239482253"),
           imgs = { "23_ImagePreset_181444995847832", "23_ImagePreset_181443883931870", "23_ImagePreset_181444348767246" },
           btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 6 项：图片（3 语图）— 批量多语言图片组件之一
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643900634118681"),
+          imgs = { "23_ImagePreset_181442355849755", "23_ImagePreset_181441324428374", "23_ImagePreset_181443214888209" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 7 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643899615420209"),
+          imgs = { "23_ImagePreset_181442321433406", "23_ImagePreset_181444498367442", "23_ImagePreset_181441331199460" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 8 项：按钮（3 语常态图；按下图留空=与常态同图）
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = ci("1_CreativeInstance_23643902157912974"),
+          btnNormal = { "23_ImagePreset_181442823934602", "23_ImagePreset_181443015301493", "23_ImagePreset_181441210110636" },
+          btnPressed = { nil, nil, nil } },
+        -- 第 9 项：按钮（与第 8 项共用同一套 3 语常态图）
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = ci("1_CreativeInstance_23643900548841233"),
+          btnNormal = { "23_ImagePreset_181442823934602", "23_ImagePreset_181443015301493", "23_ImagePreset_181441210110636" },
+          btnPressed = { nil, nil, nil } },
+        -- 第 10 项：按钮（3 语常态图；按下图留空=与常态同图）
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = ci("1_CreativeInstance_23643898739648472"),
+          btnNormal = { "23_ImagePreset_181443458813702", "23_ImagePreset_181441949218658", "23_ImagePreset_181442732666801" },
+          btnPressed = { nil, nil, nil } },
+        -- 第 11 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643898154950204"),
+          imgs = { "23_ImagePreset_181443899621250", "23_ImagePreset_181441887422676", "23_ImagePreset_181443930627259" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 12 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643899035599435"),
+          imgs = { "23_ImagePreset_181444518089899", "23_ImagePreset_181441061446238", "23_ImagePreset_181442862257922" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 13 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643900367799363"),
+          imgs = { "23_ImagePreset_181443710686977", "23_ImagePreset_181442735891530", "23_ImagePreset_181442462909476" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 14 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643902125743307"),
+          imgs = { "23_ImagePreset_181443174655495", "23_ImagePreset_181444410701814", "23_ImagePreset_181445186305841" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 15 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643898853137712"),
+          imgs = { "23_ImagePreset_181441662718554", "23_ImagePreset_181442214848193", "23_ImagePreset_181443529994338" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 16 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643901871727548"),
+          imgs = { "23_ImagePreset_181442751886466", "23_ImagePreset_181441929416032", "23_ImagePreset_181441993945772" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 17 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643900207729698"),
+          imgs = { "23_ImagePreset_181442241803037", "23_ImagePreset_181443820347944", "23_ImagePreset_181442776036294" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 18 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643899321563373"),
+          imgs = { "23_ImagePreset_181445178467336", "23_ImagePreset_181441290735191", "23_ImagePreset_181444704242649" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 19 项：图片（3 语图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643900333628969"),
+          imgs = { "23_ImagePreset_181443783028840", "23_ImagePreset_181443910718973", "23_ImagePreset_181441027321745" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 20 项：图片（3 语图）— 同时是 UI.ChargeItemImg（充能块消除提示图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643901123532648"),
+          imgs = { "23_ImagePreset_181443187283701", "23_ImagePreset_181442698241599", "23_ImagePreset_181443060841879" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 21 项：图片（3 语图）— 同时是 UI.ShiftImg2（位移道具提示图）
+        { txt = nil, texts = { nil, nil, nil },
+          img = ci("1_CreativeInstance_23643899521674335"),
+          imgs = { "23_ImagePreset_181443238290613", "23_ImagePreset_181444532518774", "23_ImagePreset_181444569072640" },
+          btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
+        -- 第 22~24 项：按钮（3 个按钮共用同一套 3 语常态图，与第 8/9 项相同；按下图留空）
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = ci("1_CreativeInstance_23643900012158637"),
+          btnNormal = { "23_ImagePreset_181442823934602", "23_ImagePreset_181443015301493", "23_ImagePreset_181441210110636" },
+          btnPressed = { nil, nil, nil } },
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = ci("1_CreativeInstance_23643899828974623"),
+          btnNormal = { "23_ImagePreset_181442823934602", "23_ImagePreset_181443015301493", "23_ImagePreset_181441210110636" },
+          btnPressed = { nil, nil, nil } },
+        { txt = nil, texts = { nil, nil, nil }, img = nil, imgs = { nil, nil, nil },
+          btn = ci("1_CreativeInstance_23643901829603942"),
+          btnNormal = { "23_ImagePreset_181442823934602", "23_ImagePreset_181443015301493", "23_ImagePreset_181441210110636" },
+          btnPressed = { nil, nil, nil } },
     },
 }
 

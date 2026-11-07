@@ -1414,13 +1414,19 @@ end
 --   SK06 攻势：本盘 attackBonusNext=1，下次消行攻击行数 +1（己方增益）
 --   其他 / 兜底：沿用原「向对手扔垃圾」逻辑
 
--- 释放技能后弹中央大图提示 1.5s（SK01~SK08 通用）：读取 Skills[key].imageKey 对应图片预设
+-- 释放技能后弹中央大图提示 1.5s（SK01~SK08 通用）：按「技能 + 玩家当前语言」选图。
+--   中文(zh=1) 沿用 Skills[key].imageKey；英文(en=2)/阿拉伯(ar=3) 取 SkillBigTipImages[key][lang]；
+--   该表缺项或语言为 1 时回退 imageKey，保证任何语言都有图。
 function TetrisGame:ShowSkillBigTip(key)
     local sk = TetrisConfig.Skills and TetrisConfig.Skills[key]
     if not sk or not sk.imageKey then return end
+    local ps = self:GetPlayerState()
+    local lang = self:GetLangIndex(ps)
+    local byLang = TetrisConfig.SkillBigTipImages and TetrisConfig.SkillBigTipImages[key]
+    local imgKey = (byLang and byLang[lang]) or sk.imageKey
     self:ShowBigTip(
         (TetrisConfig.Skill and TetrisConfig.Skill.BigTipInstance),
-        sk.imageKey,
+        imgKey,
         1.5
     )
 end
