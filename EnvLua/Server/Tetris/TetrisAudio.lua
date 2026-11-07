@@ -3,7 +3,9 @@
 --   · 引擎 AudioAPI 没有全局音量接口，音量只能在每次 PlayAudio 时按 Volume(0~1) 传入，
 --     因此"改音量"对正在播放的声音只能"停了重播"；瞬时音效(消行/道具)下一次播放即生效，无空隙。
 --   · SFX 音量：消行/道具音效统一从这里取 GetSFXVolume()，在 TetrisGame 的两个播放入口乘上。
---   · BGM 音量：每个真人玩家一段长时长播放，靠定时器续播实现"循环"；改音量时停旧重播以套用。
+--   · BGM 音量：每个真人玩家用 AddTimerOnce 在音频时长(默认 2.5 分钟)到点后重播实现"循环"。
+--     运行时无法获取音频真实长度，故用 DefaultAudioLen 估算，到点即重播。改音量/切歌时主动
+--     RemoveTimer 旧定时器再开新定时器（避免叠加或陈旧续播）。
 --   · BGM 按 AI 难度切换（TetrisConfig.Audio.DifficultyBGM）；切换时若目标 id 与当前相同则不动（避免间隙）。
 --   · 关闭按钮只收起面板、不改音量（音量最低可到 0 = 静音，但不影响"关闭"语义）。
 local TetrisAudio = {}
@@ -12,11 +14,11 @@ TetrisAudio.SFXVolume = 1          -- 音效音量（0~1）
 TetrisAudio.BGMVolume = 1          -- 背景音乐音量（0~1）
 TetrisAudio.Step = 0.1             -- 每次点击增减幅度（10 档）
 TetrisAudio.BGMId = nil            -- 默认 BGM 的 SoundPreset 资源键
-TetrisAudio._owner = nil           -- WoWObject（用于循环续播定时器）
--- [psKey] = { uuid = 实例UUID, id = 当前播放的 bgmId }
+TetrisAudio.DefaultAudioLen = 150  -- 音频时长估算(秒)：无法运行时获取，默认 2 分半；到点重播
+TetrisAudio._owner = nil           -- WoWObject（用于 AddTimerOnce 循环续播定时器）
+-- [psKey] = { uuid = 实例UUID, id = 当前播放的 bgmId, timer = 循环续播定时器 id }
 TetrisAudio._instances = {}
 TetrisAudio._players = {}          -- [psKey] = PlayerState（已开 BGM 的玩家）
-TetrisAudio._gen = 0               -- 代际令牌：StopAllBGM 时自增，令挂起的循环定时器失效
 
 local function psKey(ps)
     local ok, k = pcall(function() return ps:GetPlayerKey() end)
@@ -68,7 +70,7 @@ local function playOne(ps, bgmId)
     print(string.format("[Tetris][Sound][DEBUG] playOne: id=%s -> ref=%s BGMVolume=%s",
         tostring(id), tostring(ref), tostring(TetrisAudio.BGMVolume)))
     local uuid = nil
-    local ok, err = pcall(function() uuid = AudioAPI.PlayAudio(ps, ref, 3600, TetrisAudio.BGMVolume, true, false, ps) end)
+    local ok, err = pcall(function() uuid = AudioAPI.PlayAudio(ps, ref, TetrisAudio.DefaultAudioLen, TetrisAudio.BGMVolume, true, false, ps) end)
     if not ok then
         print("[Tetris][Sound][DEBUG] playOne: PlayAudio 抛错：" .. tostring(err))
     elseif not uuid then
@@ -79,11 +81,34 @@ local function playOne(ps, bgmId)
     return uuid
 end
 
--- 为某玩家开始/续播 BGM。
---   bgmId：目标 BGM 资源键（nil 用默认）
---   force：true 时无视"同 id 跳过"直接重播（供循环续播定时器调用，否则会断）
+-- 为某玩家安排下一次循环重播定时器：先 RemoveTimer 旧的（若有），再 AddTimerOnce(DefaultAudioLen) 新定时器
+local function scheduleLoop(ps, k, bgmId)
+    local cur = TetrisAudio._instances[k] or {}
+    if cur.timer then pcall(function() TetrisAudio._owner:RemoveTimer(cur.timer) end) end
+    if TetrisAudio._owner and TetrisAudio._owner.AddTimerOnce then
+        pcall(function()
+            cur.timer = TetrisAudio._owner:AddTimerOnce(TetrisAudio.DefaultAudioLen, function()
+                TetrisAudio:_loopPlay(ps, k, bgmId)
+            end)
+        end)
+    end
+    TetrisAudio._instances[k] = cur
+end
+
+-- 循环续播回调：该玩家仍在播则停旧播新，并重新安排下一次定时器
+function TetrisAudio:_loopPlay(ps, k, bgmId)
+    if TetrisAudio._players[k] ~= ps then return end   -- 该玩家已停止 BGM，不再续播
+    local cur = TetrisAudio._instances[k] or {}
+    if cur.uuid then pcall(function() AudioAPI.StopAudio(cur.uuid) end) end
+    cur.uuid = playOne(ps, bgmId)
+    cur.id = bgmId
+    TetrisAudio._instances[k] = cur
+    scheduleLoop(ps, k, bgmId)
+end
+
+-- 为某玩家开始 BGM（并安排循环续播定时器）。
 -- 切换规则：目标 id 与当前已在播的 id 相同且实例有效 → 不重启（避免间隙）；否则停旧重播。
-function TetrisAudio.StartBGM(ps, bgmId, force)
+function TetrisAudio.StartBGM(ps, bgmId)
     if not ps then
         print("[Tetris][Sound][DEBUG] StartBGM: ps 为空，跳过")
         return
@@ -91,37 +116,31 @@ function TetrisAudio.StartBGM(ps, bgmId, force)
     local k = psKey(ps)
     bgmId = bgmId or TetrisAudio.BGMId
     local cur = TetrisAudio._instances[k]
-    if not force and cur and cur.id == bgmId and cur.uuid then
+    if cur and cur.id == bgmId and cur.uuid then
         print("[Tetris][Sound][DEBUG] StartBGM: 同 id 已在播，跳过（不重切）")
         return   -- 同样的 BGM 已在播，不重启
     end
-    print(string.format("[Tetris][Sound][DEBUG] StartBGM: 启动/重播 BGM id=%s force=%s", tostring(bgmId), tostring(force)))
+    print(string.format("[Tetris][Sound][DEBUG] StartBGM: 启动/重播 BGM id=%s", tostring(bgmId)))
+    -- 切歌/启动：主动终止旧定时器与旧音频，再开新的（避免叠加或陈旧续播）
+    if cur and cur.timer then pcall(function() TetrisAudio._owner:RemoveTimer(cur.timer) end) end
     if cur and cur.uuid then pcall(function() AudioAPI.StopAudio(cur.uuid) end) end
     TetrisAudio._players[k] = ps
     TetrisAudio._instances[k] = { uuid = playOne(ps, bgmId), id = bgmId }
-    -- 循环续播：在时长耗尽前重播（gen 令牌防止 StopAllBGM 后继续续播）
-    if TetrisAudio._owner and TetrisAudio._instances[k].uuid then
-        local gen = TetrisAudio._gen
-        local id2 = bgmId
-        pcall(function()
-            TetrisAudio._owner:AddTimerOnce(3599, function()
-                if TetrisAudio._gen ~= gen then return end
-                if TetrisAudio._players[k] == ps then
-                    TetrisAudio.StartBGM(ps, id2, true)   -- 强制续播（不触发"同 id 跳过"）
-                end
-            end)
-        end)
-    end
+    scheduleLoop(ps, k, bgmId)
 end
 
--- 套用当前 BGMVolume：对所有已开 BGM 的玩家停旧重播（保持各自 id）
+-- 套用当前 BGMVolume：对所有已开 BGM 的玩家，主动终止旧定时器与旧音频，停旧重播以套用新音量（保持各自 id）
 function TetrisAudio.ApplyBGM()
     for k, ps in pairs(TetrisAudio._players) do
         if ps then
-            local cur = TetrisAudio._instances[k]
-            local id = (cur and cur.id) or TetrisAudio.BGMId
-            if cur and cur.uuid then pcall(function() AudioAPI.StopAudio(cur.uuid) end) end
-            TetrisAudio._instances[k] = { uuid = playOne(ps, id), id = id }
+            local cur = TetrisAudio._instances[k] or {}
+            local id = cur.id or TetrisAudio.BGMId
+            if cur.timer then pcall(function() TetrisAudio._owner:RemoveTimer(cur.timer) end) end
+            if cur.uuid then pcall(function() AudioAPI.StopAudio(cur.uuid) end) end
+            cur.uuid = playOne(ps, id)
+            cur.id = id
+            TetrisAudio._instances[k] = cur
+            scheduleLoop(ps, k, id)
         end
     end
 end
@@ -130,16 +149,17 @@ function TetrisAudio.StopBGM(ps)
     if not ps then return end
     local k = psKey(ps)
     local cur = TetrisAudio._instances[k]
+    if cur and cur.timer then pcall(function() TetrisAudio._owner:RemoveTimer(cur.timer) end) end
     if cur and cur.uuid then pcall(function() AudioAPI.StopAudio(cur.uuid) end) end
     TetrisAudio._instances[k] = nil
     TetrisAudio._players[k] = nil
 end
 
--- 停止全部 BGM 并令所有挂起的循环定时器失效
+-- 停止全部 BGM：停掉所有已播实例与循环定时器
 function TetrisAudio.StopAllBGM()
-    TetrisAudio._gen = TetrisAudio._gen + 1
     for k, ps in pairs(TetrisAudio._players) do
         local cur = TetrisAudio._instances[k]
+        if cur and cur.timer then pcall(function() TetrisAudio._owner:RemoveTimer(cur.timer) end) end
         if cur and cur.uuid then pcall(function() AudioAPI.StopAudio(cur.uuid) end) end
     end
     TetrisAudio._players = {}
