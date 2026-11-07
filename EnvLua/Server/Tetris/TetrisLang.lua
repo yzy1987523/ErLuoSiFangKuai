@@ -20,6 +20,21 @@ local function cfgOf()
     return TetrisConfig.LangUI or {}
 end
 
+-- 运行时文本多语言：key -> {1=zh, 2=en, 3=ar}，与 LangKeys={zh,en,ar} 对齐。
+-- 目前用于技能按钮提示（冷却中 / 能量不足）；其余硬编码文案可逐步迁移到这里。
+TetrisLang.Texts = {
+    SkillCooldown = { [1] = "技能冷却中", [2] = "Skill on cooldown", [3] = "المهارة قيد التبريد" },
+    SkillNoPower  = { [1] = "技能 power 不足，无法释放！", [2] = "Not enough skill power to release!", [3] = "طاقة المهارة غير كافية، لا يمكن إطلاقها!" },
+}
+
+-- 按玩家当前语言解析文本：取 Texts[key][语言索引]；语言 = self._lang[ps]（未设置时回退面板默认 en=2）。
+function TetrisLang:Tr(key, ps)
+    local t = TetrisLang.Texts and TetrisLang.Texts[key]
+    if not t then return "" end
+    local n = (ps and self._lang and self._lang[ps]) or 2
+    return t[n] or t[2] or t[1] or ""
+end
+
 function TetrisLang:new(owner, match)
     local o = setmetatable({}, TetrisLang)
     o.owner = owner

@@ -1390,18 +1390,26 @@ function TetrisGame:OnBtnSkill()
         return
     end
     if not self.running or (self.board and self.board:isOver()) then return end
+    local ps = self:GetPlayerState()
+    local langUI = self.match and self.match.langUI
+    local function trSkill(k)
+        if langUI and type(langUI.Tr) == "function" then return langUI:Tr(k, ps) end
+        if k == "SkillCooldown" then return "技能冷却中" end
+        if k == "SkillNoPower"  then return "技能 power 不足，无法释放！" end
+        return ""
+    end
     -- SK06/SK07/SK08 冷却中：已蓄能待触发，再次点击只提示，不消耗 power、不重复触发
     if (self.selectedSkill == "SK07" and self.s07Charged)
        or (self.selectedSkill == "SK08" and self.s08Charged)
        or (self.selectedSkill == "SK06" and self.s06Charged) then
-        self:ShowHint("技能冷却中")
+        self:ShowHint(trSkill("SkillCooldown"))
         return
     end
     local cfg = TetrisConfig.Skill
     if not cfg then return end
     if self.skillPower <= 0 then
         print("[Tetris][Skill] power 不足，无法释放")
-        self:ShowHint("技能 power 不足，无法释放！")
+        self:ShowHint(trSkill("SkillNoPower"))
         return
     end
     self.skillPower = self.skillPower - 1
