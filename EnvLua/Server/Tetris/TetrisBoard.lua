@@ -469,6 +469,8 @@ function TetrisBoard:lockPiece()
         print(string.format("[Tetris][LockDbg] 锁定加分 board=%s isAI=%s score=%s",
             tostring(self.index), tostring(self.isAI), tostring(self.score)))
     end
+    -- 方块落地锁定音效（仅真人盘有 PlayerState 时生效；AI/旁观盘 GetPlayerState 返回 nil，自动跳过）
+    if self.game then pcall(function() self.game:PlayLockSound() end) end
     local m = rotationStates[p.type][p.rot]
     local n = #m
 

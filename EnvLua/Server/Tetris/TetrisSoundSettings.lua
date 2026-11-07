@@ -158,6 +158,16 @@ function TetrisSoundSettings:RegisterOpenBtn()
         selfRef:OpenForAll(ps)
     end, selfRef, cfg.OpenBtn, nil)
     print(string.format("[Tetris][Sound][DEBUG] 「打开声音面板」入口按钮已注册 OpenBtn=%s 玩家数=%d", tostring(cfg.OpenBtn), #self.players))
+    -- 游戏界面内的「打开声音面板」入口按钮：占位为 nil 时跳过；点击同样打开面板（与开始界面 OpenBtn 行为一致）
+    if cfg.GameOpenBtn ~= nil then
+        for _, p in ipairs(self.players) do
+            pcall(function() CustomUIAPI.SetWidgetInteraction(p, cfg.GameOpenBtn, true) end)
+        end
+        self.owner:AddVPEvent(self.clickEventId, function(_self, ps)
+            selfRef:OpenForAll(ps)
+        end, selfRef, cfg.GameOpenBtn, nil)
+        print(string.format("[Tetris][Sound][DEBUG] 游戏界面「打开声音面板」入口按钮已注册 GameOpenBtn=%s", tostring(cfg.GameOpenBtn)))
+    end
 end
 
 return TetrisSoundSettings

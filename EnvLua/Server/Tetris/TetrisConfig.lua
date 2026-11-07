@@ -412,7 +412,7 @@ TetrisConfig.Render = {
             [9] = "23_ImagePreset_181441211138765",   -- 道具(占位复用垃圾图)
             [10] = "23_ImagePreset_181441211138765",  -- 道具(占位复用垃圾图)
             [11] = "23_ImagePreset_181441211138765",  -- 道具(占位复用垃圾图)
-            [12] = "23_ImagePreset_181444567644458",  -- 落石(与 PieceImages[12] 同源)
+            [12] = "23_ImagePreset_181441211138765",  -- 落石(与 PieceImages[12] 同源)
         },
         Opacity = 1,                              -- 半透明，和实时下落块区分
         ParkLocM = { X = 0, Y = 0, Z = -200 },       -- 无活动块时 Actor 停放位置（图片隐藏，位置不重要）
@@ -1234,6 +1234,13 @@ TetrisConfig.Audio = {
         Hard   = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
     },
     Step = 0.1,   -- 每次点击增减幅度（0.1 = 10%，0~1 共 10 档）
+    -- 事件音效（胜利 / 失败 / 方块落地锁定）：资源键为 SoundPreset Key（经 AssetRef 解析）。
+    -- 当前为占位 nil（待编辑器放置后填 Key），nil 时对应音效自动跳过；音量乘音效音量 GetSFXVolume。
+    Sounds = {
+        Win  = nil,   -- 胜利音效（占位）
+        Lose = nil,   -- 失败音效（占位）
+        Lock = nil,   -- 方块落地锁定音效（占位）
+    },
 }
 
 -- 声音控制面板：5 个按键 + 打开入口 + 可选音量百分比文本。
@@ -1253,6 +1260,7 @@ TetrisConfig.SoundSettings = {
     BtnSfxDown = ci("1_CreativeInstance_23643901685117635"), -- 减少 音效音量
     BtnSfxUp   = ci("1_CreativeInstance_23643899927873497"), -- 增加 音效音量
     OpenBtn = ci("1_CreativeInstance_23643902006366678"),   -- 打开/重新打开面板入口（开始界面上的按钮）
+    GameOpenBtn = nil,                                      -- 游戏界面内的「打开声音面板」入口按钮（占位，待编辑器放置后填 UUID；与操作按钮同时机显示/隐藏）
     BgmText = ci("1_CreativeInstance_23643902335526508"),    -- BGM 音量百分比文本
     SfxText = ci("1_CreativeInstance_23643900218483727"),    -- 音效音量百分比文本
 }

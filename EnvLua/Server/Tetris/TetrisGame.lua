@@ -737,6 +737,28 @@ function TetrisGame:PlayItemSound(itemType)
     pcall(function() AudioAPI.PlayAudio(ps, ref, 3, vol, true, false, ps) end)
 end
 
+-- 通用事件音效播放：key 为 TetrisConfig 中某 SoundPreset 资源键（nil 则跳过）。
+-- 仅对真人盘(有 PlayerState)播放；资源未注册则跳过。音量乘音效音量 GetSFXVolume。
+function TetrisGame:PlayEventSound(key)
+    if not key then return end
+    local ref = (type(AssetRef) == "table") and AssetRef[key]
+    if not ref then
+        if TetrisConfig.Debug and TetrisConfig.Debug.PrintClearSound then
+            print(string.format("[Tetris][Sound][WARN] 事件音效资源未注册 AssetRef[%s]，跳过", tostring(key)))
+        end
+        return
+    end
+    local ps = self:GetPlayerState()
+    if not ps or type(AudioAPI) ~= "table" then return end
+    local vol = (type(TetrisAudio) == "table" and TetrisAudio.GetSFXVolume()) or 1
+    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, vol, true, false, ps) end)
+end
+
+-- 胜利 / 失败 / 方块落地锁定 音效（资源键见 TetrisConfig.Audio.Sounds，占位为 nil 时自动跳过）
+function TetrisGame:PlayWinSound()  self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Win) end
+function TetrisGame:PlayLoseSound() self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Lose) end
+function TetrisGame:PlayLockSound() self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Lock) end
+
 function TetrisGame:CheckPieceSpawned()
     if not TetrisConfig.Debug.ShowPieceInfo then return end
     local s = self.board and self.board.lastSpawned

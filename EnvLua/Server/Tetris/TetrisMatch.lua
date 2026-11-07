@@ -813,6 +813,10 @@ function TetrisMatch:ShowLoading(visible)
                 end
             end
         end
+        -- 游戏界面内的「打开声音面板」入口按钮：与 HUD/操作按钮同时机显示（占位 nil 时 ShowForAll 自动跳过）
+        if self.soundSettings then
+            self.soundSettings:ShowForAll(TetrisConfig.SoundSettings.GameOpenBtn, true)
+        end
         if self._loadingVisible then return end
         self._loadingVisible = true
         for _, ps in ipairs(list) do self:SetLoadingProgress(ps, 0) end
@@ -944,6 +948,9 @@ function TetrisMatch:OnPlayerOut(loser)
     if self.over then return end
     local winner = loser.opponent
     self.winner = winner
+    -- 胜负音效：胜者播胜利、败者播失败（仅真人盘有 PlayerState 时生效；AI 盘自动跳过）
+    if winner and type(winner.PlayWinSound) == "function" then pcall(function() winner:PlayWinSound() end) end
+    if loser and type(loser.PlayLoseSound) == "function" then pcall(function() loser:PlayLoseSound() end) end
     -- 胜负结果的上传改到结算时统一处理（见 EndMatch → SubmitMatchResults：胜者 +1 / 败者 -1），
     -- 这里仅记录胜者并弹结算面板。
     self:EndMatch("lose", false)
@@ -1350,6 +1357,10 @@ function TetrisMatch:ResetGame()
             for _, key in ipairs(TetrisConfig.ShowHudAfterSkill or {}) do
                 local hid = (type(CreativeInstance) == "table" and CreativeInstance[key]) or nil
                 if hid ~= nil then pcall(function() CustomUIAPI.SetWidgetVisible(ps, hid, false) end) end
+            end
+            -- 隐藏游戏界面内的「打开声音面板」入口按钮（随 HUD 一并隐藏）
+            if self.soundSettings then
+                self.soundSettings:ShowForAll(TetrisConfig.SoundSettings.GameOpenBtn, false)
             end
             -- 顺手隐藏可能已打开的排行榜面板（避免盖在开始界面上）
             local lbCfg = TetrisConfig.Leaderboard
