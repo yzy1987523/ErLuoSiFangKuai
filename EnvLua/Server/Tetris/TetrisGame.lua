@@ -547,33 +547,52 @@ function TetrisGame:UpdateHUD()
     -- set(ui.LevelLabel, "等级: " .. tostring(b.level))
 end
 
--- 垃圾行提示框：显示由事件/排队触发，隐藏完全由"垃圾升起(pending→0)"触发（见 UpdateGarbageHints），
--- 不再有任何自动隐藏定时器（去掉计时）：
---   SEND：我消行攻击、把垃圾写入对手盘瞬间（flushOutgoingGarbage → FlashGarbageHint）；
---   RECV：我盘 incoming 垃圾排队瞬间（UpdateGarbageHints 内 → FlashGarbageHint）。
+-- 当前玩家语言索引：1=zh,2=en,3=ar（未设置时回退面板默认 en=2，与 TetrisLang 一致）
+function TetrisGame:GetLangIndex(ps)
+    local langUI = self.match and self.match.langUI
+    local n = (langUI and langUI._lang and ps and langUI._lang[ps]) or 2
+    return (n == 1 or n == 2 or n == 3) and n or 2
+end
 
--- 点亮某个垃圾提示框（key 取 TetrisConfig.UI 的 GarbageSendHint / GarbageRecvHint），仅显示、不计时：
--- 隐藏由 UpdateGarbageHints 按垃圾升起触发，故此处不安排任何定时器。
-function TetrisGame:FlashGarbageHint(key, count)
-    local ui = TetrisConfig.UI
-    local id = ui and ui[key]
+-- 仅设置某语言+类型提示的数字图（行数 1~8），用于 RECV 数量实时更新
+function TetrisGame:SetGarbageNumImage(typeKey, lang, count)
+    local cfg = TetrisConfig.GarbageHint
     local ps = self:GetPlayerState()
-    if not id or not ps or type(CustomUIAPI) ~= "table" then
+    if not cfg or not ps or type(CustomUIAPI) ~= "table" then return end
+    local comp = cfg.Components and cfg.Components[lang] and cfg.Components[lang][typeKey]
+    if not comp or not comp.num then return end
+    local n = math.max(1, math.min(count or 1, 8))
+    local numKey = cfg.NumImages and cfg.NumImages[n]
+    if numKey then
+        local ref = (type(AssetRef) == "table" and AssetRef[numKey]) or numKey
+        pcall(function() CustomUIAPI.SetImageWidgetContent(ps, comp.num, ref) end)
+    end
+end
+
+-- 点亮某个垃圾提示（图片版）：key 取 "GarbageSendHint" / "GarbageRecvHint"。
+-- 底图已直接在场景组件里按「语言+类型」各 baked 一张，这里只显隐对应语言组件 + 给数字图换图。
+function TetrisGame:FlashGarbageHint(key, count)
+    local cfg = TetrisConfig.GarbageHint
+    local ps = self:GetPlayerState()
+    if not cfg or not cfg.Enabled or not ps or type(CustomUIAPI) ~= "table" then
         if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
-            print(string.format("[Tetris][DBG] FlashGarbageHint 跳过: key=%s id=%s ps=%s",
-                tostring(key), tostring(id), tostring(ps)))
+            print(string.format("[Tetris][DBG] FlashGarbageHint 跳过(图片配置未就绪): key=%s cfg=%s ps=%s",
+                tostring(key), tostring(not not cfg), tostring(ps)))
         end
         return
     end
-    pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, true) end)
-    -- 该控件若为文本控件（如原 HintText 复用），需同时写文案；若为图片控件则 SetTextContent 为空操作，无副作用
-    local label = (key == "GarbageSendHint")
-        and ("即将给对手扔出 " .. tostring(count or 0) .. " 行垃圾！")
-        or  ("即将被对手扔来 " .. tostring(count or 0) .. " 行垃圾！")
-    pcall(function() CustomUIAPI.SetTextContent(ps, id, label) end)
+    local typeKey = (key == "GarbageSendHint") and "Send" or "Recv"
+    local lang = self:GetLangIndex(ps)
+    local comp = cfg.Components and cfg.Components[lang] and cfg.Components[lang][typeKey]
+    if not comp then return end
+    -- 数字图（行数 1~8，语言无关共用）：底图由场景组件自带，只更新数字图
+    self:SetGarbageNumImage(typeKey, lang, count)
+    -- 显示该语言+类型的两个组件（游戏内不切语言，开局已全部隐藏，此处只点亮当前语言）
+    pcall(function() if comp.base then CustomUIAPI.SetWidgetVisible(ps, comp.base, true) end end)
+    pcall(function() if comp.num  then CustomUIAPI.SetWidgetVisible(ps, comp.num,  true) end end)
     if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
-        print(string.format("[Tetris][DBG] FlashGarbageHint 显示: key=%s id=%s label=%s",
-            tostring(key), tostring(id), label))
+        print(string.format("[Tetris][DBG] FlashGarbageHint 显示(图片): key=%s lang=%s count=%s",
+            tostring(key), tostring(lang), tostring(count)))
     end
 end
 
@@ -1163,6 +1182,28 @@ function TetrisGame:HideSkillHintUI()
         { "UI.ShiftImg1",       ui and ui.ShiftImg1, opacity = true },
         { "UI.ShiftImg2",       ui and ui.ShiftImg2, opacity = true },
     }
+    -- 垃圾行图片提示（最多 12 组件）：开局先全部隐藏，由 UpdateGarbageHints 按语言+行数重新点亮
+    local gh = TetrisConfig.GarbageHint
+    print(string.format("[DBG][HideSkillHintUI] GarbageHint: cfg=%s enabled=%s components表=%s",
+        tostring(not not gh), tostring(gh and gh.Enabled), tostring(type(gh and gh.Components) == "table")))
+    if gh and gh.Components then
+        for l = 1, 3 do
+            for _, tk in ipairs({ "Send", "Recv" }) do
+                local comp = gh.Components[l] and gh.Components[l][tk]
+                local baseId = comp and comp.base
+                local numId = comp and comp.num
+                -- 定向调试：打出每个垃圾组件经 ci(...) 解析后的实际 id；若为 nil 说明实例未注册/键错误（会静默 SKIP，看不到藏成功）
+                print(string.format("[DBG][HideSkillHintUI] Garbage %d.%s base=%s num=%s",
+                    l, tk, tostring(baseId), tostring(numId)))
+                if comp then
+                    list[#list + 1] = { string.format("GarbageHint.%d.%s.base", l, tk), baseId }
+                    list[#list + 1] = { string.format("GarbageHint.%d.%s.num", l, tk), numId }
+                end
+            end
+        end
+    else
+        print("[DBG][HideSkillHintUI] GarbageHint 未配置或 Components 缺失，跳过 12 组件隐藏")
+    end
     -- 展开 SK08 被翻转方多图
     local sk8 = skills and skills.SK08
     if sk8 and sk8.flipVictimImgs then
@@ -1684,58 +1725,58 @@ function TetrisGame:ShowHint(text)
     end
 end
 
--- 立即隐藏某个垃圾提示框（key 取 GarbageSendHint / GarbageRecvHint）：仅清可见性（已无定时器可取消）。
+-- 立即隐藏某个垃圾提示（图片版）：key 取 GarbageSendHint / GarbageRecvHint。
+-- 隐藏该类型在所有语言组的两个组件（玩家仅一个语言组可见，隐藏全部语言组确保干净；不影响另一类型）。
 function TetrisGame:HideGarbageHint(key)
-    local ui = TetrisConfig.UI
-    local id = ui and ui[key]
+    local cfg = TetrisConfig.GarbageHint
     local ps = self:GetPlayerState()
-    if id and ps and type(CustomUIAPI) == "table" then
-        pcall(function() CustomUIAPI.SetWidgetVisible(ps, id, false) end)
+    if not cfg or not ps or type(CustomUIAPI) ~= "table" then return end
+    local typeKey = (key == "GarbageSendHint") and "Send" or "Recv"
+    for l = 1, 3 do
+        local comp = cfg.Components and cfg.Components[l] and cfg.Components[l][typeKey]
+        if comp then
+            if comp.base then pcall(function() CustomUIAPI.SetWidgetVisible(ps, comp.base, false) end) end
+            if comp.num  then pcall(function() CustomUIAPI.SetWidgetVisible(ps, comp.num,  false) end) end
+        end
     end
 end
 
--- 垃圾提示框：按"垃圾是否排队(pendingGarbage>0)"显示，按"垃圾升起(pendingGarbage 由 >0 变 0)"隐藏。
+-- 垃圾提示框（图片版）：按"垃圾是否排队(pendingGarbage>0)"显示，按"垃圾升起(pendingGarbage 由 >0 变 0)"隐藏。
 -- 由 OnTick 每重力 tick 调用：
 --   SEND（我攻击对手）：我消行攻击瞬间由 flushOutgoingGarbage 点亮（写入对手盘 pendingGarbage）。
 --        隐藏锚点 = 对手方块落地、我发出的垃圾在对手盘升起：即对手盘 pendingGarbage 由 >0 变 0。
---   RECV（我被攻击）：我盘 incoming 垃圾排队(pendingGarbage>0)时显示"即将被对手扔来 N 行"；
---        隐藏锚点 = 我的垃圾在我盘升起：即我盘 pendingGarbage 由 >0 变 0。
+--   RECV（我被攻击）：我盘 incoming 垃圾排队(pendingGarbage>0)时显示"即将被对手扔来 N 行"图片；
+--        数量变化仅刷新数字图；垃圾升起(myPend >0->0) => 隐藏。
 -- 提示仅由垃圾升起触发隐藏，无任何固定时长自动隐藏。
 function TetrisGame:UpdateGarbageHints()
-    local ui = TetrisConfig.UI
+    local cfg = TetrisConfig.GarbageHint
     local ps = self:GetPlayerState()
-    if not ui or not ps or type(CustomUIAPI) ~= "table" then return end
+    if not cfg or not cfg.Enabled or not ps or type(CustomUIAPI) ~= "table" then return end
     local b = self.board
     local ob = self.opponent and self.opponent.board
     local myPend = (b and b.pendingGarbage or 0)          -- 我盘 incoming 垃圾（被攻击）
     local oppPend = (ob and ob.pendingGarbage or 0)        -- 对手盘排队垃圾（我攻击）
+    local lang = self:GetLangIndex(ps)
 
-    -- RECV：我盘有 incoming 排队 => 显示"即将被对手扔来 N 行"；垃圾升起(myPend >0->0) => 隐藏
-    if ui.GarbageRecvHint then
-        if myPend > 0 then
-            if not self._recvShowing then
-                -- 首次显示：点亮（含数量文案）
-                self:FlashGarbageHint("GarbageRecvHint", myPend)
-                self._recvShowing = true
-            else
-                -- 已在显示：仅更新数量文案（不重置显示）
-                local label = "即将被对手扔来 " .. tostring(myPend) .. " 行垃圾！"
-                if self._recvHintLabel ~= label then
-                    pcall(function() CustomUIAPI.SetTextContent(ps, ui.GarbageRecvHint, label) end)
-                    self._recvHintLabel = label
-                end
-            end
-        elseif self._prevMyPend and self._prevMyPend > 0 then
-            -- 我盘垃圾升起：立即隐藏 RECV
-            self:HideGarbageHint("GarbageRecvHint")
-            self._recvShowing = false
-            self._recvHintLabel = nil
+    -- RECV：我盘有 incoming 排队 => 显示"即将被对手扔来 N 行"图片；垃圾升起(myPend >0->0) => 隐藏
+    if myPend > 0 then
+        if not self._recvShowing then
+            -- 首次显示：点亮（底图 + 数字图）
+            self:FlashGarbageHint("GarbageRecvHint", myPend)
+            self._recvShowing = true
+        else
+            -- 已在显示：仅更新数字图（行数可能变化）
+            self:SetGarbageNumImage("Recv", lang, myPend)
         end
+    elseif self._prevMyPend and self._prevMyPend > 0 then
+        -- 我盘垃圾升起：立即隐藏 RECV
+        self:HideGarbageHint("GarbageRecvHint")
+        self._recvShowing = false
     end
     self._prevMyPend = myPend
 
     -- SEND：对手盘排队垃圾由 >0 变 0（对手落地、我发出的垃圾升起）=> 隐藏我的 SEND 提示
-    if ui.GarbageSendHint and self._prevOppPend and self._prevOppPend > 0 and oppPend == 0 then
+    if self._prevOppPend and self._prevOppPend > 0 and oppPend == 0 then
         self:HideGarbageHint("GarbageSendHint")
     end
     self._prevOppPend = oppPend

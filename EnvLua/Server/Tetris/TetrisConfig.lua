@@ -530,14 +530,28 @@ TetrisConfig.BoardBackdrop3D = {
     Enabled = true,                                       -- 是否生成盘面背面黑底背板
     -- 黑底背板 Actor 预设键（46_ActorPreset_*，带 WidgetComponent 的 UMG，UMG 内填纯黑底色/图片）。
     -- 【占位】在编辑器里创建带 WidgetComponent 的 ActorPreset（UMG 放一个黑色 Image/底色），注册后填入其键；nil 时自动跳过。
-    PresetKey = nil,
-    DistanceBehindM = 0.5,                                 -- 盘心沿 -boardForward（盘面背面、远离玩家）的距离；调大让背板更靠后
-    Scale = { X = 2.52, Y = 2.52, Z = 2.52},               -- 整体缩放（影响 WidgetComponent 的世界尺寸；按需比盘面大一圈）
+    PresetKey = "46_ActorPreset_1434872060",
+    DistanceBehindM = -0.5,                                 -- 盘心沿 -boardForward（盘面背面、远离玩家）的距离；调大让背板更靠后
+    Scale = { X = 11, Y = 11, Z = 23},               -- 整体缩放（影响 WidgetComponent 的世界尺寸；按需比盘面大一圈）
     SideOffsetM = 0,                                       -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
     HeightOffsetM = 0,                                     -- 沿世界 +Z 的额外抬高
     -- 按棋盘 index 的偏置旋转（绕竖直/Yaw 轴，单位°）：默认与 BigFrame3D 同朝向；
     -- 若希望黑底正面朝玩家(透过盘缘可见)，可把对应 index 设为 180（翻正）。
     RotationBiasByIndex = { [1] = 0, [2] = 0 },
+}
+
+TetrisConfig.BoardBackdrop3D_small = {
+    Enabled = true,                                       -- 是否生成盘面背面黑底背板
+    -- 黑底背板 Actor 预设键（46_ActorPreset_*，带 WidgetComponent 的 UMG，UMG 内填纯黑底色/图片）。
+    -- 【占位】在编辑器里创建带 WidgetComponent 的 ActorPreset（UMG 放一个黑色 Image/底色），注册后填入其键；nil 时自动跳过。
+    PresetKey = "46_ActorPreset_1434872060",
+    DistanceBehindM = 0.51,                                 -- 盘心沿 -boardForward（盘面背面、远离玩家）的距离；调大让背板更靠后
+    Scale = { X = 1, Y = 11, Z = 22},               -- 整体缩放（影响 WidgetComponent 的世界尺寸；按需比盘面大一圈）
+    SideOffsetM = 0.5,                                       -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
+    HeightOffsetM = 0,                                     -- 沿世界 +Z 的额外抬高
+    -- 按棋盘 index 的偏置旋转（绕竖直/Yaw 轴，单位°）：默认与 BigFrame3D 同朝向；
+    -- 若希望黑底正面朝玩家(透过盘缘可见)，可把对应 index 设为 180（翻正）。
+    RotationBiasByIndex = { [1] = 180, [2] = -180},
 }
 
 -- ===================== 远景背景 3D UI 挂件（背景图 WidgetComponent Actor） =====================
@@ -638,6 +652,38 @@ TetrisConfig.UI = {
 
     -- 对手分数文本控件：显示 self.opponent.board.score（对战 / 人机通用）
     OpponentScoreLabel = ci("1_CreativeInstance_23643901631192115"),
+}
+
+-- ===================== 垃圾行图片提示（替代 UI.GarbageSendHint/RecvHint 文本提示） =====================
+-- 12 组件 = 3 语言(zh/en/ar) × {扔出Send, 收到Recv} × {底图base, 数字num}；底图已在场景按语言+类型设好默认内容，
+-- 运行时只显隐对应组件 + 给数字图(num)换图（NumImages 行数 1~8，语言无关共用）。
+-- nil 时 FlashGarbageHint/HideGarbageHint/UpdateGarbageHints 自动跳过，不报错。
+TetrisConfig.GarbageHint = {
+    Enabled = true,
+    Components = {
+        [1] = {  -- zh
+            Send = { base = ci("1_CreativeInstance_23643902307206943"), num = ci("1_CreativeInstance_23643900084761451") },
+            Recv  = { base = ci("1_CreativeInstance_23643901052682011"), num = ci("1_CreativeInstance_23643898075956766") },
+        },
+        [2] = {  -- en
+            Send = { base = ci("1_CreativeInstance_23643898639510745"), num = ci("1_CreativeInstance_23643900738802786") },
+            Recv  = { base = ci("1_CreativeInstance_23643901080731614"), num = ci("1_CreativeInstance_23643901473887207") },
+        },
+        [3] = {  -- ar
+            Send = { base = ci("1_CreativeInstance_23643899943366286"), num = ci("1_CreativeInstance_23643901357562115") },
+            Recv  = { base = ci("1_CreativeInstance_23643900563538121"), num = ci("1_CreativeInstance_23643901376145582") },
+        },
+    },
+    NumImages = {
+        [1] = "23_ImagePreset_181441986904127",
+        [2] = "23_ImagePreset_181441439562369",
+        [3] = "23_ImagePreset_181443909459194",
+        [4] = "23_ImagePreset_181445050458701",
+        [5] = "23_ImagePreset_181445069619803",
+        [6] = "23_ImagePreset_181443837744871",
+        [7] = "23_ImagePreset_181440913541048",
+        [8] = "23_ImagePreset_181442656658594",
+    },
 }
 
 -- ===================== 消行音效（按消行数播放，AssetRef 句柄由 SoundPreset Key 解析） =====================
@@ -997,7 +1043,7 @@ TetrisConfig.LangUI = {
         -- 第 5 项：图片（3 语图）
         { txt = nil, texts = { nil, nil, nil },
           img = ci("1_CreativeInstance_23643902239482253"),
-          imgs = { "23_ImagePreset_181444995847832", "23_ImagePreset_181443883931870", "23_ImagePreset_181441930317548" },
+          imgs = { "23_ImagePreset_181444995847832", "23_ImagePreset_181443883931870", "23_ImagePreset_181444348767246" },
           btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
     },
 }
@@ -1256,9 +1302,9 @@ TetrisConfig.Audio = {
     -- 事件音效（胜利 / 失败 / 方块落地锁定）：资源键为 SoundPreset Key（经 AssetRef 解析）。
     -- 当前为占位 nil（待编辑器放置后填 Key），nil 时对应音效自动跳过；音量乘音效音量 GetSFXVolume。
     Sounds = {
-        Win  = nil,   -- 胜利音效（占位）
-        Lose = nil,   -- 失败音效（占位）
-        Lock = nil,   -- 方块落地锁定音效（占位）
+        Win  = "19_SoundPreset_181439672508467",  -- 胜利音效
+        Lose = "19_SoundPreset_181436843579026",  -- 失败音效
+        Lock = "19_SoundPreset_181437772959480",  -- 方块落地锁定音效
     },
 }
 
@@ -1279,7 +1325,7 @@ TetrisConfig.SoundSettings = {
     BtnSfxDown = ci("1_CreativeInstance_23643901685117635"), -- 减少 音效音量
     BtnSfxUp   = ci("1_CreativeInstance_23643899927873497"), -- 增加 音效音量
     OpenBtn = ci("1_CreativeInstance_23643902006366678"),   -- 打开/重新打开面板入口（开始界面上的按钮）
-    GameOpenBtn = nil,                                      -- 游戏界面内的「打开声音面板」入口按钮（占位，待编辑器放置后填 UUID；与操作按钮同时机显示/隐藏）
+    GameOpenBtn = ci("1_CreativeInstance_23643899862601205"),                                      -- 游戏界面内的「打开声音面板」入口按钮（占位，待编辑器放置后填 UUID；与操作按钮同时机显示/隐藏）
     BgmText = ci("1_CreativeInstance_23643902335526508"),    -- BGM 音量百分比文本
     SfxText = ci("1_CreativeInstance_23643900218483727"),    -- 音效音量百分比文本
 }

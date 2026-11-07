@@ -1365,6 +1365,95 @@ function TetrisRenderer:ReanchorBoardBackdropWidget()
     pcall(function() self._backdropWidgetActor:K2_TeleportTo(cmVec(pos), rot) end)
 end
 
+-- ============== 盘面背面小号黑底背板（BoardBackdrop3D_small）：BuildBoardBackdropWidget 的“小号”副本 ==============
+-- 与 BuildBoardBackdropWidget 完全同构，仅读取 TetrisConfig.BoardBackdrop3D_small、并复用独立实例/日志状态字段，
+-- 用于叠加一层更小/更靠后的黑底（如区分盘面层次）。定位/缩放/旋转逻辑不变。
+function TetrisRenderer:BuildBoardBackdropWidgetSmall()
+    local cfg = TetrisConfig.BoardBackdrop3D_small
+    if not (cfg and cfg.Enabled) then return end
+    if not self.boardCenter or not self.boardForward or not self.boardRight then
+        if not self._backdropWidgetSmallBaseLogged then
+            self._backdropWidgetSmallBaseLogged = true
+            print(string.format("[Tetris][BackdropSmall][WARN] 盘面基底未就绪(首次): built=%s hasCenter=%s hasFwd=%s hasRight=%s",
+                tostring(self.built), tostring(not not self.boardCenter), tostring(not not self.boardForward), tostring(not not self.boardRight)))
+        end
+        return
+    end
+    if self._backdropWidgetSmallActor then return end   -- 已生成：交给 ReanchorBoardBackdropWidgetSmall 重定位
+    local ref = (type(AssetRef) == "table" and AssetRef[cfg.PresetKey])
+             or (type(CreativeAsset) == "table" and CreativeAsset[cfg.PresetKey])
+    if not ref then
+        if not self._backdropWidgetSmallRefLogged then
+            self._backdropWidgetSmallRefLogged = true
+            print(string.format("[Tetris][BackdropSmall][WARN] 资源键无引用(占位/未注册): %s | AssetRef表=%s CreativeAsset表=%s",
+                tostring(cfg.PresetKey), tostring(type(AssetRef) == "table"), tostring(type(CreativeAsset) == "table")))
+        end
+        return
+    end
+    local D = (type(cfg.DistanceBehindM) == "number") and cfg.DistanceBehindM or 0.5
+    local side = (type(cfg.SideOffsetM) == "number") and cfg.SideOffsetM or 0
+    local hgt = (type(cfg.HeightOffsetM) == "number") and cfg.HeightOffsetM or 0
+    -- 背面：沿 -boardForward（盘面背面、远离玩家），与 BigFrame3D 的 +boardForward（朝玩家）相反
+    local pos = {
+        X = self.boardCenter.X - self.boardForward.X * D + self.boardRight.X * side,
+        Y = self.boardCenter.Y - self.boardForward.Y * D + self.boardRight.Y * side,
+        Z = self.boardCenter.Z - self.boardForward.Z * D + hgt,
+    }
+    local scaleVec = Game:ConstructFVectorByLuaTable({
+        X = (cfg.Scale and cfg.Scale.X) or 1,
+        Y = (cfg.Scale and cfg.Scale.Y) or 1,
+        Z = (cfg.Scale and cfg.Scale.Z) or 1,
+    })
+    local rot = self:BoardBackdropWidgetSmallRot()
+    local ok, obj = pcall(function()
+        if type(CreativeGameAPI) == "table" and CreativeGameAPI.CreateActor then
+            return CreativeGameAPI.CreateActor(ref, Game:ConstructFVectorByLuaTable(pos), rot, scaleVec, nil)
+        end
+        return self:CreateOne(Game:ConstructFVectorByLuaTable(pos), scaleVec, ref, rot)
+    end)
+    if ok and obj then
+        self._backdropWidgetSmallActor = obj
+        pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(false) end end)
+        print(string.format("[Tetris][BackdropSmall] 盘面背面小号黑底背板已生成 (D=%.1f side=%.1f hgt=%.1f)", D, side, hgt))
+    else
+        print("[Tetris][BackdropSmall][WARN] 创建失败: " .. tostring(obj))
+    end
+end
+
+-- 计算盘面背面小号黑底背板旋转：基于盘面偏航 self.boardYaw + RotationBiasByIndex[boardIndex]（与 BigFrame3D 同构）
+function TetrisRenderer:BoardBackdropWidgetSmallRot()
+    local cfg = TetrisConfig.BoardBackdrop3D_small
+    local bias = 0
+    if cfg and type(cfg.RotationBiasByIndex) == "table" then
+        bias = cfg.RotationBiasByIndex[self.boardIndex] or 0
+    end
+    local yaw = (self.boardYaw or 0) + bias
+    if type(FRotator) == "table" and FRotator.MakeFromEuler then
+        return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = yaw }))
+    end
+    return self.rot
+end
+
+-- 将盘面背面小号黑底背板重定位到当前盘面基底（应对 ResolveOrigin 重新解析、基准变化）。
+function TetrisRenderer:ReanchorBoardBackdropWidgetSmall()
+    local cfg = TetrisConfig.BoardBackdrop3D_small
+    if not (cfg and cfg.Enabled) then return end
+    if not self._backdropWidgetSmallActor then return end
+    if not self.boardCenter or not self.boardForward or not self.boardRight then return end
+    local D = (type(cfg.DistanceBehindM) == "number") and cfg.DistanceBehindM or 0.5
+    local side = (type(cfg.SideOffsetM) == "number") and cfg.SideOffsetM or 0
+    local hgt = (type(cfg.HeightOffsetM) == "number") and cfg.HeightOffsetM or 0
+    -- 背面：沿 -boardForward（与 BigFrame3D 相反）
+    local pos = {
+        X = self.boardCenter.X - self.boardForward.X * D + self.boardRight.X * side,
+        Y = self.boardCenter.Y - self.boardForward.Y * D + self.boardRight.Y * side,
+        Z = self.boardCenter.Z - self.boardForward.Z * D + hgt,
+    }
+    local rot = self:BoardBackdropWidgetSmallRot()
+    -- pos 是米，必须用 cmVec(×100) 转厘米，否则会被当成米当厘米放到盘心内部而不可见
+    pcall(function() self._backdropWidgetSmallActor:K2_TeleportTo(cmVec(pos), rot) end)
+end
+
 -- 尝试取出实例背后的 Actor。动态实例可能是纯组件，取不到时返回 nil。
 function TetrisRenderer:ResolveActor(obj)
     if not obj or self.mode ~= "instance" then return nil end
@@ -2880,6 +2969,7 @@ function TetrisRenderer:ReanchorBoard()
     self:ReanchorBehindBoardWidget()
     self:ReanchorFrontBoardWidget()
     self:ReanchorBoardBackdropWidget()
+    self:ReanchorBoardBackdropWidgetSmall()
 end
 
 -- 调试：逐行统计 已创建 / 当前显示 / 期望显示 的格子数。
@@ -3234,6 +3324,8 @@ function TetrisRenderer:Update(board, running)
     self:BuildFrontBoardWidget()
     -- 兜底生成盘面背面黑底背板（BoardBackdrop3D）：同样幂等，AssetRef 晚注册时在此重试。
     self:BuildBoardBackdropWidget()
+    -- 兜底生成盘面背面小号黑底背板（BoardBackdrop3D_small）：同样幂等，AssetRef 晚注册时在此重试。
+    self:BuildBoardBackdropWidgetSmall()
     -- 兜底生成落点预览 Ghost Actor（方案A）：幂等，AssetRef 晚注册时在此重试。
     self:BuildGhostActor()
 
