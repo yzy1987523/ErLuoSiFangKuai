@@ -932,6 +932,8 @@ function TetrisRenderer:BuildGhostActor()
         self._ghostActor = obj
         pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(false) end end)
         self._ghostImgWidget = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
+        -- 生成即隐藏图片控件：控件尚未定位时 Actor 仍停在 ParkLocM，UMG 默认图不会被玩家看到
+        self:SetGhostVisible(false)
         if self._ghostImgWidget then
             print(string.format("[Tetris][Ghost] 落点预览 Actor 已生成，图片控件定位成功 childNames=%s",
                 table.concat(cfg.ImageChildName or { "ghostImg" }, ",")))
@@ -1015,33 +1017,10 @@ function TetrisRenderer:SetGhostVisible(v)
 end
 
 -- 每帧驱动：无活动块/预览期/非运行态 → 隐藏；否则计算 hardDrop 落点，定位+旋转 Ghost Actor 并显示。
--- 预加载所有方块预览图：挂件就绪时一次性 SetImageContent 每种类型，
--- 触发引擎异步加载并全局缓存；之后每次换图都是已缓存的即时显示，彻底消除"显示时贴图未就绪→错乱"。
-function TetrisRenderer:PreloadGhostImages()
-    if self._ghostPreloaded then return end
-    if not self._ghostImgWidget then return end
-    local cfg = TetrisConfig.Render.Ghost
-    if not (cfg and cfg.ImageKeys) then return end
-    local keys = {}
-    for _, key in pairs(cfg.ImageKeys) do keys[#keys + 1] = key end
-    -- 错峰预加载：每张图间隔 50ms 单独 SetImageContent，确保各自异步加载真正发起并被缓存
-    -- （同帧连设多张只会让最后一张生效，其余未必缓存，导致切换时仍要现加载而显示上一个方块的图）。
-    for i, key in ipairs(keys) do
-        local delay = 0.05 * (i - 1)
-        pcall(function()
-            if self.owner and self.owner.AddTimerOnce then
-                self.owner:AddTimerOnce(delay, function()
-                    local aRef = (type(AssetRef) == "table" and AssetRef[key]) or nil
-                    local cRef = (type(CreativeAsset) == "table" and CreativeAsset[key]) or nil
-                    local imgID = aRef or cRef
-                    if imgID then pcall(function() self._ghostImgWidget:SetImageContent(imgID) end) end
-                end)
-            end
-        end)
-    end
-    self._ghostPreloaded = true
-end
-
+-- 注意：不再做"错峰预加载贴图"。原实现把全部 12 张图轮流 SetImageContent 到【正在显示的控件】上，
+-- 与首显 0.1s 待显示窗口、每帧重设窗口互相覆盖，导致开局首块 Ghost 出现「默认图→错图→正确图」连跳。
+-- 贴图就绪改由 RenderGhost 内「类型切换后固定窗口每帧重设当前块图」(_ghostImgRetryN) 保证；
+-- 显示前不再有任何外部写入，所有 SetImageContent 都只写当前活动块的图，一次显示即正确。
 function TetrisRenderer:RenderGhost(board, running)
     local cfg = TetrisConfig.Render.Ghost
     if not (cfg and cfg.Enabled) then return end
@@ -1049,6 +1028,18 @@ function TetrisRenderer:RenderGhost(board, running)
     if not (running == true) or self.previewing then
         self:SetGhostVisible(false)
         return
+    end
+    -- 控件定位重试放在脏标记判断之前：UMG 实例依赖玩家 pawn，开局常延迟就绪。
+    -- 若控件刚就绪却恰好是非脏帧，旧实现会直接 return 导致首块 Ghost 迟迟不显示；
+    -- 这里就绪时强制置脏，保证当帧就走完整流程（设图 → 显示），且显示的是当前块图。
+    if not self._ghostImgWidget and self._ghostActor then
+        self._ghostWidgetRetryN = (self._ghostWidgetRetryN or 0) + 1
+        if self._ghostWidgetRetryN % 15 == 1 then
+            self._ghostImgWidget = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
+            if self._ghostImgWidget then
+                self._ghostDirty = true
+            end
+        end
     end
     -- 贴图异步加载竞态修复：方块类型切换后，无论本帧是否 dirty，都在固定窗口内（约 90 帧）持续重设贴图，
     -- 直到新贴图异步加载完成，避免“沿用上一个方块的图、尺寸对但图没换”（尺寸是同步设置，始终正确）。
@@ -1158,17 +1149,6 @@ function TetrisRenderer:RenderGhost(board, running)
                 X = scfg.X or 1, Y = scfg.Y or 1, Z = scfg.Z or 1 }))
         end)
     end
-    -- 修复1：首帧若图片控件未定位（如玩家 pawn 尚未就绪），每 15 帧重新查找，避免整局无图
-    if not self._ghostImgWidget and self._ghostActor then
-        self._ghostWidgetRetryN = (self._ghostWidgetRetryN or 0) + 1
-        if self._ghostWidgetRetryN % 15 == 1 then
-            self._ghostImgWidget = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
-        end
-    end
-    -- 挂件就绪后一次性预加载所有方块预览图（触发异步资源加载），避免快速出块时贴图未就绪就显示导致错乱
-    if self._ghostImgWidget and not self._ghostPreloaded then
-        self:PreloadGhostImages()
-    end
     -- 设图（方案A：下落开始设一次，类型变化时才重载贴图，避免每帧闪烁）
     if self._ghostImgWidget then
         local key = cfg.ImageKeys and cfg.ImageKeys[p.type]
@@ -1196,8 +1176,10 @@ function TetrisRenderer:RenderGhost(board, running)
                 tostring(p.type), tostring(key), tostring(aRef ~= nil), tostring(cRef ~= nil)))
         end
     end
-    -- 显示：设图后延迟 0.5s 才显示到落点位置（pending 期间只设图、不显示）
-    if self._ghostShowPending then
+    -- 显示：仅当【图片控件已就绪】且【不在新块待显示窗口(0.1s)内】时才 Teleport 到落点并显示。
+    -- 控件未就绪时一律隐藏且不 Teleport（Actor 停在 ParkLocM），避免 UMG 默认图被拉到落点露出；
+    -- 控件就绪的那一帧，上方设图块已先把当前块图写入，因此显示出来的直接就是正确的图。
+    if self._ghostShowPending or not self._ghostImgWidget then
         self:SetGhostVisible(false)
     else
         pcall(function() self._ghostActor:K2_TeleportTo(cmVec(center), rot) end)

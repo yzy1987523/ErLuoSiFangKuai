@@ -1173,7 +1173,7 @@ TetrisConfig.LangUI = {
         -- 第 13 项：图片（3 语图）
         { txt = nil, texts = { nil, nil, nil },
           img = ci("1_CreativeInstance_23643900367799363"),
-          imgs = { "23_ImagePreset_181443710686977", "23_ImagePreset_181442735891530", "23_ImagePreset_181442462909476" },
+          imgs = { "23_ImagePreset_181443710686977", "23_ImagePreset_181441247688051", "23_ImagePreset_181442462909476" },
           btn = nil, btnNormal = { nil, nil, nil }, btnPressed = { nil, nil, nil } },
         -- 第 14 项：图片（3 语图）
         { txt = nil, texts = { nil, nil, nil },
