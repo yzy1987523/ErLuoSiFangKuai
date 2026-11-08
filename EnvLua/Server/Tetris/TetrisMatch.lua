@@ -434,8 +434,10 @@ end
 -- skillChoices: [PlayerState] = 技能 key（如 "SK01"）。未选择则回退默认技能。
 function TetrisMatch:OnSkillSelected(skillChoices)
     self.skillChoices = skillChoices or {}
-    if self.help then self.help:HideAll() end          -- 选完技能进入开局：确保准备阶段界面已关闭
-    if self.detailHelp then self.detailHelp:HideAll() end  -- 同时确保详细帮助界面已关闭
+    -- 不调用 self.help:HideAll()：准备阶段界面在玩家关闭时已退场，此后不再参与流程；
+    -- 且 TetrisHelp:HideFor 的语义是「回到开始界面」，末尾会 ShowStartScreenFor 把已隐藏的
+    -- 开始界面重新点亮（loading 时闪一下开始界面）。开始界面在点「开始游戏」时已隐藏完毕。
+    if self.detailHelp then self.detailHelp:HideAll() end  -- 纯隐藏详细帮助界面，无回显副作用
     -- 选完技能：进入开局阶段（_enteredGame 标记，供隐藏 loading 时联动隐藏选择界面）。
     -- loading 在真正开始生成对象时（OnModeSelected）再显示，避免盖住中间的玩法选择界面。
     self._enteredGame = true
