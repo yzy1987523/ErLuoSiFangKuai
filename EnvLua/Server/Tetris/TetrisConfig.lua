@@ -1091,6 +1091,21 @@ TetrisConfig.HelpWrap = {
     PadToAlign      = true,   -- 多行时每行末尾补空格到最长行等长，抵消居中/右对齐造成的第二行缩进
 }
 
+-- 技能选择界面「2 个槽位描述」文本宽度适配：规则与 HelpWrap 完全相同，但候选文本集是技能短描述
+-- （SkillSelectTexts 的 en/ar + Skills[key].selectDesc 的 zh），X 按该集合的最长一条减半算，
+-- 不沿用帮助页的 X（帮助页文案更长，直接沿用会导致技能描述几乎不折行，仍超出槽位文本框）。
+-- 两处文本框宽度不同，故单独一份配置，便于分别调 X / 字号；字段含义见上方 HelpWrap 注释。
+TetrisConfig.SkillSelectWrap = {
+    Enabled  = true,
+    Ratio    = 0.5,   -- 减半（仅对未在 XByLang 指定的语言生效）
+    MinChars = 4,
+    XByLang  = { [1] = 6 },   -- 中文固定每行 6 字；en/ar 按「技能描述最长减半」动态算
+    FontSize        = 15,
+    FontSizeByLang  = { [1] = 15, [2] = 12, [3] = 15 },  -- 与帮助页保持一致
+    DebugWrap       = false,
+    PadToAlign      = true,   -- 多行时尾部补空格，抵消居中/右对齐造成的视觉缩进
+}
+
 -- ===================== 多语言界面（由开始界面的 OpenBtn 打开） =====================
 -- 4 个按钮：关闭、切换中文、切换英文、切换阿拉伯文；3 个语言标志图片（对应 zh/en/ar）。
 -- Contents = 全局多语言组件注册表（面板内不需要内容，专门登记游戏中所有需随语言换内容的组件）：

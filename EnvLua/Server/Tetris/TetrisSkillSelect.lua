@@ -11,6 +11,7 @@
 pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
 
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
+local TextWrap = require("EnvLua.Server.Tetris.TetrisTextWrap")
 
 local TetrisSkillSelect = {}
 TetrisSkillSelect.__index = TetrisSkillSelect
@@ -148,14 +149,44 @@ function TetrisSkillSelect:ShowPanelFor(ps, visible)
     end
 end
 
+-- ---------------- 槽位描述文本宽度适配 ----------------
+-- 与帮助界面共用 TetrisTextWrap（按 UTF-8 字符数折行 + 按语言字号 + 多行尾部补空格）。
+-- X 按「候选技能池里该语言全部短描述」的最长一条减半算，不沿用帮助页的 X：
+-- 帮助页文案更长，直接沿用会让技能描述几乎不折行，仍超出槽位文本框。
+-- 用整个 Pool 而非本次随机到的 2 条，保证 X 稳定、不随每局随机结果跳变。
+local function slotDescText(lang, key)
+    local def = TetrisConfig.Skills and TetrisConfig.Skills[key]
+    local byLang = TetrisConfig.SkillSelectTexts and TetrisConfig.SkillSelectTexts[key]
+    return (byLang and byLang[lang]) or (def and def.selectDesc)
+end
+
+local function slotDescLimitFor(lang)
+    local wcfg = TetrisConfig.SkillSelectWrap
+    if not wcfg or not wcfg.Enabled then return nil end
+    local texts = {}
+    for _, key in ipairs(cfgOf().Pool or {}) do
+        local t = slotDescText(lang, key)
+        if t then texts[#texts + 1] = t end
+    end
+    return TextWrap.Limit(TextWrap.MaxChars(texts), lang, wcfg)
+end
+
+local function slotDescFontSizeFor(lang)
+    return TextWrap.FontSizeFor(lang, TetrisConfig.SkillSelectWrap or TetrisConfig.HelpWrap)
+end
+
 -- 把 2 个槽位的图标设为对应技能的 iconKey 图片，并把描述文本设为「该技能 + 当前语言」的短描述。
 -- 中文(zh) 回退 def.selectDesc；en/ar 取 TetrisConfig.SkillSelectTexts[key][lang]（doc/技能.xls）。
+-- 写入前按当前语言折行并设字号（顺序与帮助界面一致：先字号后文本）。
 function TetrisSkillSelect:ApplySlotContent(ps)
     if not ps or type(CustomUIAPI) ~= "table" then return end
     local cfg = cfgOf()
     if not cfg then return end
     local langUI = self.match and self.match.langUI
     local lang = (langUI and type(langUI.LangIndexOf) == "function" and langUI:LangIndexOf(ps)) or 2
+    local wcfg = TetrisConfig.SkillSelectWrap or TetrisConfig.HelpWrap
+    local limit = slotDescLimitFor(lang)
+    local fontSize = slotDescFontSizeFor(lang)
     local skills = self.slotSkills or {}
     for i = 1, 2 do
         local key = skills[i]
@@ -168,9 +199,19 @@ function TetrisSkillSelect:ApplySlotContent(ps)
                 pcall(function() CustomUIAPI.SetImageWidgetContent(ps, iconWid, imgID) end)
             end
             if descWid and def then
-                local byLang = TetrisConfig.SkillSelectTexts and TetrisConfig.SkillSelectTexts[key]
-                local txt = (byLang and byLang[lang]) or def.selectDesc
-                if txt then pcall(function() CustomUIAPI.SetTextContent(ps, descWid, txt) end) end
+                -- 先设字号再写文本：字号变化会影响 UMG 布局，顺序反了可能用旧字号排版
+                if fontSize then
+                    pcall(function() CustomUIAPI.SetTextWidgetFontSize(ps, descWid, fontSize) end)
+                end
+                local txt = slotDescText(lang, key)
+                if txt then
+                    local shown = TextWrap.WrapText(txt, limit, wcfg)
+                    pcall(function() CustomUIAPI.SetTextContent(ps, descWid, shown) end)
+                    if wcfg and wcfg.DebugWrap and shown ~= txt then
+                        print(string.format("[Tetris][Skill][Wrap][DBG] 槽=%d lang=%d X=%s\n  前=%s\n  后=%s",
+                            i, lang, tostring(limit or "关闭"), TextWrap.Visualize(txt), TextWrap.Visualize(shown)))
+                    end
+                end
             end
         end
     end
