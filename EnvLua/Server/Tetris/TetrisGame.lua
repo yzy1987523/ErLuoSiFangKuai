@@ -544,8 +544,13 @@ function TetrisGame:UpdateHUD()
 end
 
 -- 当前玩家语言索引：1=zh,2=en,3=ar（未设置时回退面板默认 en=2，与 TetrisLang 一致）
+-- 统一走 LangIndexOf：_lang 按 PlayerState 对象与 PlayerKey 双写，直接读 _lang[ps]
+-- 在 ps 引用不一致时会漏查，导致技能大图/垃圾提示等局内 UI 误回退英文。
 function TetrisGame:GetLangIndex(ps)
     local langUI = self.match and self.match.langUI
+    if langUI and type(langUI.LangIndexOf) == "function" then
+        return langUI:LangIndexOf(ps)
+    end
     local n = (langUI and langUI._lang and ps and langUI._lang[ps]) or 2
     return (n == 1 or n == 2 or n == 3) and n or 2
 end

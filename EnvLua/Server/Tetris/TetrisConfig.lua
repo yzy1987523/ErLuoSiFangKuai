@@ -910,7 +910,7 @@ TetrisConfig.Skills = {
 TetrisConfig.SkillBigTipImages = {
     SK01 = { [2] = "23_ImagePreset_181444105767028", [3] = "23_ImagePreset_181442632941610" },  -- 禁止转动
     SK02 = { [2] = "23_ImagePreset_181442677176419", [3] = "23_ImagePreset_181443930345123" },  -- 清除最下方两行
-    SK06 = { [2] = "23_ImagePreset_181444965585201", [3] = "23_ImagePreset_181444928691876" },  -- 攻势
+    SK06 = { [2] = "23_ImagePreset_181444965585201", [3] = "23_ImagePreset_181441694675053" },  -- 攻势
     SK07 = { [2] = "23_ImagePreset_181442246961813", [3] = "23_ImagePreset_181443992119071" },  -- 赠送技能
     SK08 = { [2] = "23_ImagePreset_181440920142887", [3] = "23_ImagePreset_181440939148006" },  -- 左右对调
 }
@@ -1086,8 +1086,9 @@ TetrisConfig.HelpWrap = {
     MinChars = 4,
     XByLang  = { [1] = 6 },   -- 中文固定每行 6 字；en/ar 仍按「最长减半」动态算
     FontSize        = 15,                      -- 未指定语言的兜底字号
-    FontSizeByLang  = { [1] = 15, [2] = 13, [3] = 15 },  -- 英文 13，中文/阿语 15
-    DebugWrap       = true,  -- true：日志打印折行前后的可见化文本（空格显示为 ·，换行显示为 ⏎），用于排查行首空格/对齐
+    FontSizeByLang  = { [1] = 15, [2] = 12, [3] = 15 },  -- 英文 13，中文/阿语 15
+    DebugWrap       = false,  -- true：日志打印折行前后的可见化文本（空格显示为 ·，换行显示为 ⏎），用于排查行首空格/对齐
+    PadToAlign      = true,   -- 多行时每行末尾补空格到最长行等长，抵消居中/右对齐造成的第二行缩进
 }
 
 -- ===================== 多语言界面（由开始界面的 OpenBtn 打开） =====================

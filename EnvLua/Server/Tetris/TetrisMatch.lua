@@ -404,6 +404,10 @@ function TetrisMatch:Start()
     self.langUI = TetrisLang:new(self.owner, self)
     self.langUI.players = self.assigned
     self.langUI:Register()
+    -- 默认语言 en=2 只被 LangIndexOf 当"取值默认"，不会触发 SwitchLang/OpenFor，
+    -- 静态组件(图片/按钮)会一直停留在编辑器预设。注册后按各自当前语言全量刷一次 Contents，
+    -- 保证菜单/技能选择阶段就与默认英文一致（TryStartGameplay 里那次是更晚的兜底）。
+    self.langUI:ApplyContentsForAll()
 
     -- 准备阶段空闲展示版：开局前置默认显示；玩家关闭后才显示「开始游戏」界面。
     self.help = TetrisHelp:new(self.owner, self)

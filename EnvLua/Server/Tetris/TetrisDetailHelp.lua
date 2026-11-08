@@ -88,15 +88,15 @@ local function fontSizeFor(lang)
     return (w.FontSizeByLang and w.FontSizeByLang[lang]) or w.FontSize
 end
 
--- 折行：文本字符数超过 limit 时按每行 ≤ limit 字符插入 \n。
+-- 折行核心：文本字符数超过 limit 时按每行 ≤ limit 字符插入 \n（不做尾部补齐）。
 -- 优先在行尾附近的空白/连字符处断开（不拆开英文、阿语单词）；无空白（中文）则按字符硬切。
-local function wrapText(s, limit)
+local function wrapLines(s, limit)
     if not limit or limit < 1 then return s end
     -- 已有换行先分段，各段独立折行（避免把 \n 当普通字符计入行宽）
     if s:find("\n", 1, true) then
         local parts, out = {}, {}
         for seg in (s .. "\n"):gmatch("([^\n]*)\n") do parts[#parts + 1] = seg end
-        for _, seg in ipairs(parts) do out[#out + 1] = wrapText(seg, limit) end
+        for _, seg in ipairs(parts) do out[#out + 1] = wrapLines(seg, limit) end
         return table.concat(out, "\n")
     end
     local cs = utf8Chars(s)
@@ -129,6 +129,28 @@ local function wrapText(s, limit)
         if s2 ~= "" then cleaned[#cleaned + 1] = s2 end
     end
     return table.concat(cleaned, "\n")
+end
+
+-- 折行 + 尾部补齐：多行时，把较短的行在末尾用空格补到「最长行」等长。
+-- 目的：文本控件为居中/右对齐时，等长的各行左边界才一致，消除第二行看起来"前面一堆空格"的缩进感。
+-- 引擎没有文本对齐接口（CustomUIAPI 无 Justification/Alignment），只能用等长行做视觉补偿。
+-- 必须在最外层统一补齐：分段递归里各段长度不同，逐段补会导致段与段之间仍不对齐。
+local function wrapText(s, limit)
+    local wrapped = wrapLines(s, limit)
+    local w = TetrisConfig.HelpWrap
+    if not (w and w.PadToAlign) then return wrapped end
+    if not wrapped:find("\n", 1, true) then return wrapped end   -- 单行无需补齐
+    local rows, maxLen = {}, 0
+    for row in (wrapped .. "\n"):gmatch("([^\n]*)\n") do
+        rows[#rows + 1] = row
+        local c = #utf8Chars(row)
+        if c > maxLen then maxLen = c end
+    end
+    for i, row in ipairs(rows) do
+        local pad = maxLen - #utf8Chars(row)
+        if pad > 0 then rows[i] = row .. string.rep(" ", pad) end
+    end
+    return table.concat(rows, "\n")
 end
 
 -- 阶段是否启用：Enabled + Panel + BtnClose（页面按钮/组件可逐个占位，nil 时自动跳过）

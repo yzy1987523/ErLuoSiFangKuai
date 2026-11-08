@@ -29,8 +29,15 @@ TetrisLang.Texts = {
 
 -- 取玩家当前语言索引：1=zh,2=en,3=ar（未设置/越界回退面板默认 en=2）。
 -- 供其它模块（技能选择界面、帮助界面）按语言取动态文案。
+-- _lang 同时按 PlayerState 对象与 PlayerKey 双写（见 SwitchLang）：点击事件回调里的 ps
+-- 与 self.players(= assigned) 里的 ps 可能不是同一对象引用，故按对象查不到时再按 PlayerKey 兜底查一次。
 function TetrisLang:LangIndexOf(ps)
-    local n = (ps and self._lang and self._lang[ps]) or 2
+    if not ps or not self._lang then return 2 end
+    local n = self._lang[ps]
+    if not n then
+        local k = keyOf(ps)
+        if k ~= ps then n = self._lang[k] end
+    end
     return (n == 1 or n == 2 or n == 3) and n or 2
 end
 
@@ -85,7 +92,7 @@ function TetrisLang:OpenFor(ps)
     self:ShowFor(ps, cfg.Panel, true)
     self:ShowFor(ps, cfg.BtnClose, true)
     for _, b in ipairs(cfg.BtnLang or {}) do self:ShowFor(ps, b, true) end
-    local n = self._lang[ps] or 2   -- 默认英文（LangKeys={zh,en,ar} → 2=en）
+    local n = self:LangIndexOf(ps)   -- 默认英文（LangKeys={zh,en,ar} → 2=en）
     self:ApplyLang(ps, n)
     print(string.format("[Tetris][Lang] 玩家 %s 打开多语言界面", tostring(keyOf(ps))))
 end
@@ -129,6 +136,10 @@ end
 function TetrisLang:SwitchLang(ps, n)
     if not ps or not n then return end
     self._lang[ps] = n
+    -- 同时按 PlayerKey 写一份：事件回调的 ps 与 assigned 里的 ps 可能不是同一对象引用，
+    -- 只写对象 key 会让 ApplyContentsForAll / 局内 GetLangIndex 查不到已选语言而回退英文。
+    local k = keyOf(ps)
+    if k ~= ps then self._lang[k] = n end
     self:ApplyLang(ps, n)
     self:RefreshDynamicTexts(ps)
     print(string.format("[Tetris][Lang] 玩家 %s 切换语言 -> %s", tostring(keyOf(ps)), tostring((cfgOf().LangKeys or {})[n])))
