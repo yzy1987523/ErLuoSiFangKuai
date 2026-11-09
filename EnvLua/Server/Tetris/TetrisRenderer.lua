@@ -931,12 +931,12 @@ function TetrisRenderer:BuildGhostActor()
     if ok and obj then
         self._ghostActor = obj
         pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(false) end end)
-        self._ghostImgWidget = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
+        self._ghostImgWidgets = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
         -- 生成即隐藏图片控件：控件尚未定位时 Actor 仍停在 ParkLocM，UMG 默认图不会被玩家看到
         self:SetGhostVisible(false)
-        if self._ghostImgWidget then
-            print(string.format("[Tetris][Ghost] 落点预览 Actor 已生成，图片控件定位成功 childNames=%s",
-                table.concat(cfg.ImageChildName or { "ghostImg" }, ",")))
+        if self._ghostImgWidgets then
+            print(string.format("[Tetris][Ghost] 落点预览 Actor 已生成，图片控件定位成功 实例数=%d",
+                #self._ghostImgWidgets))
         else
             print("[Tetris][Ghost][WARN] 落点预览 Actor 已生成，但图片控件未定位（检查 UMG 内控件名是否=ghostImg）")
         end
@@ -946,7 +946,12 @@ function TetrisRenderer:BuildGhostActor()
 end
 
 -- 从 Ghost Actor 的 WidgetComponent 找到图片控件对象（WoWCustomUIImage）。
--- 返回对象而非 UUID：世界空间 WidgetComponent 的图片子控件必须用对象方法 SetImageContent/SetVisible 操作。
+-- 【真人对战修复】GetUserWidgetObject(PlayerCharacter) 按玩家角色返回各自的 UMG 实例
+-- （见 LuaHint/WoWWidgetComponentBase.lua）。旧实现命中首个 pawn 就 break，只写了首个玩家那一份，
+-- 第 2 名玩家的 Ghost 一直是编辑器默认图。现遍历所有 pawn，返回 { {idx=<pawn索引>, widget=<控件对象>}, ... }；
+-- 一个都没解析到时返回 nil，由调用方下一帧重试（UMG 实例依赖 pawn，开局常延迟就绪）。
+-- 缓存按「控件名 + pawn 数量」分桶、以 pawn 索引为键：稳态不重复反射查找；人数变化自动重建。
+-- 不用 pawn 对象作键，避免引擎包装对象不稳定导致的缓存失效与无限增长。
 function TetrisRenderer:FindGhostImageChild(childNames)
     if type(childNames) == "string" then childNames = { childNames } end
     local actor = self._ghostActor
@@ -966,7 +971,10 @@ function TetrisRenderer:FindGhostImageChild(childNames)
         end)
     end
     if not wc then
-        print("[Tetris][Ghost][WARN] 找不到 WidgetComponent")
+        if not self._ghostNoCompLogged then
+            self._ghostNoCompLogged = true
+            print("[Tetris][Ghost][WARN] 找不到 WidgetComponent")
+        end
         return nil
     end
     local plist
@@ -979,41 +987,64 @@ function TetrisRenderer:FindGhostImageChild(childNames)
             print("[Tetris][Ghost][WARN] 暂无玩家 pawn，图片控件延迟定位") end
         return nil   -- 暂无玩家，下一帧重试
     end
-    local uw
-    for i = 0, plist:Num() - 1 do
-        local pawn = plist:Get(i)
-        if pawn then
-            pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
-            if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
-            if uw then break end
+    local n = plist:Num()
+    local cacheKey = table.concat(childNames, "|")
+    local cache = self._ghostChildCache
+    if not cache then cache = {}; self._ghostChildCache = cache end
+    local bucket = cache[cacheKey]
+    if not bucket or bucket.n ~= n then
+        bucket = { n = n }
+        cache[cacheKey] = bucket
+    end
+    local found = {}
+    for i = 0, n - 1 do
+        local tw = bucket[i]   -- 该 pawn 已解析成功：直接复用，稳态零反射开销
+        if tw == nil then      -- 未解析或 UMG 尚未就绪：本帧重试，成功后缓存
+            local pawn = plist:Get(i)
+            if pawn then
+                local uw
+                pcall(function() uw = wc:GetUserWidgetObject(pawn) end)
+                if not uw then pcall(function() uw = wc:GetWidget(pawn) end) end
+                if uw then
+                    for _, cn in ipairs(childNames) do
+                        local t
+                        pcall(function() t = uw:GetWidgetFromName(cn) end)
+                        if t then tw = t; break end
+                    end
+                end
+                if tw then bucket[i] = tw end
+            end
         end
+        if tw then found[#found + 1] = { idx = i, widget = tw } end
     end
-    if not uw then return nil end
-    local function tryFind(name)
-        local t; pcall(function() t = uw:GetWidgetFromName(name) end); return t
-    end
-    local tw
-    for _, cn in ipairs(childNames) do
-        local t = tryFind(cn)
-        if t then tw = t; break end
-    end
-    if not tw then
-        print(string.format("[Tetris][Ghost][WARN] GetWidgetFromName 未命中: %s", table.concat(childNames, ",")))
+    if #found == 0 then
+        if not bucket.warned then
+            bucket.warned = true
+            print(string.format("[Tetris][Ghost][WARN] 所有玩家均未定位到图片控件: %s（下一帧重试）", table.concat(childNames, ",")))
+        end
         return nil
     end
-    return tw
+    if not bucket.logged then
+        bucket.logged = true
+        print(string.format("[Tetris][Ghost] 图片控件定位成功 实例数=%d/%d", #found, n))
+    end
+    return found
 end
 
 function TetrisRenderer:SetGhostVisible(v)
     if not self._ghostActor then return end
-    pcall(function()
-        if self._ghostImgWidget then
-            self._ghostImgWidget:SetVisible(v)
-            if v and TetrisConfig.Render.Ghost.Opacity then
-                self._ghostImgWidget:SetImageOpacity(TetrisConfig.Render.Ghost.Opacity)
-            end
-        end
-    end)
+    -- 【真人对战修复】对所有玩家各自的 UMG 实例逐个显隐/设透明度，
+    -- 不能只写首个玩家那一份（否则第 2 名玩家一直看到编辑器默认图，且开局隐藏也不生效）。
+    local items = self._ghostImgWidgets
+    if not items then return end
+    local opacity = v and TetrisConfig.Render.Ghost and TetrisConfig.Render.Ghost.Opacity or nil
+    for _, it in ipairs(items) do
+        local w = it.widget
+        pcall(function()
+            w:SetVisible(v)
+            if opacity then w:SetImageOpacity(opacity) end
+        end)
+    end
 end
 
 -- 每帧驱动：无活动块/预览期/非运行态 → 隐藏；否则计算 hardDrop 落点，定位+旋转 Ghost Actor 并显示。
@@ -1030,20 +1061,18 @@ function TetrisRenderer:RenderGhost(board, running)
         return
     end
     -- 控件定位重试放在脏标记判断之前：UMG 实例依赖玩家 pawn，开局常延迟就绪。
-    -- 若控件刚就绪却恰好是非脏帧，旧实现会直接 return 导致首块 Ghost 迟迟不显示；
-    -- 这里就绪时强制置脏，保证当帧就走完整流程（设图 → 显示），且显示的是当前块图。
-    if not self._ghostImgWidget and self._ghostActor then
-        self._ghostWidgetRetryN = (self._ghostWidgetRetryN or 0) + 1
-        if self._ghostWidgetRetryN % 15 == 1 then
-            self._ghostImgWidget = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
-            if self._ghostImgWidget then
-                self._ghostDirty = true
-            end
-        end
+    -- 【真人对战修复】每帧重新收集所有玩家的 UMG 实例（FindGhostImageChild 内部按 pawn 索引缓存，
+    -- 稳态零反射开销），以便晚就绪/后加入玩家的实例也能补齐；实例数增加时强制置脏，
+    -- 保证当帧就走完整流程（设图 → 显示），且显示的是当前块图。
+    local prevN = self._ghostImgWidgets and #self._ghostImgWidgets or 0
+    local items = self:FindGhostImageChild(cfg.ImageChildName or { "ghostImg" })
+    if items then
+        self._ghostImgWidgets = items
+        if #items > prevN then self._ghostDirty = true end
     end
     -- 贴图异步加载竞态修复：方块类型切换后，无论本帧是否 dirty，都在固定窗口内（约 90 帧）持续重设贴图，
     -- 直到新贴图异步加载完成，避免“沿用上一个方块的图、尺寸对但图没换”（尺寸是同步设置，始终正确）。
-    if self._ghostImgWidget and self._ghostImgRetryN and self._ghostImgRetryN > 0 then
+    if self._ghostImgWidgets and self._ghostImgRetryN and self._ghostImgRetryN > 0 then
         self._ghostImgRetryN = self._ghostImgRetryN + 1
         if self._ghostImgRetryN > (self._ghostImgRetryMax or 90) then
             self._ghostImgRetryN = 0
@@ -1054,7 +1083,12 @@ function TetrisRenderer:RenderGhost(board, running)
                 local a2 = (type(AssetRef) == "table" and k2 and AssetRef[k2]) or nil
                 local c2 = (type(CreativeAsset) == "table" and k2 and CreativeAsset[k2]) or nil
                 local id2 = a2 or c2
-                if id2 then pcall(function() self._ghostImgWidget:SetImageContent(id2) end) end
+                if id2 then
+                    for _, it in ipairs(self._ghostImgWidgets) do
+                        local w = it.widget
+                        pcall(function() w:SetImageContent(id2) end)
+                    end
+                end
             end
         end
     end
@@ -1150,7 +1184,8 @@ function TetrisRenderer:RenderGhost(board, running)
         end)
     end
     -- 设图（方案A：下落开始设一次，类型变化时才重载贴图，避免每帧闪烁）
-    if self._ghostImgWidget then
+    -- 【真人对战修复】对所有玩家各自的 UMG 实例逐个写入贴图。
+    if self._ghostImgWidgets then
         local key = cfg.ImageKeys and cfg.ImageKeys[p.type]
         local aRef = (type(AssetRef) == "table" and key and AssetRef[key]) or nil
         local cRef = (type(CreativeAsset) == "table" and key and CreativeAsset[key]) or nil
@@ -1164,10 +1199,14 @@ function TetrisRenderer:RenderGhost(board, running)
             end
             if self._ghostImgRetryN < 20 then
                 self._ghostImgRetryN = self._ghostImgRetryN + 1
-                pcall(function() self._ghostImgWidget:SetImageContent(imgID) end)
+                for _, it in ipairs(self._ghostImgWidgets) do
+                    local w = it.widget
+                    pcall(function() w:SetImageContent(imgID) end)
+                end
                 if not self._ghostSetImgLogged then
                     self._ghostSetImgLogged = true
-                    print(string.format("[Tetris][Ghost] 设图成功 type=%s key=%s src=%s", tostring(p.type), tostring(key), aRef and "AssetRef" or "CreativeAsset"))
+                    print(string.format("[Tetris][Ghost] 设图成功 type=%s key=%s src=%s 实例数=%d",
+                        tostring(p.type), tostring(key), aRef and "AssetRef" or "CreativeAsset", #self._ghostImgWidgets))
                 end
             end
         elseif not self._ghostImgLogged then
@@ -1179,7 +1218,7 @@ function TetrisRenderer:RenderGhost(board, running)
     -- 显示：仅当【图片控件已就绪】且【不在新块待显示窗口(0.1s)内】时才 Teleport 到落点并显示。
     -- 控件未就绪时一律隐藏且不 Teleport（Actor 停在 ParkLocM），避免 UMG 默认图被拉到落点露出；
     -- 控件就绪的那一帧，上方设图块已先把当前块图写入，因此显示出来的直接就是正确的图。
-    if self._ghostShowPending or not self._ghostImgWidget then
+    if self._ghostShowPending or not self._ghostImgWidgets then
         self:SetGhostVisible(false)
     else
         pcall(function() self._ghostActor:K2_TeleportTo(cmVec(center), rot) end)
@@ -1190,7 +1229,8 @@ function TetrisRenderer:RenderGhost(board, running)
         self._ghostDbgN = (self._ghostDbgN or 0) + 1
         if self._ghostDbgN % 60 == 1 then
             print(string.format("[Tetris][Ghost][DBG] actor=%s imgW=%s type=%s landY=%d pos=(%.1f,%.1f,%.1f) rot=%d show=%s",
-                tostring(not not self._ghostActor), tostring(not not self._ghostImgWidget),
+                tostring(not not self._ghostActor),
+                tostring(self._ghostImgWidgets and #self._ghostImgWidgets or 0),
                 tostring(p.type), ly, center.X, center.Y, center.Z, p.rot, tostring(not self._ghostShowPending)))
         end
     end
