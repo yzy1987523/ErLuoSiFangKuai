@@ -295,8 +295,19 @@ function TetrisBoard:spawn(typeOverride)
 
     -- 生成即无法放置 => 顶到天，游戏结束
     if not self:canPlace(self.active, x, y, 1) then
+        -- [DIAG] 落石结束即 topout 验证：打印盘面顶部占用与来源，确认新块是否被落石石头顶在高位
+        local topRows = {}
+        for r = 1, math.min(4, self.rows) do
+            local cells = {}
+            for c = 1, self.cols do cells[c] = (self.grid[r][c] ~= nil) and 1 or 0 end
+            topRows[r] = table.concat(cells, "")
+        end
+        print(string.format("[DIAG][topout] fromRockfall=%s seq=%d type=%s pos=(x=%d,y=%d) top4rows=%s",
+            tostring(self._spawnFromRockfall == true), tostring(self.spawnSeq), tostring(t),
+            x, y, table.concat(topRows, "|")))
         self.isGameOver = true
     end
+    self._spawnFromRockfall = false   -- [DIAG] 清除标记，避免影响后续普通 spawn 的来源判断
     return not self.isGameOver
 end
 
@@ -995,6 +1006,7 @@ function TetrisBoard:onRockfallFallingDone()
     self.clearing = false
     self.stage = "fall"
     if self.game then pcall(function() self.game:OnRockfallEnd() end) end
+    self._spawnFromRockfall = true   -- [DIAG] 标记：此次 spawn 由落石结束触发，用于 topout 日志区分来源
     self:spawn()
 end
 
@@ -1009,6 +1021,7 @@ function TetrisBoard:afterRockfallClear()
     self.fallingStone = false
     self.stones = nil
     if self.game then pcall(function() self.game:OnRockfallEnd() end) end
+    self._spawnFromRockfall = true   -- [DIAG] 标记：此次 spawn 由落石结束触发，用于 topout 日志区分来源
     self:spawn()
 end
 
