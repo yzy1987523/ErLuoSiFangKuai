@@ -13,21 +13,23 @@ TetrisConfig.Board = {
 -- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
 -- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
 TetrisConfig.Clear = {
-    EffectDuration = 0.5,   -- 单位：秒。被消除格上播放的特效持续时间；也是「特效播完→方块下落」的延迟（见 ScheduleClearResume）。
-    ClearDelay = 0.9,    -- 单位：秒。消除→下落→出块 的总窗口；必须 ≥ EffectDuration，差值 = 下落后方块展示时间（让"落下"可见）。
-    LockFlashDelay = 0.35,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
-    EffectPresetKey = "13_EffectPreset_100032",  -- 消行特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
+    EffectDuration = 1,   -- 单位：秒。被消除格上播放的特效持续时间；也是「特效播完→方块下落」的延迟（见 ScheduleClearResume）。
+    ClearDelay = 1,    -- 单位：秒。消除→下落→出块 的总窗口；必须 ≥ EffectDuration，差值 = 下落后方块展示时间（让"落下"可见）。
+    LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
+    EffectPresetKey = "13_EffectPreset_3617487677",  -- 消行特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
     -- 特效尺寸（缩放倍数）。FVector，各分量默认 1.0 = 原始大小；
     -- 例 {X=2,Y=2,Z=2} 放大到 2 倍，{X=0.5,Y=0.5,Z=0.5} 缩小一半。
     -- 由 SceneEffectAPI.SetSceneEffectScale 在创建后应用（CreateSceneEffect 无缩放参数）。
     -- x：高度，y：长度
-    EffectScale = { X = 7.0, Y = 1.5, Z = 1.0 },
-    -- 特效播放位置的额外偏移（单位：米）。
-    -- 注意：水平（X/Y）已由 LeftOffsetM 接管（沿盘面本地左向，保证多盘一致）；
-    -- 此处仅保留竖直分量 Z 作上下微调（沿世界 -Z，与行方向一致），X/Y 不再参与水平定位。
-    EffectPositionOffset = { X = 0.0, Y = -5.25, Z = 0.0 },
+    EffectScale = { X = 7.2, Y =7.2, Z = 7.2 },
+    -- 消行特效的水平偏移（米）：沿盘面本地右向量 right，正 = 玩家右手侧，负 = 左手侧，0 = 盘面水平中心。
+    -- 标量直接乘 right，效果与盘面偏航无关；双盘各自沿自身 right 平移，保持一致。
+    EffectSideOffsetM = 1,
+    -- 特效播放位置的竖直微调（单位：米）：仅 Z 生效，正值沿世界 +Z 抬高、负值下移。
+    -- X/Y 已废弃（水平改用上面的 EffectSideOffsetM），保留字段只为兼容旧配置读取，填值不再生效。
+    EffectPositionOffset = { X = 0.0, Y = 0.0, Z = 0.0 },
     -- 爆破道具竖版消除特效：道具爆破改为一整列消除，在该列「最下方块」处由下往上播放竖版光束。
-    BlastEffectPresetKey = nil,  -- 竖版特效资源 Key；nil = 复用上面的 EffectPresetKey（若有专用竖向 VFX，填其 Key 并将 BlastEffectRot 设为 0）
+    BlastEffectPresetKey = "13_EffectPreset_100032",  -- 竖版特效资源 Key；nil = 复用上面的 EffectPresetKey（若有专用竖向 VFX，填其 Key 并将 BlastEffectRot 设为 0）
     BlastEffectScale = { X = 7, Y = 2.5, Z = 1.0 },  -- 竖版缩放（绝对倍数，1.0=原始大小）：X=水平宽度，Y=竖直长度，Z=深度厚度；按需微调，代码不限制尺寸。
     BlastEffectRot = { X = -90.0, Y = 0.0, Z = 0.0 },    -- 将横版特效立为竖版的额外旋转(Pitch=-90 朝上)；yaw 自动叠 boardYaw 正对玩家
     BlastEffectOffset = { X = 0.0, Y = 0.0, Z = 0.0 },    -- 位置微调（米）
@@ -56,6 +58,7 @@ TetrisConfig.InitialLayout = {
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
           --[20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
+        --    [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
     },
 }
 
@@ -519,6 +522,38 @@ TetrisConfig.BigFrame3D = {
     NextImageChildName = { "next", "Next", "NextImg", "NextImage", "Image_Next" },
     -- 攻势技能(SK06)高亮：ui 下与 front 同级的 backlight 图片，默认隐藏；点击攻势时显示、攻击结算(方块落地/消行)后隐藏
     BacklightChildName = { "backlight", "Backlight", "BackLight", "Glow" },
+}
+
+-- ===================== 消行提示框（3D Actor UI，双方共用 4 个对象池） =====================
+-- 消除时按「被消除的每一行」各显示一个刚好框住整行的长条图片（一次最多 4 行 = 俄罗斯方块消行上限）。
+-- 生成方式照 BigFrame3D：带 WidgetComponent 的 ActorPreset + AssetRef + CreativeGameAPI.CreateActor（Location 单位米）。
+-- 池放在 TetrisRenderer.lua 的模块级 local，require 单例 → 对战双方两个 renderer 共用同一份 PoolSize 个 Actor，
+-- 借出的 Actor 摆到哪一盘由借用方 renderer 的 origin/boardYaw 决定。
+-- 
+--        只需替换 PresetKey（在编辑器注册 + update preset 生成 AssetRef 键），其余逻辑无需改动。
+TetrisConfig.ClearRowWidget = {
+    Enabled = true,
+    PresetKey = "46_ActorPreset_2125630218",   
+    PoolSize = 4,                               -- 池容量 = 单次最多消行数；双方共用（不是每方 4 个）
+    -- 沿 +boardForward（朝玩家可见侧）的前置距离，避免被盘面方块挡住；看不见时调符号/大小
+    DistanceFrontM = -0.5,
+    SideOffsetM = 0,                            -- 沿盘面 right 的左右微调（米）
+    HeightOffsetM = 0,                          -- 沿世界 +Z 的上下微调（米）
+    -- 覆盖整行宽度：整盘黑底 Scale={X=11,Y=11,Z=23} 对应 10 列 × 20 行，
+    -- 故宽度沿用 X=11、Y=11，单行高度 Z = 23/20 ≈ 1.15。
+    Scale = { X = 1, Y = 1, Z = 1 },
+    RotationBiasByIndex = { [1] = 0, [2] = 0 },
+    -- 【消行表现时序】阶段：落地锁定 → 预检满行/爆破块 → 显示框 + 同时播普通消行特效
+    --   → 等 PreClearDelay(特效空白帧 0.25s) → 清除方块并播爆炸特效
+    --   → 特效播完(EffectDuration 收尾)后隐藏框 → 坍塌。
+    -- CreateActor 是异步的：补摆等待门只负责让框显示出来，**不阻塞清除**，
+    -- 这样「特效开始 → 0.25s → 清除」严格对齐特效爆点。
+    PreClearDelay = 0.25,  -- 普通消行特效的空白帧前摇（秒）：框+特效同时起手，延迟这么久后清除方块
+    ReadyFrames = 4,       -- 框至少成功补摆的次数（补摆门每 0.05s 主动补摆一次）
+    ReadyWarmup = 0.25,    -- 框最短预热/补摆持续秒数，覆盖 CreateActor 异步 spawn
+    ReadyTimeout = 1.0,    -- 补摆门最长持续秒数（超时只停补摆，不影响清除）
+    -- 此字段保留兼容、已不生效（显示时长由消除流程状态机决定）。
+    Duration = nil,
 }
 
 -- ===================== 盘面背面黑底背板（BoardBackdrop3D） =====================

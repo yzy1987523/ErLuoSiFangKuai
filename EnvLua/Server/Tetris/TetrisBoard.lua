@@ -560,6 +560,40 @@ function TetrisBoard:hasFullRows()
     return false
 end
 
+-- 返回当前所有满行的行号列表（纯查询，不修改网格）。
+-- 供渲染层在「落地停顿(lockPaused)、满行仍亮着、尚未执行 clearLines」时提前显示消行提示框。
+function TetrisBoard:getFullRows()
+    local rows = {}
+    for r = self.rows, 1, -1 do
+        local full = true
+        for c = 1, self.cols do
+            if self.grid[r][c] == nil then full = false break end
+        end
+        if full then rows[#rows + 1] = r end
+    end
+    return rows
+end
+
+-- 预检：给定满行里是否含爆破块，返回其列号列表（纯查询，不修改网格）。
+-- 供 Game 层在「落地锁定、尚未 clearLines」阶段判断本次是否要出爆炸表现。
+-- 注意：真正的爆破清列/特效标记仍由 clearLines() 在清除时置位，这里只做前置判断与日志。
+function TetrisBoard:getBlastColsInRows(rows)
+    local cols = {}
+    if type(rows) ~= "table" then return cols end
+    local PT = TetrisConfig.PieceType
+    local seen = {}
+    for _, r in ipairs(rows) do
+        for c = 1, self.cols do
+            local cell = self.grid[r] and self.grid[r][c]
+            if cell and cell.item == PT.ITEM_BLAST and not seen[c] then
+                seen[c] = true
+                cols[#cols + 1] = c
+            end
+        end
+    end
+    return cols
+end
+
 -- 落地停顿结束后由 Game 层调用：执行真正的消行 + 注入垃圾 + 决定是否出下一块。
 -- 必须在 lockPaused 期间调用；否则（无满行或非锁定态）直接忽略。
 function TetrisBoard:doClear()
@@ -662,6 +696,7 @@ function TetrisBoard:clearLines(countScore)
             end
         end
         if #blastFx > 0 then self.pendingBlastFx = blastFx end
+        self._lastBlastCols = blastFx   -- [DIAG] 供 applyClearCollapse 诊断打印使用（含本次爆破列号）
         -- 爆破能力释放音效（仅真实消行 countScore~=false 时触发，落石专用消行不会走到这里）
         if self.game then pcall(function() self.game:PlayItemSound(PT.ITEM_BLAST) end) end
     end
@@ -687,6 +722,15 @@ function TetrisBoard:clearLines(countScore)
     -- 实现「先播特效/回收整行(整列)/位移，播完特效后方块正常落下」的分阶段时序（对齐 Puyo BeginResolve）。
     -- 这里仅暂存被消除满行集合，供 applyClearCollapse 跳过这些行做压缩。
     self._clearFullRows = fullRows
+
+    -- [DIAG] 打印被消除的满行集合，以及被收集的爆破块坐标，用于核对"消除的是不是正确的行"
+    local fr = {}
+    for k in pairs(fullRows) do fr[#fr + 1] = k end
+    table.sort(fr)
+    local bl = {}
+    for _, b in ipairs(itemEffects.blast) do bl[#bl + 1] = string.format("(%d,%d)", b.r, b.c) end
+    print(string.format("[DIAG][clearLines] cleared=%d fullRows={%s} blast=%s",
+        cleared, table.concat(fr, ","), table.concat(bl, " ")))
 
     -- 道具爆破改动了非整体行移动的格子（爆破清列打洞），渲染层需走逐格全量重排（仅真实消行时）
     if countScore ~= false and #itemEffects.blast > 0 then
@@ -754,6 +798,15 @@ function TetrisBoard:applyClearCollapse()
         for c = 1, self.cols do self.grid[r][c] = nil end
     end
     self.stage = "settle"
+    -- [DIAG] 打印坍塌后各列占用（每列从盘底到盘顶），用于确认爆破场景其他列是否真的下落（X=有块 . =空）
+    local out = {}
+    for c = 1, self.cols do
+        local s = {}
+        for r = self.rows, 1, -1 do s[#s + 1] = (self.grid[r][c] ~= nil) and "X" or "." end
+        out[c] = table.concat(s, "")
+    end
+    print(string.format("[DIAG][collapse done] blast=%d cols=%s",
+        self._lastBlastCols and #self._lastBlastCols or 0, table.concat(out, " ")))
 end
 
 -- 位移道具：在「消除特效播放完、方块下落前」(Game 的 effectDur 定时器)执行真正的整行右移。
@@ -990,12 +1043,20 @@ end
 -- 落石状态中的消行：仅执行消行特效（不计分 / 不送垃圾 / 不触发道具能量），分阶段播放后由 Game 层收尾。
 function TetrisBoard:beginRockfallClear()
     if not self.fallingStone or self.clearing then return end
+    self.clearing = true
+    self.stage = "clearing"
+    -- 落石消行也纳入统一表现时序：先显示框 + 播普通消行特效，走完 0.25s 前摇再清除。
+    -- 真正的 clearLines(false) 与收尾调度延后到 Game 层的 onClear 回调里执行。
+    local rows = self:getFullRows()
+    if self.game and self.game.BeginRockfallClearSequence then
+        self.game:BeginRockfallClearSequence(rows)
+        return
+    end
+    -- 兜底：Game 层无统一序列时保持原同步清除流程
     local cleared = self:clearLines(false)
     if cleared > 0 and self.game then
         pcall(function() self.game:PlayLineClearSound(cleared) end)
     end
-    self.clearing = true
-    self.stage = "clearing"
     if self.game then pcall(function() self.game:ScheduleRockfallClearResume() end) end
 end
 

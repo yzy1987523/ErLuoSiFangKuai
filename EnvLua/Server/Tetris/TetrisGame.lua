@@ -58,6 +58,11 @@ end
 function TetrisGame:Start()
     if self.running then return end
     self.running = true
+    -- 重开时 renderer 可能被复用（不重新 Build），需在此强制收回上一局残留的消行提示框共享池条目
+    if self.renderer then self.renderer:ResetSharedClearRowFrames() end
+    -- 复位消行表现时序的防重入标志，避免上一局遗留的「已调度」状态阻止新局消行
+    self._lockFlashScheduled = false
+    self._rockfallSeqScheduled = false
     -- 原生 UI 已在 ServerGameMain:OnStart（玩家打开游戏）统一屏蔽，此处不再重复触发
     if not self.match then
         self:RegisterInput()  -- 对战模式下由 TetrisMatch 统一注册并按玩家路由
@@ -356,7 +361,7 @@ function TetrisGame:OnTick()
         return
     end
     board:tick()                    -- 数据层下落一格或锁定
-    self:maybeScheduleLockFlash()   -- 锁定后满行：先渲染展示 LockFlashDelay 秒，再消行
+    self:maybeScheduleLockFlash()   -- 锁定后满行：统一表现时序（框+特效起手 → 0.25s 前摇 → 清除）
     self:flushOutgoingGarbage()     -- 对战：把本步消除产生的垃圾行发给对手
     self.renderer:Update(board, self.running)     -- 渲染层只跟随数据
     self:maybeScheduleClearResume() -- 消行挂起则延时到动画结束再出块
@@ -370,17 +375,74 @@ function TetrisGame:OnTick()
     end
 end
 
--- 锁定后满行：在 LockFlashDelay 秒的"落地停顿"内渲染展示锁定态（满行亮起的一瞬），
--- 停顿结束后调用 board:doClear() 执行真正的消行，再走现有 ClearDelay 下落动画。
--- 用 _lockFlashScheduled 防重入：hardDrop 与重力 tick 都可能触发锁定，只调度一次。
+-- 统一的「消行表现时序」入口：主链路(落地满行) 与 落石消行旁路共用。
+--   ① 预检满行 / 爆破块 → ② 显示 3D 提示框 + 同时播普通消行特效
+--   → ③ 等 PreClearDelay(0.25s = 特效空白帧) → ④ onClear() 清除方块
+--     （其 renderer:Update 同帧播爆炸特效）
+--   → ⑤ 特效播完(EffectDuration 收尾)：先隐藏框，再坍塌；出块由 ClearDelay 负责。
+--   坍塌 / 出块的定时器起点不变，仍由各自原有的 ScheduleClearResume / ScheduleRockfallClearResume 负责。
+-- CreateActor 异步 spawn：补摆门只负责让框显示出来，**不阻塞清除**，
+-- 这样「特效开始 → 0.25s → 清除」严格对齐特效爆点。
+function TetrisGame:BeginClearSequence(rows, onClear)
+    local cfg = TetrisConfig.ClearRowWidget or {}
+    local lead = (type(cfg.PreClearDelay) == "number") and cfg.PreClearDelay or 0.25
+    local timeout = (type(cfg.ReadyTimeout) == "number") and cfg.ReadyTimeout or 1.0
+    local warmup = (type(cfg.ReadyWarmup) == "number") and cfg.ReadyWarmup or 0.25
+    local step = 0.05
+    rows = (type(rows) == "table") and rows or {}
+
+    -- ① 预检：本次满行里是否有爆破块（只读，不改网格）
+    local blastCols = {}
+    if self.board and type(self.board.getBlastColsInRows) == "function" then
+        blastCols = self.board:getBlastColsInRows(rows) or {}
+    end
+    print(string.format("[Tetris][ClearSeq] 起手 rows=%d blastCols=%d lead=%.2f",
+        #rows, #blastCols, lead))
+
+    -- ② 框 + 普通消行特效同时起手（爆炸特效留到清除同帧由 Update 播）
+    if self.renderer and #rows > 0 then
+        self.renderer:ShowClearRowFrames(rows)
+        self.renderer:PrePlayClearEffects(rows)
+    end
+
+    -- 补摆门：CreateActor 异步，每 0.05s 主动补摆框的位置/显隐；只保障显示，不阻塞清除。
+    local waited = 0
+    local function keepFrameAlive()
+        if not self.running or not self.board then return end
+        if self.renderer and self.renderer.TickClearRowFrames then
+            self.renderer:TickClearRowFrames()
+        end
+        waited = waited + step
+        local ready = self.renderer
+            and type(self.renderer.AreClearRowFramesReady) == "function"
+            and self.renderer:AreClearRowFramesReady()
+        if (ready and waited >= warmup) or waited >= timeout then return end
+        self.owner:AddTimerOnce(step, keepFrameAlive)
+    end
+    if self.renderer and #rows > 0 then keepFrameAlive() end
+
+    -- ③ → ④：固定 0.25s 后清除。框此时【不隐藏】，留到特效播完由
+    -- ScheduleClearResume / ScheduleRockfallClearResume 的 EffectDuration 回调隐藏后再坍塌。
+    -- onClear 自身负责复位各自的防重入标志并检查 running。
+    self.owner:AddTimerOnce(lead, function()
+        onClear()
+    end)
+end
+
+-- 锁定后满行：走统一表现时序；用 _lockFlashScheduled 防重入（hardDrop 与重力 tick 都可能触发锁定）。
 function TetrisGame:maybeScheduleLockFlash()
     if not self.board or not self.board.lockPaused then return end
     if self._lockFlashScheduled then return end
     self._lockFlashScheduled = true
-    local fd = (TetrisConfig.Clear and TetrisConfig.Clear.LockFlashDelay) or 0.35
-    self.owner:AddTimerOnce(fd, function()
+
+    -- 此刻 lockPaused 刚置位：满行仍亮在盘面上、尚未执行 clearLines
+    local rows = (type(self.board.getFullRows) == "function") and self.board:getFullRows() or {}
+
+    -- ④ 清除与结算：原落地停顿回调里的全部逻辑，保持原样（隐藏框由统一入口负责）
+    local function runClear()
         self._lockFlashScheduled = false
         if not self.running or not self.board then return end
+        print("[Tetris][ClearSeq] 执行 doClear（特效空白帧 0.25s 已走完）")
         local cleared = self.board:doClear()
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:ConsumeItemCharge()        -- 道具-充能块：仅真实消行(含充能块)时取走 power 并弹提示图
@@ -393,6 +455,22 @@ function TetrisGame:maybeScheduleLockFlash()
         self:UpdateHUD()
         self:CheckPieceSpawned()
         if self.board:isOver() then self:OnGameOver() end
+    end
+
+    self:BeginClearSequence(rows, runClear)
+end
+
+-- 落石消行旁路：与主链路共用统一表现时序；清除用 clearLines(false)（不计分 / 不触发道具）。
+function TetrisGame:BeginRockfallClearSequence(rows)
+    if self._rockfallSeqScheduled then return end
+    self._rockfallSeqScheduled = true
+    self:BeginClearSequence(rows, function()
+        self._rockfallSeqScheduled = false
+        if not self.running or not self.board then return end
+        local cleared = self.board:clearLines(false)
+        if cleared > 0 then pcall(function() self:PlayLineClearSound(cleared) end) end
+        if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
+        self:ScheduleRockfallClearResume()
     end)
 end
 
@@ -406,9 +484,12 @@ function TetrisGame:ScheduleClearResume()
     local cfg = TetrisConfig.Clear or {}
     local effectDur = cfg.EffectDuration or 0.5
     local clearDelay = cfg.ClearDelay or 0.65
-    -- 特效播完后：坍塌（下落）→ 升起垃圾（行号依赖坍塌结果，必须在后）
+    -- 特效播完后：隐藏提示框 → 坍塌（下落）→ 升起垃圾（行号依赖坍塌结果，必须在后）
     self.owner:AddTimerOnce(effectDur, function()
         if not self.running or not self.board then return end
+        -- 普通消行特效 / 爆破竖版特效均已播完：先隐藏框，再让方块下落
+        if self.renderer then self.renderer:HideClearRowFrames() end
+        print("[DIAG][effectDur fired] -> applyClearCollapse + applyGarbage")
         self.board:executePendingShift()   -- 位移道具：消除特效播完后、方块下落前执行整行右移（提示图已在 doClear 与 Combo 同时显示）
         self.board:applyClearCollapse()      -- 方块下落（坍塌）
         self.board:applyGarbage()
@@ -420,6 +501,8 @@ function TetrisGame:ScheduleClearResume()
         self._clearResumeScheduled = false
         if not self.running or not self.board then return end
         self.board:finishClear()
+        -- 兜底：正常已在 effectDur 回调（特效播完、坍塌之前）隐藏；此处仅覆盖异常路径的残留
+        if self.renderer then self.renderer:HideClearRowFrames() end
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         self:CheckPieceSpawned()
         if self.board:isOver() then self:OnGameOver() end
@@ -461,6 +544,8 @@ function TetrisGame:ScheduleRockfallClearResume()
     local clearDelay = cfg.ClearDelay or 0.65
     self.owner:AddTimerOnce(effectDur, function()
         if not self.running or not self.board then return end
+        -- 与主链路一致：特效播完先隐藏框，再坍塌
+        if self.renderer then self.renderer:HideClearRowFrames() end
         self.board:applyClearCollapse()      -- 仅坍塌（落石消行不做位移 / 不升普通垃圾）
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         if self.board:isOver() then self:OnGameOver() end
@@ -469,6 +554,8 @@ function TetrisGame:ScheduleRockfallClearResume()
         self._rockfallClearScheduled = false
         if not self.running or not self.board then return end
         self.board:afterRockfallClear()
+        -- 落石消行收尾时一并清掉可能残留的提示框（正常已在 effectDur 回调里隐藏）
+        if self.renderer then self.renderer:HideClearRowFrames() end
         if self.renderer and self.board then self.renderer:Update(self.board, self.running) end
         self:CheckPieceSpawned()
         if self.board:isOver() then self:OnGameOver() end
@@ -476,6 +563,10 @@ function TetrisGame:ScheduleRockfallClearResume()
 end
 
 function TetrisGame:maybeScheduleClearResume()
+    print(string.format("[DIAG][maybeResume] fallingStone=%s clearing=%s sched=%s",
+        tostring(self.board and self.board.fallingStone),
+        tostring(self.board and self.board.clearing),
+        tostring(self._clearResumeScheduled)))
     if self.board and self.board.fallingStone then return end  -- 落石状态：不触发常规消行收尾（由落石专用流程接管）
     if self.board and self.board.clearing then
         self:ScheduleClearResume()

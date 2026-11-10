@@ -65,6 +65,19 @@ end
 local TetrisRenderer = {}
 TetrisRenderer.__index = TetrisRenderer
 
+-- 消行提示框共享对象池（模块级 local）：
+-- require 会缓存同一模块表，故本表在【对战双方的两个 TetrisRenderer 实例间唯一共享】，
+-- 实现「4 个 Actor 双方公用」而不是每方各 4 个。Actor 摆到哪一盘由借用方 renderer 的基底决定。
+-- 条目 e = { actor = <Actor>, token = <借用代际> }；token 用于防止旧定时器误归还已复用的条目。
+local sharedClearRowPool = {
+    free = {},       -- 空闲条目（Actor 已隐藏）
+    busy = {},       -- 借出中的条目（重开时强制收回，避免新局借不到）
+    built = 0,       -- 已创建的 Actor 总数，上限 = ClearRowWidget.PoolSize
+    serial = 0,      -- 借用代际序号
+    refWarned = false,
+    fullWarned = false,
+}
+
 function TetrisRenderer:new(owner, index)
     local o = setmetatable({}, TetrisRenderer)
     o.owner = owner  -- WoWObject（GameMain 子类），用于 AddTimerOnce 调度消行延迟下落
@@ -1740,12 +1753,16 @@ function TetrisRenderer:PlayClearEffectAt(row)
     end
     -- 竖直按行（与世界 -Z 同向，与 cellLocation 完全一致）；水平直接取盘面中心，不乘列。
     local loc = { X = center.X, Y = center.Y, Z = o.Z - (row - 1) * step }
-    -- 水平偏移：沿盘面本地左侧（-right）。LeftOffsetM>0 即向左，两块盘朝向不同也各自向左、保持一致。
-    local off = (TetrisConfig.Clear and TetrisConfig.Clear.EffectPositionOffset) or { X = 0.0, Y = 0.0, Z = 0.0 }
-    
-    local along = (off.X or 0) * right.X + (off.Y or 0) * right.Y
-    -- 竖直仅用 off.Z 作上下微调（沿世界 -Z，与行方向一致），X/Y 不再参与水平。
-    local pos = { X = loc.X + right.X * along, Y = loc.Y + right.Y * along, Z = loc.Z + (off.Z or 0) }
+    -- 水平：以盘面中心为基准，沿盘面本地 right 平移 EffectSideOffsetM 米（标量与盘面偏航无关）。
+    -- 竖直：仅用 EffectPositionOffset.Z 作上下微调（正值沿世界 +Z）；X/Y 已废弃不再读取。
+    local clearCfg = TetrisConfig.Clear or {}
+    local side = (type(clearCfg.EffectSideOffsetM) == "number") and clearCfg.EffectSideOffsetM or 0
+    local off = clearCfg.EffectPositionOffset or {}
+    local pos = {
+        X = loc.X + right.X * side,
+        Y = loc.Y + right.Y * side,
+        Z = loc.Z + (off.Z or 0),
+    }
     local dur = (TetrisConfig.Clear and TetrisConfig.Clear.EffectDuration) or 1.0
     local ok, id = pcall(function()
         return SceneEffectAPI.CreateSceneEffect(
@@ -1770,6 +1787,219 @@ function TetrisRenderer:PlayClearEffectAt(row)
         print(string.format("[Tetris][Clear] 特效 row=%d id=%s scale=(%.2f,%.2f,%.2f)",
             row, tostring(id), scale.X, scale.Y, scale.Z))
     end
+end
+
+-- ---------------- 消行提示框（3D Actor UI，双方共用对象池） ----------------
+-- 与 BigFrame3D 同构：ActorPreset(AssetRef) + CreativeGameAPI.CreateActor（Location 单位米）。
+-- 借用时才创建，最多 PoolSize 个；K2_TeleportTo 用厘米（cmVec），旋转基于 self.boardYaw 而非 self.rot。
+function TetrisRenderer:ClearRowFrameRot()
+    local cfg = TetrisConfig.ClearRowWidget
+    local bias = 0
+    if cfg and type(cfg.RotationBiasByIndex) == "table" then
+        bias = cfg.RotationBiasByIndex[self.boardIndex] or 0
+    end
+    local yaw = (self.boardYaw or 0) + bias
+    if type(FRotator) == "table" and FRotator.MakeFromEuler then
+        return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = yaw }))
+    end
+    return self.rot
+end
+
+-- 第 row 行整行的中心点（米）：水平取盘心，竖直按行递减，与 cellLocation / PlayClearEffectAt 一致。
+function TetrisRenderer:ClearRowFrameLoc(row)
+    local cfg = TetrisConfig.ClearRowWidget
+    local r = TetrisConfig.Render
+    local step = r.CellSize + r.CellGap
+    local o = self.origin or r.BoardOrigin
+    local fwd = self.boardForward or { X = 0, Y = 1, Z = 0 }
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local center = self.boardCenter
+    if not center then
+        local w = (TetrisConfig.Board.Cols - 1) * step
+        center = { X = o.X + right.X * (w / 2), Y = o.Y + right.Y * (w / 2), Z = o.Z }
+    end
+    local D = (cfg and type(cfg.DistanceFrontM) == "number") and cfg.DistanceFrontM or 0.55
+    local side = (cfg and type(cfg.SideOffsetM) == "number") and cfg.SideOffsetM or 0
+    local hgt = (cfg and type(cfg.HeightOffsetM) == "number") and cfg.HeightOffsetM or 0
+    return {
+        X = center.X + fwd.X * D + right.X * side,
+        Y = center.Y + fwd.Y * D + right.Y * side,
+        Z = o.Z - (row - 1) * step + hgt,
+    }
+end
+
+-- 借一个池条目：优先复用空闲 Actor，池未满且无空闲时才新建。
+-- 新建直接把 loc（米）交给 CreateActor，避免异步 spawn 后的首次 Teleport 被丢弃。
+function TetrisRenderer:AcquireClearRowFrame(loc, rot)
+    local cfg = TetrisConfig.ClearRowWidget
+    local e = table.remove(sharedClearRowPool.free)
+    if not e then
+        local limit = (cfg and type(cfg.PoolSize) == "number") and cfg.PoolSize or 4
+        if sharedClearRowPool.built >= limit then
+            if not sharedClearRowPool.fullWarned then
+                sharedClearRowPool.fullWarned = true
+                print("[Tetris][ClearRow][WARN] 共享池已满(双方合计 " .. tostring(limit) .. " 个)，本次提示框跳过")
+            end
+            return nil
+        end
+        local ref = (type(AssetRef) == "table" and cfg and AssetRef[cfg.PresetKey])
+                 or (type(CreativeAsset) == "table" and cfg and CreativeAsset[cfg.PresetKey])
+        if not ref then
+            if not sharedClearRowPool.refWarned then
+                sharedClearRowPool.refWarned = true
+                print("[Tetris][ClearRow][WARN] 资源键无引用(首次): " .. tostring(cfg and cfg.PresetKey))
+            end
+            return nil
+        end
+        local sc = (cfg and cfg.Scale) or { X = 11, Y = 11, Z = 1.15 }
+        local scaleVec = Game:ConstructFVectorByLuaTable({ X = sc.X or 1, Y = sc.Y or 1, Z = sc.Z or 1 })
+        local ok, obj = pcall(function()
+            if type(CreativeGameAPI) == "table" and CreativeGameAPI.CreateActor then
+                return CreativeGameAPI.CreateActor(ref, Game:ConstructFVectorByLuaTable(loc), rot, scaleVec, nil)
+            end
+            return self:CreateOne(Game:ConstructFVectorByLuaTable(loc), scaleVec, ref, rot)
+        end)
+        if not ok or not obj then
+            print("[Tetris][ClearRow][WARN] 创建失败: " .. tostring(obj))
+            return nil
+        end
+        sharedClearRowPool.built = sharedClearRowPool.built + 1
+        e = { actor = obj }
+        print(string.format("[Tetris][ClearRow] 共享池新建 Actor (%d/%d)", sharedClearRowPool.built, limit))
+    else
+        pcall(function() e.actor:K2_TeleportTo(cmVec(loc), rot) end)
+    end
+    pcall(function() if e.actor.SetActorHiddenInGame then e.actor:SetActorHiddenInGame(false) end end)
+    sharedClearRowPool.serial = sharedClearRowPool.serial + 1
+    e.token = sharedClearRowPool.serial
+    sharedClearRowPool.busy[#sharedClearRowPool.busy + 1] = e
+    return e
+end
+
+-- 归还：隐藏 Actor、清 token、从 busy 移回 free。
+function TetrisRenderer:ReleaseClearRowFrame(e)
+    if not e or not e.actor then return end
+    e.token = nil
+    for i = #sharedClearRowPool.busy, 1, -1 do
+        if sharedClearRowPool.busy[i] == e then table.remove(sharedClearRowPool.busy, i) end
+    end
+    pcall(function() if e.actor.SetActorHiddenInGame then e.actor:SetActorHiddenInGame(true) end end)
+    sharedClearRowPool.free[#sharedClearRowPool.free + 1] = e
+end
+
+-- 重开/重建 renderer 时强制收回所有借出条目：模块级池跨局存活，
+-- 而 owner 的定时器可能被 Release 清掉，不回收会导致新局永远借不到 Actor。
+function TetrisRenderer:ResetSharedClearRowFrames()
+    for i = #sharedClearRowPool.busy, 1, -1 do
+        local e = table.remove(sharedClearRowPool.busy, i)
+        if e then
+            e.token = nil
+            pcall(function() if e.actor.SetActorHiddenInGame then e.actor:SetActorHiddenInGame(true) end end)
+            sharedClearRowPool.free[#sharedClearRowPool.free + 1] = e
+        end
+    end
+    self._activeClearRowFrames = {}
+    self._clearRowFramesShown = false
+    self._clearRowFrameGen = (self._clearRowFrameGen or 0) + 1
+    self._clearRowReadyFrames = 0
+    self._clearEffectPrePlayed = false
+    sharedClearRowPool.refWarned = false
+    sharedClearRowPool.fullWarned = false
+end
+
+-- 消行提示框显示：rows = 满行行号列表，每行借一个框。
+-- 【时序】由 TetrisGame 在「落地停顿(lockPaused，满行仍亮着、尚未 clearLines)」时调用，
+--         框一直保留到特效播完：由 EffectDuration 收尾回调（坍塌之前）调 HideClearRowFrames() 隐藏。
+--         下方的 AddTimerOnce 只是异常兜底（流程未走到 effectDur 回调时防止框永久残留），不是正常显示时长。
+function TetrisRenderer:ShowClearRowFrames(rows)
+    local cfg = TetrisConfig.ClearRowWidget
+    if not (cfg and cfg.Enabled) then return end
+    if type(rows) ~= "table" or #rows == 0 then return end
+    if not self.origin or not self.boardCenter then return end
+    if self._clearRowFramesShown then return false end   -- 同一次消行只显示一次
+    self._clearRowFramesShown = true
+    self._clearRowFrameGen = (self._clearRowFrameGen or 0) + 1
+    self._clearRowReadyFrames = 0
+    local gen = self._clearRowFrameGen
+
+    local list = self._activeClearRowFrames
+    if not list then list = {}; self._activeClearRowFrames = list end
+    for _, row in ipairs(rows) do
+        local loc = self:ClearRowFrameLoc(row)
+        local rot = self:ClearRowFrameRot()
+        local e = self:AcquireClearRowFrame(loc, rot)
+        if e then
+            list[#list + 1] = { e = e, loc = loc, rot = rot, token = e.token }
+        end
+    end
+    print(string.format("[Tetris][ClearRow] 消除前显示框 rows=%d ready=%d", #rows, #list))
+
+    -- 兜底超时：正常路径会提前 Hide（gen 变化让本定时器自动作废），不会误隐藏下一次消行的框
+    if self.owner and self.owner.AddTimerOnce then
+        -- 正常路径在 EffectDuration 收尾（特效播完）隐藏，兜底需覆盖「前摇 + 特效时长」再留余量
+        local cc = TetrisConfig.Clear or {}
+        local fallback = (cfg.PreClearDelay or 0.25) + (cc.EffectDuration or 1.0) + 0.6
+        local selfRef = self
+        self.owner:AddTimerOnce(fallback, function()
+            if selfRef._clearRowFrameGen == gen and selfRef._clearRowFramesShown then
+                selfRef:HideClearRowFrames()
+            end
+        end)
+    end
+    return #list > 0
+end
+
+-- 消除流程结束后隐藏并归还本盘借出的所有提示框（由 TetrisGame 在 finishClear() 之后调用）。
+function TetrisRenderer:HideClearRowFrames()
+    self._clearRowFramesShown = false
+    self._clearRowFrameGen = (self._clearRowFrameGen or 0) + 1
+    self._clearRowReadyFrames = 0
+    self._clearEffectPrePlayed = false   -- 兜底：即使 Update 未消费 pendingClearedRows，也不污染下一次消行
+    local list = self._activeClearRowFrames or {}
+    for i = #list, 1, -1 do
+        local rec = table.remove(list, i)
+        if rec and rec.e and rec.e.token == rec.token then
+            self:ReleaseClearRowFrame(rec.e)
+        end
+    end
+end
+
+-- 显示窗口内每帧补摆：CreateActor 是异步的，首次的位置/显隐可能被静默丢弃（项目既有坑），
+-- 每帧重摆保证框稳定贴在对应行上；同时累计「补摆成功帧数」供 Game 层判断框是否已真正就绪。
+function TetrisRenderer:TickClearRowFrames()
+    local list = self._activeClearRowFrames
+    if not list or #list == 0 then return end
+    local allOk = true
+    for _, rec in ipairs(list) do
+        if rec.e and rec.e.token == rec.token then
+            local ok = pcall(function()
+                rec.e.actor:K2_TeleportTo(cmVec(rec.loc), rec.rot)
+                rec.e.actor:SetActorHiddenInGame(false)
+            end)
+            if not ok then allOk = false end
+        end
+    end
+    if allOk then
+        self._clearRowReadyFrames = (self._clearRowReadyFrames or 0) + 1
+    end
+end
+
+-- 框是否已真正就绪（异步 spawn 完成、显隐与定位指令已成功下发若干帧）。
+-- Game 层据此决定何时开始计「消除前 0.5s」的延迟，避免消除指令跑在框前面。
+function TetrisRenderer:AreClearRowFramesReady()
+    local cfg = TetrisConfig.ClearRowWidget or {}
+    local need = (type(cfg.ReadyFrames) == "number") and cfg.ReadyFrames or 2
+    return (self._clearRowReadyFrames or 0) >= need
+end
+
+-- 阶段②：在【清除方块之前】，与提示框同时播放普通消行特效。
+-- 特效资源自带 ~0.25s 空白帧，提前起播才能让「爆点」正好落在方块消失的那一帧。
+-- 置 _clearEffectPrePlayed，避免 clearLines() 后 Update 消费 pendingClearedRows 时又播一次。
+-- 爆破竖版特效不在这里播：它由 clearLines() 置 pendingBlastFx、在清除同帧由 Update 播放。
+function TetrisRenderer:PrePlayClearEffects(rows)
+    if type(rows) ~= "table" or #rows == 0 then return end
+    self._clearEffectPrePlayed = true
+    for _, row in ipairs(rows) do self:PlayClearEffectAt(row) end
 end
 
 
@@ -2764,6 +2994,8 @@ end
 -- ---------------- 创建全部格子并隐藏 ----------------
 function TetrisRenderer:Build(spawnPointKey)
     if self.built then return true end
+    -- 重开时 renderer 会重建，但模块级共享池跨局存活：先强制收回遗留的借出条目
+    self:ResetSharedClearRowFrames()
 
     local cols = TetrisConfig.Board.Cols
     local rows = TetrisConfig.Board.Rows
@@ -3452,7 +3684,13 @@ function TetrisRenderer:Update(board, running)
         if sig ~= self.lastBoardSig then
             local cleared = board:consumeClearedRows()
             if cleared and #cleared > 0 then
-                for _, cr in ipairs(cleared) do self:PlayClearEffectAt(cr) end
+                if self._clearEffectPrePlayed then
+                    -- 普通消行特效已在清除前由 PrePlayClearEffects 提前播过，此处只消费标记、不重播
+                    self._clearEffectPrePlayed = false
+                else
+                    -- 未走统一表现时序的路径（如开局预消）：保持原来的清除后播放
+                    for _, cr in ipairs(cleared) do self:PlayClearEffectAt(cr) end
+                end
             end
             -- 爆破竖版特效：在该列最下方块处由下往上播放竖版光束
             local blastFx = board:consumeBlastFx()
@@ -3468,6 +3706,9 @@ function TetrisRenderer:Update(board, running)
             self.lastBoardSig = sig
         end
     end
+
+    -- 消行提示框显示窗口内每帧补摆（CreateActor 异步，防止首帧位置/显隐被丢弃）
+    self:TickClearRowFrames()
 
     -- 活动方块整体层（位移/旋转只传根）
     self:RenderActivePiece(board)
