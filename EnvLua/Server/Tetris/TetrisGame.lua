@@ -376,7 +376,7 @@ function TetrisGame:OnTick()
 end
 
 -- 统一的「消行表现时序」入口：主链路(落地满行) 与 落石消行旁路共用。
---   ① 预检满行 / 爆破块 → ② 显示 3D 提示框 + 同时播普通消行特效
+--   ① 预检满行 / 爆破块所在行 → ② 显示 3D 提示框 + 同时播横版消行特效（爆炸行/正常行分流）
 --   → ③ 等 PreClearDelay(0.25s = 特效空白帧) → ④ onClear() 清除方块
 --     （其 renderer:Update 同帧播爆炸特效）
 --   → ⑤ 特效播完(EffectDuration 收尾)：先隐藏框，再坍塌；出块由 ClearDelay 负责。
@@ -391,18 +391,25 @@ function TetrisGame:BeginClearSequence(rows, onClear)
     local step = 0.05
     rows = (type(rows) == "table") and rows or {}
 
-    -- ① 预检：本次满行里是否有爆破块（只读，不改网格）
-    local blastCols = {}
-    if self.board and type(self.board.getBlastColsInRows) == "function" then
-        blastCols = self.board:getBlastColsInRows(rows) or {}
+    -- ① 预检：本次满行里是否有爆破块、以及爆破块所在行（只读，不改网格）
+    local blastCols, blastRows = {}, {}
+    if self.board then
+        if type(self.board.getBlastColsInRows) == "function" then
+            blastCols = self.board:getBlastColsInRows(rows) or {}
+        end
+        if type(self.board.getBlastRows) == "function" then
+            blastRows = self.board:getBlastRows(rows) or {}
+        end
     end
-    print(string.format("[Tetris][ClearSeq] 起手 rows=%d blastCols=%d lead=%.2f",
-        #rows, #blastCols, lead))
+    print(string.format("[Tetris][ClearSeq] 起手 rows=%d blastRows=%d blastCols=%d lead=%.2f",
+        #rows, #blastRows, #blastCols, lead))
 
-    -- ② 框 + 普通消行特效同时起手（爆炸特效留到清除同帧由 Update 播）
+    -- ② 框 + 消行特效同时起手：爆炸行用旧特效 13_EffectPreset_100032（连同它原来的尺寸/位置），
+    --    其余行用 13_EffectPreset_3617487677（当前尺寸/位置）；两套参数互不影响。
+    --    竖版爆炸光束留到清除同帧由 Update 播放。
     if self.renderer and #rows > 0 then
         self.renderer:ShowClearRowFrames(rows)
-        self.renderer:PrePlayClearEffects(rows)
+        self.renderer:PrePlayClearEffects(rows, blastRows)
     end
 
     -- 补摆门：CreateActor 异步，每 0.05s 主动补摆框的位置/显隐；只保障显示，不阻塞清除。

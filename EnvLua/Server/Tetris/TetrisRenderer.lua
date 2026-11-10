@@ -1731,9 +1731,18 @@ function TetrisRenderer:PlayBlastEffectAt(col, bottomRow, topRow)
     end)
 end
 
-function TetrisRenderer:PlayClearEffectAt(row)
+-- keyOverride：爆炸消行行传入 BlastRowEffectPresetKey（旧特效），其余行传 nil 用 EffectPresetKey。
+-- isBlastRow：true = 该行走「爆炸消行」配置组（资源 + 尺寸 + 位置），nil/false 走「正常消行」组。
+-- 两组的尺寸 / 位置在 TetrisConfig.Clear 里分开配置，互不影响；时长 / 朝向 / 行中心仍共用。
+function TetrisRenderer:PlayClearEffectAt(row, keyOverride, isBlastRow)
     if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
-    local key = (TetrisConfig.Clear and TetrisConfig.Clear.EffectPresetKey) or "13_EffectPreset_100032"
+    local cl = TetrisConfig.Clear or {}
+    -- 兼容只传 keyOverride 的旧调用：有资源覆盖即视为爆炸行。
+    local isBlast = (isBlastRow == true) or (isBlastRow == nil and keyOverride ~= nil)
+    local key = keyOverride
+        or (isBlast and cl.BlastRowEffectPresetKey)
+        or cl.EffectPresetKey
+        or "13_EffectPreset_100032"
     local ref = AssetRef and AssetRef[key]
     if not ref then
         if TetrisConfig.Debug then
@@ -1753,17 +1762,25 @@ function TetrisRenderer:PlayClearEffectAt(row)
     end
     -- 竖直按行（与世界 -Z 同向，与 cellLocation 完全一致）；水平直接取盘面中心，不乘列。
     local loc = { X = center.X, Y = center.Y, Z = o.Z - (row - 1) * step }
-    -- 水平：以盘面中心为基准，沿盘面本地 right 平移 EffectSideOffsetM 米（标量与盘面偏航无关）。
-    -- 竖直：仅用 EffectPositionOffset.Z 作上下微调（正值沿世界 +Z）；X/Y 已废弃不再读取。
-    local clearCfg = TetrisConfig.Clear or {}
-    local side = (type(clearCfg.EffectSideOffsetM) == "number") and clearCfg.EffectSideOffsetM or 0
-    local off = clearCfg.EffectPositionOffset or {}
-    local pos = {
-        X = loc.X + right.X * side,
-        Y = loc.Y + right.Y * side,
-        Z = loc.Z + (off.Z or 0),
-    }
-    local dur = (TetrisConfig.Clear and TetrisConfig.Clear.EffectDuration) or 1.0
+    -- 位置参数组：爆炸行用旧配置（含旧投影算法），正常行用当前配置，二者互不影响。
+    -- 竖直均只取各自 Offset 的 Z 作上下微调（正值沿世界 +Z）。
+    local off = (isBlast and (cl.BlastRowEffectPositionOffset or cl.EffectPositionOffset))
+        or cl.EffectPositionOffset or {}
+    local side
+    if isBlast then
+        side = cl.BlastRowEffectSideOffsetM  -- nil = 走旧投影；填数字 = 与正常行同语义的标量定位
+    else
+        side = (type(cl.EffectSideOffsetM) == "number") and cl.EffectSideOffsetM or 0
+    end
+    local pos
+    if type(side) == "number" then
+        pos = { X = loc.X + right.X * side, Y = loc.Y + right.Y * side, Z = loc.Z + (off.Z or 0) }
+    else
+        -- 换特效前的旧算法：把 Offset 的 X/Y 投影到盘面 right，再沿 right 平移。
+        local along = (off.X or 0) * right.X + (off.Y or 0) * right.Y
+        pos = { X = loc.X + right.X * along, Y = loc.Y + right.Y * along, Z = loc.Z + (off.Z or 0) }
+    end
+    local dur = cl.EffectDuration or 1.0
     local ok, id = pcall(function()
         return SceneEffectAPI.CreateSceneEffect(
             ref,
@@ -1772,20 +1789,24 @@ function TetrisRenderer:PlayClearEffectAt(row)
     end)
     if not ok or not id or id == 0 then
         if TetrisConfig.Debug then
-            print(string.format("[Tetris][Clear][WARN] 特效创建失败 row=%d id=%s", row, tostring(id)))
+            print(string.format("[Tetris][Clear][WARN] 特效创建失败 row=%s id=%s", tostring(row), tostring(id)))
         end
         return
     end
     -- 创建后调整尺寸：CreateSceneEffect 无缩放参数，需用 SetSceneEffectScale。
-    -- 缩放为 FVector，各分量默认 1.0 = 原始大小。
-    local scale = (TetrisConfig.Clear and TetrisConfig.Clear.EffectScale) or { X = 1.0, Y = 1.0, Z = 1.0 }
+    -- 缩放为 FVector，各分量默认 1.0 = 原始大小；爆炸行取自己的 BlastRowEffectScale。
+    local scale = (isBlast and (cl.BlastRowEffectScale or cl.EffectScale))
+        or cl.EffectScale
+        or { X = 1.0, Y = 1.0, Z = 1.0 }
     pcall(function()
         SceneEffectAPI.SetSceneEffectScale(id,
-            Game:ConstructFVectorByLuaTable({ X = scale.X, Y = scale.Y, Z = scale.Z }))
+            Game:ConstructFVectorByLuaTable({ X = scale.X or 1.0, Y = scale.Y or 1.0, Z = scale.Z or 1.0 }))
     end)
     if TetrisConfig.Debug then
-        print(string.format("[Tetris][Clear] 特效 row=%d id=%s scale=(%.2f,%.2f,%.2f)",
-            row, tostring(id), scale.X, scale.Y, scale.Z))
+        print(string.format("[Tetris][Clear] 特效 row=%s key=%s blast=%s id=%s scale=(%.2f,%.2f,%.2f) pos=(%.2f,%.2f,%.2f)",
+            tostring(row), tostring(key), tostring(isBlast), tostring(id),
+            scale.X or 1.0, scale.Y or 1.0, scale.Z or 1.0,
+            pos.X, pos.Y, pos.Z))
     end
 end
 
@@ -1992,14 +2013,26 @@ function TetrisRenderer:AreClearRowFramesReady()
     return (self._clearRowReadyFrames or 0) >= need
 end
 
--- 阶段②：在【清除方块之前】，与提示框同时播放普通消行特效。
+-- 阶段②：在【清除方块之前】，与提示框同时播放横版消行特效（按行分流正常 / 爆炸两种资源）。
 -- 特效资源自带 ~0.25s 空白帧，提前起播才能让「爆点」正好落在方块消失的那一帧。
 -- 置 _clearEffectPrePlayed，避免 clearLines() 后 Update 消费 pendingClearedRows 时又播一次。
 -- 爆破竖版特效不在这里播：它由 clearLines() 置 pendingBlastFx、在清除同帧由 Update 播放。
-function TetrisRenderer:PrePlayClearEffects(rows)
+function TetrisRenderer:PrePlayClearEffects(rows, blastRows)
     if type(rows) ~= "table" or #rows == 0 then return end
     self._clearEffectPrePlayed = true
-    for _, row in ipairs(rows) do self:PlayClearEffectAt(row) end
+    -- 消行特效按行分流：爆炸块所在行用旧特效 BlastRowEffectPresetKey + 它原来的尺寸/位置，
+    -- 其余行用 EffectPresetKey + 当前尺寸/位置；两套参数在 TetrisConfig.Clear 里分开设置。
+    -- 竖版爆炸光束不走这里：仍由 clearLines() 置 pendingBlastFx、在清除同帧由 Update 播放。
+    local cl = TetrisConfig.Clear or {}
+    local blastKey = cl.BlastRowEffectPresetKey
+    local isBlast = {}
+    if type(blastRows) == "table" then
+        for _, r in ipairs(blastRows) do isBlast[r] = true end
+    end
+    for _, row in ipairs(rows) do
+        local blast = (isBlast[row] == true)
+        self:PlayClearEffectAt(row, blast and blastKey or nil, blast)
+    end
 end
 
 
@@ -3441,13 +3474,10 @@ end
 
 -- 取一个空闲的 UI 池条目（已 detach + 隐藏）；池空则新建一个（停停车场、隐藏）。
 -- 返回条目 {actor,imgComp,appliedFor,hidden,attachedTo} 或 nil（资源缺失）。
-function TetrisRenderer:EnsureFreeItemUI()
+-- 新建一个空闲 UI 池条目（隐藏、停停车场）。资源/接口未就绪返回 nil（调用方应下帧重试）。
+function TetrisRenderer:CreateNewItemWidget()
     local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
     if not (cfg and cfg.Enabled) then return nil end
-    local pool = self._itemWidgetPool or {}
-    self._itemWidgetPool = pool
-    local e = table.remove(pool)  -- 取一个空闲（已 detach + 隐藏）条目
-    if e and e.actor then return e end
     local ref = (type(CreativeAsset) == "table" and CreativeAsset[cfg.PresetKey])
              or (type(AssetRef) == "table" and AssetRef[cfg.PresetKey])
     if not ref then
@@ -3468,11 +3498,44 @@ function TetrisRenderer:EnsureFreeItemUI()
     end)
     if ok and obj then
         pcall(function() if obj.SetActorHiddenInGame then obj:SetActorHiddenInGame(true) end end)
-        e = { actor = obj, imgComp = nil, appliedFor = nil, hidden = true, attachedTo = nil }
+        return { actor = obj, imgComp = nil, appliedFor = nil, hidden = true, attachedTo = nil }
     else
         print("[Tetris][ItemWidget][WARN] 创建失败: " .. tostring(obj))
+        return nil
     end
-    return e
+end
+
+-- 取一个空闲的 UI 池条目（已 detach + 隐藏）；池空则新建一个（停停车场、隐藏）。
+-- 返回条目 {actor,imgComp,appliedFor,hidden,attachedTo} 或 nil（资源缺失）。
+function TetrisRenderer:EnsureFreeItemUI()
+    local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
+    if not (cfg and cfg.Enabled) then return nil end
+    local pool = self._itemWidgetPool or {}
+    self._itemWidgetPool = pool
+    local e = table.remove(pool)  -- 取一个空闲（已 detach + 隐藏）条目
+    if e and e.actor then return e end
+    return self:CreateNewItemWidget()  -- 池空则新建（异步，1~2 帧后真正生成）
+end
+
+-- 预创建 N 个 UI 池条目（异步生成），消除「首次出现道具时 CreateActor 的 1~2 帧空窗」：
+-- 使下落中的道具块能立即显示 3D 图，而不必等其落地后 widget 才就绪（表现为“下落中不显示、落地后显示”）。
+-- 资源未就绪时本帧不创建、下帧重试（Update 每帧调用，幂等：池满即停）。
+function TetrisRenderer:PrewarmItemWidgets(n)
+    local cfg = TetrisConfig.Item and TetrisConfig.Item.Widget3D
+    if not (cfg and cfg.Enabled) then return end
+    n = n or cfg.PrewarmCount or 2
+    local pool = self._itemWidgetPool or {}
+    self._itemWidgetPool = pool
+    local made = 0
+    while #pool < n do
+        local e = self:CreateNewItemWidget()
+        if not e then break end   -- 资源未就绪：停止，下帧重试
+        pool[#pool + 1] = e
+        made = made + 1
+    end
+    if made > 0 and TetrisConfig.Debug then
+        print(string.format("[Tetris][ItemWidget] 预创建 %d → 池=%d", made, #pool))
+    end
 end
 
 -- 把 3D UI 附加为「方块 block 的子级」（K2_AttachToActor），并每帧传送到方块正前方（朝玩家）。
@@ -3619,6 +3682,8 @@ function TetrisRenderer:Update(board, running)
     self:BuildBoardBackdropWidgetSmall()
     -- 兜底生成落点预览 Ghost Actor（方案A）：幂等，AssetRef 晚注册时在此重试。
     self:BuildGhostActor()
+    -- 道具 3D 图标池预创建：每帧幂等重试，消除首次道具出现时 CreateActor 的 1~2 帧异步空窗（使下落中道具块立即显示图标）。
+    self:PrewarmItemWidgets()
 
     -- 盘面前方 3D 大框 Hold/Next/backlight：每帧按 running 显隐（初始/暂停/结束隐藏，方块下落时显示）。
     -- 直接操作图片控件对象（SetImageContent/SetImageColor/SetVisible），与背后盘面一致；不依赖 ps，AI 盘也在此路径刷新。

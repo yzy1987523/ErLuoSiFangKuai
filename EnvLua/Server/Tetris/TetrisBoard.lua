@@ -594,6 +594,25 @@ function TetrisBoard:getBlastColsInRows(rows)
     return cols
 end
 
+-- 预检：给定满行里哪些行含爆破块，返回这些行号（纯查询，不修改网格）。
+-- 供消行特效按行分流：爆炸行用旧特效 BlastRowEffectPresetKey，其余行用 EffectPresetKey。
+-- rows 来自 getFullRows()（行号唯一、按 r 递减），故一行只记一次；同行多个爆破块仍算一个爆炸行。
+function TetrisBoard:getBlastRows(rows)
+    local br = {}
+    if type(rows) ~= "table" then return br end
+    local PT = TetrisConfig.PieceType
+    for _, r in ipairs(rows) do
+        for c = 1, self.cols do
+            local cell = self.grid[r] and self.grid[r][c]
+            if cell and cell.item == PT.ITEM_BLAST then
+                br[#br + 1] = r
+                break
+            end
+        end
+    end
+    return br
+end
+
 -- 落地停顿结束后由 Game 层调用：执行真正的消行 + 注入垃圾 + 决定是否出下一块。
 -- 必须在 lockPaused 期间调用；否则（无满行或非锁定态）直接忽略。
 function TetrisBoard:doClear()

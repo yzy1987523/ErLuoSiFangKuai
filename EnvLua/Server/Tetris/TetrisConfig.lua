@@ -16,18 +16,31 @@ TetrisConfig.Clear = {
     EffectDuration = 1,   -- 单位：秒。被消除格上播放的特效持续时间；也是「特效播完→方块下落」的延迟（见 ScheduleClearResume）。
     ClearDelay = 1,    -- 单位：秒。消除→下落→出块 的总窗口；必须 ≥ EffectDuration，差值 = 下落后方块展示时间（让"落下"可见）。
     LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
-    EffectPresetKey = "13_EffectPreset_3617487677",  -- 消行特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
+    -- 【正常消行】资源 + 尺寸 + 位置（与下方「爆炸消行」是两套独立配置，互不影响）。
+    EffectPresetKey = "13_EffectPreset_3617487677",  -- 正常消行（横版、按行）特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
     -- 特效尺寸（缩放倍数）。FVector，各分量默认 1.0 = 原始大小；
     -- 例 {X=2,Y=2,Z=2} 放大到 2 倍，{X=0.5,Y=0.5,Z=0.5} 缩小一半。
     -- 由 SceneEffectAPI.SetSceneEffectScale 在创建后应用（CreateSceneEffect 无缩放参数）。
     -- x：高度，y：长度
-    EffectScale = { X = 7.2, Y =7.2, Z = 7.2 },
-    -- 消行特效的水平偏移（米）：沿盘面本地右向量 right，正 = 玩家右手侧，负 = 左手侧，0 = 盘面水平中心。
+    EffectScale = { X = 7.2, Y = 7.2, Z = 7.2 },
+    -- 水平偏移（米）：沿盘面本地右向量 right，正 = 玩家右手侧，负 = 左手侧，0 = 盘面水平中心。
     -- 标量直接乘 right，效果与盘面偏航无关；双盘各自沿自身 right 平移，保持一致。
     EffectSideOffsetM = 1,
-    -- 特效播放位置的竖直微调（单位：米）：仅 Z 生效，正值沿世界 +Z 抬高、负值下移。
-    -- X/Y 已废弃（水平改用上面的 EffectSideOffsetM），保留字段只为兼容旧配置读取，填值不再生效。
+    -- 位置的竖直微调（单位：米）：仅 Z 生效，正值沿世界 +Z 抬高、负值下移；X/Y 已废弃不读取。
     EffectPositionOffset = { X = 0.0, Y = 0.0, Z = 0.0 },
+
+    -- 【爆炸消行】满行内含爆破块时，该行改用「原来的」横版特效，id / 尺寸 / 位置全部保持换特效前的原样。
+    -- 与上方正常消行分开设置：改这里的 Scale / Offset 不会影响 3617487677，反之亦然。
+    BlastRowEffectPresetKey = "13_EffectPreset_100032",
+    BlastRowEffectScale = { X = 7.0, Y = 1.5, Z = 1.0 },  -- 换特效前的 EffectScale 原值（8f72054 之前）
+    -- 换特效前的 EffectPositionOffset 原值 {X=0,Y=-5.25,Z=0}：代码按旧算法把 X/Y 投影到盘面 right 后平移，
+    -- 即旧特效原本的落点；Z 为竖直微调。语义与 EffectSideOffsetM 不同，不要互换。
+    BlastRowEffectPositionOffset = { X = 0.0, Y = -5.25, Z = 0.0 },
+    -- 可选覆盖：填数字则改用与正常行相同的「沿 right 平移 N 米」标量定位（双盘一致）；
+    -- 留 nil = 严格保持上面的旧投影行为，也就是之前看到的位置。
+    BlastRowEffectSideOffsetM = nil,
+    -- 两种横版特效共用 EffectDuration / 朝向 / 行中心；下方 BlastEffectPresetKey 的竖版光束
+    --（按列锚定盘底、带 -90° 旋转）是另一套表现，会与爆炸行横版特效同时播放。
     -- 爆破道具竖版消除特效：道具爆破改为一整列消除，在该列「最下方块」处由下往上播放竖版光束。
     BlastEffectPresetKey = "13_EffectPreset_100032",  -- 竖版特效资源 Key；nil = 复用上面的 EffectPresetKey（若有专用竖向 VFX，填其 Key 并将 BlastEffectRot 设为 0）
     BlastEffectScale = { X = 7, Y = 2.5, Z = 1.0 },  -- 竖版缩放（绝对倍数，1.0=原始大小）：X=水平宽度，Y=竖直长度，Z=深度厚度；按需微调，代码不限制尺寸。
@@ -58,7 +71,7 @@ TetrisConfig.InitialLayout = {
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
           --[20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
-        --    [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
+            -- [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
     },
 }
 
@@ -176,6 +189,7 @@ TetrisConfig.Item = {
         LiftM = 0.0,                             -- 垂直偏移（米，正=抬高 / 负=压低）；默认 0 = 与方块同高。想上下调位置就改这个
         FrontOffsetM = 0.51,                       -- 沿「盘面正前方（朝玩家）」的偏移距离（米）；= -boardForward * FrontOffsetM。想前后调位置就改这个
         PoolSize = 24,                           -- 3D 图标池上限（道具同存数量，正常对局难超；超限的道具格不显示图标）
+        PrewarmCount = 2,                        -- 开局预创建 N 个 UI 池条目（异步生成），消除首次出现道具时 1~2 帧空窗，使下落中道具块立即显示图标
     },
 }
 
