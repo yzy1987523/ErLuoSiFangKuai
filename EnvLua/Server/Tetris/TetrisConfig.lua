@@ -70,8 +70,8 @@ TetrisConfig.InitialLayout = {
         -- 例：第 19 行局部填充（开头 1、末尾两格）：
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
-          --[20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
-            -- [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
+        --   [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
+            --  [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
     },
 }
 
@@ -267,11 +267,32 @@ TetrisConfig.Timing = {
 
 -- ===================== 计分 =====================
 TetrisConfig.Score = {
+    -- 只有「消行」计分；锁定 / 软降 / 硬降不再加分（加分唯一入口见 TetrisBoard:clearLines）。
     LineClear = { 100, 300, 500, 800 },  -- 1/2/3/4 行基础分（乘以等级）
-    SoftDropPerCell = 1,
-    HardDropPerCell = 2,
-    LockPerPiece = 1,                     -- 方块正常锁定（落地）即计 1 分（与消行/软降/硬降加分叠加）
     ComboBonus = 50,                      -- 连续消除奖励（乘以 combo 次数）
+}
+
+-- ===================== 消行得分数字（3D Actor UI，双方共用对象池） =====================
+-- 消行时在「被消行的右侧、多行竖直居中」显示 1 个 +XX；多行只显示本次消行的总分。
+-- PresetKey 目前是占位：需在 WOW Editor 注册带 WidgetComponent 的 ActorPreset，
+-- 把子级文本控件命名为 score，再执行 update preset 让 AssetRef 生成该键。
+-- 未注册时只打印一次警告并静默跳过，不影响消行流程。
+-- 防闪字：Actor 创建与回收时都把 score 文本置空，且只有文本写进所有玩家 UMG 后才显示。
+TetrisConfig.ScorePopup = {
+    Enabled = true,
+    PresetKey = "46_ActorPreset_1269798043",  -- 占位，待替换真实 ActorPreset Key
+    ChildName = "score",                  -- 3D 挂件内子级文本控件名（编辑器内命名）
+    PoolSize = 2,                         -- 初始预热 2 个；双方共用同一份池（池满仍可新建）
+    Duration = 1.7,                       -- 显示时长（秒），到点归还
+    TickInterval = 0.05,                 -- 异步 spawn / UMG 延迟就绪的补摆补写间隔（秒）
+    TextReadyTimeout = 0.4,              -- 文本写入全部 UMG 前的隐藏上限（秒）；超时强制显示并继续补写
+    -- 位置（米）：盘心 + right*(半宽 + SideOffsetM)；竖直取被消行区域中心。
+    SideOffsetM = 2.2,                   -- 超出盘面右边缘的额外距离（沿盘面 right，正=玩家右手侧）
+    DistanceFrontM = -0.51,               -- 沿 boardForward 的前置距离，与 ClearRowWidget 一致，避免被方块挡住
+    HeightOffsetM = 0,                   -- 世界 +Z 微调
+    Scale = { X = 7, Y = 7, Z = 7 },     -- CreateActor 缩放（1.0 = 原始大小）
+    RotationBiasByIndex = { [1] = 0, [2] = 0 },  -- 双盘朝向额外偏航（度）
+    Format = "+%d",                      -- 文本格式：+XX
 }
 
 -- ===================== 渲染层映射（3D 世界） =====================
@@ -622,10 +643,10 @@ TetrisConfig.BackgroundWidget = {
     -- 名字需与编辑器里给该图片控件命的名完全一致（含空格/全角半角）。
     ImageChildName = "正方形 29",
     OpponentImages = {
-        Human  = "23_ImagePreset_181441242063729",  -- 真人对手
-        Easy   = "23_ImagePreset_181441695453675",  -- 简单 AI
-        Normal = "23_ImagePreset_181443061864228",  -- 普通 AI
-        Hard   = "23_ImagePreset_181442655198730",  -- 困难 AI
+        Human  = "23_ImagePreset_181444521601844",  -- 真人对手
+        Easy   = "23_ImagePreset_181444521601844",  -- 简单 AI
+        Normal = "23_ImagePreset_181444379937575",  -- 普通 AI
+        Hard   = "23_ImagePreset_181444122434348",  -- 困难 AI
     },
 }
 
@@ -861,6 +882,10 @@ TetrisConfig.Skill = {
     DescText = ci("1_CreativeInstance_23643899335684710"),   -- 技能说明文本控件
     Desc     = "消除 1 行得 1 bar，集满 3 bar 得 1 power；释放技能消耗 1 power",
     IconImage = ci("1_CreativeInstance_23643899882881827"),   -- 局内技能 icon 图片控件（Image 控件）
+    -- 「技能可用」标志图片：有 power 且不在 CD 时显示；power 不足 / CD 中 / 技能未启用时隐藏。
+    -- 【占位】在编辑器 UI Editor 放好该图片控件后，把下面的 FILL_ 占位键换成其 InstanceUUID；
+    -- 未放置时 ci() 返回 nil，显隐逻辑自动跳过，不影响对局。
+    ReadyImg = ci("1_CreativeInstance_23643901728269420"),
     BigTipInstance = ci("1_CreativeInstance_23643900834440806"),  -- SK07「额外消行」中央大图提示组件（CreativeInstance 控件 UUID）
 
     -- 3 个 bar 图片（按当前 bar 数显隐：bar0=第1格, bar1=第2格, bar2=第3格/满）

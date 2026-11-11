@@ -402,7 +402,7 @@ function TetrisBoard:softDrop()
         p.y = p.y + 1
         self.grounded = false   -- 又能下落 → 解除贴地锁定状态
         self.groundTimer = 0
-        self.score = self.score + TetrisConfig.Score.SoftDropPerCell
+        -- 软降不再加分：只有消行才计分（见 clearLines）。
         self:markGhostDirty()
         return true
     end
@@ -424,12 +424,10 @@ end
 function TetrisBoard:hardDrop()
     if self.isGameOver or not self.active then return false end
     local p = self.active
-    local dist = 0
     while self:canPlace(p, p.x, p.y + 1, p.rot) do
         p.y = p.y + 1
-        dist = dist + 1
     end
-    self.score = self.score + dist * TetrisConfig.Score.HardDropPerCell
+    -- 硬降不再加分：只有消行才计分（见 clearLines）。
     self:lockPiece()
     return true
 end
@@ -474,10 +472,9 @@ end
 function TetrisBoard:lockPiece()
     if not self.active then return end
     local p = self.active
-    -- 方块正常锁定（落地）即计 1 分：每次 lockPiece 调用一次，重力落地与硬降都算。
-    self.score = self.score + TetrisConfig.Score.LockPerPiece
+    -- 锁定不再加分：只有消行才计分（见 clearLines），此处仅保留调试日志。
     if TetrisConfig.Debug and TetrisConfig.Debug.LockDbg then
-        print(string.format("[Tetris][LockDbg] 锁定加分 board=%s isAI=%s score=%s",
+        print(string.format("[Tetris][LockDbg] 锁定(不计分) board=%s isAI=%s score=%s",
             tostring(self.index), tostring(self.isAI), tostring(self.score)))
     end
     -- 方块落地锁定音效（仅真人盘有 PlayerState 时生效；AI/旁观盘 GetPlayerState 返回 nil，自动跳过）

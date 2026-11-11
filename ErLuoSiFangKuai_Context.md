@@ -40,8 +40,9 @@ EnvLua/Server/ErLuoSiFangKuai/   # 玩法代码放这里（可写区）
 | CustomUILongPressed (=120001) | ⚠️ 声明已确认，行为待实跑 | CustomUI 按钮**长按开始**事件。输出同上为 PlayerState。左右键长按 → StartMoveRepeat（DAS/ARR 连发）；下键长按 → StartSoftDrop（软降连发）。 |
 | CustomUILongPressReleased (=120002) | ⚠️ 声明已确认，行为待实跑 | CustomUI 按钮**长按抬起**事件。输出 PlayerState。左右/下键抬起 → StopMoveRepeat / StopSoftDrop 停止连发。 |
 | CameraAPI.LockCameraInput(ps, bLocked) | ⚠️ 声明已确认，待实跑 | 锁定/解锁摄像机旋转输入（屏蔽视角旋转，保留 WASD 移动）。查询用 IsCameraInputLocked(ps)。 |
-| TetrisBoard:softDrop() | ✅ 已读源码确认 | 软降一格：成功下移并 +SoftDropPerCell 分，解除贴地状态；触底返回 false（不锁定），由重力/锁定延迟接管。 |
-| TetrisBoard:hardDrop() | ✅ 已读源码确认 | 硬降：直接落底并 lockPiece() 锁定，+dist*HardDropPerCell 分。 |
+| TetrisBoard:softDrop() | ✅ 已读源码确认 | 软降一格：成功下移并解除贴地状态；触底返回 false（不锁定），由重力/锁定延迟接管。**不再加分**（现只有消行计分，见 clearLines）。 |
+| TetrisBoard:hardDrop() | ✅ 已读源码确认 | 硬降：直接落底并 lockPiece() 锁定。**不再加分**（现只有消行计分）。 |
+| TetrisScorePopup（消行得分数字） | ⚠️ 声明已确认，行为待实跑 | `EnvLua/Server/Tetris/TetrisScorePopup.lua`：模块级共享池（双方共用，预热 2 个、池满继续新建），消行时在盘面右侧/多行竖直居中显示 1 个 `+XX`，1.7s 归还。文本写入走 WidgetComponent → 遍历所有 pawn 的 `GetUserWidgetObject` → `GetWidgetFromName("score")` → `SetTextContent`。`TetrisConfig.ScorePopup.PresetKey` 目前是占位，需在 WOW Editor 注册 ActorPreset + `update preset` 后才生效。 |
 | TetrisBoard 落地锁定延迟（tick / resetLockDelay） | ✅ 已读源码确认 | 方块「落不动」不再立即 lockPiece，改为累计 groundTimer（按重力周期累加）达 LockDelay(0.25s) 才锁定；move/rotate 成功且贴地时 resetLockDelay 把计时归零（上限 LockResetLimit=15，防无限拖延）；新块 spawn 重置为未贴地。硬降仍立即锁定。低等级重力慢时窗口实际 ≥ 重力周期。 |
 | 3D 世界挂件 WidgetComponent 取子控件 + 写文本 | ✅ 2026-10-14 实跑验证 | `actor:GetComponentByClass("WidgetComponent")` 取组件 → `Game:GetAllPlayerPawns()`（LuaArray，`:Num()/:Get(i)` 0基）取 pawn → `wc:GetUserWidgetObject(pawn)` 取 WoWUserWidget → `uw:GetWidgetFromName("控件名")` 取子控件 → `tw:SetTextContent(文本)`。详见 `doc/3D-UI-组件使用指南.md`。 |
 | 3D 挂件子控件无 InstanceUUID | ✅ 2026-10-14 实跑验证 | `tw:GetWoWObjectID()`/`GetInstanceUUID()` 均返回 nil；3D 挂件内部子控件不能用 `CustomUIAPI.SetAllPlayerTextContent(uuid,text)`，必须直接对 `tw` 对象 `SetTextContent`（世界空间共享渲染，全员生效）。 |

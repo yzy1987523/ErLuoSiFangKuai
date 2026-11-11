@@ -9,6 +9,7 @@ local TetrisBoard = require("EnvLua.Server.Tetris.TetrisBoard")
 local TetrisRenderer = require("EnvLua.Server.Tetris.TetrisRenderer")
 local TetrisAI = require("EnvLua.Server.Tetris.TetrisAI")
 local TetrisAudio = require("EnvLua.Server.Tetris.TetrisAudio")   -- 音效/BGM 音量（GetSFXVolume）
+local TetrisScorePopup = require("EnvLua.Server.Tetris.TetrisScorePopup")  -- 消行得分数字（双方共用对象池）
 
 local TetrisGame = {}
 TetrisGame.__index = TetrisGame
@@ -60,6 +61,9 @@ function TetrisGame:Start()
     self.running = true
     -- 重开时 renderer 可能被复用（不重新 Build），需在此强制收回上一局残留的消行提示框共享池条目
     if self.renderer then self.renderer:ResetSharedClearRowFrames() end
+    -- 得分数字共享池：重开强制回收上一局残留条目，再预热 2 个（对战双方共用同一份池）
+    TetrisScorePopup.Reset()
+    if self.renderer then TetrisScorePopup.Prewarm(self.renderer) end
     -- 复位消行表现时序的防重入标志，避免上一局遗留的「已调度」状态阻止新局消行
     self._lockFlashScheduled = false
     self._rockfallSeqScheduled = false
@@ -283,6 +287,8 @@ function TetrisGame:Stop()
         pcall(function() if type(self._camRig.K2_DestroyActor) == "function" then self._camRig:K2_DestroyActor() end end)
         self._camRig = nil
     end
+    -- 回合结束：回收共享池中借出的得分数字，避免跨局残留
+    TetrisScorePopup.Reset()
     print("[Tetris] Stop")
 end
 
@@ -305,6 +311,8 @@ end
 function TetrisGame:Reset()
     -- 暂停下落：停止重力 tick 循环（running=false 时 OnTick / ScheduleTick 均早退）
     self.running = false
+    -- 回到开局前状态：一并回收共享池中借出的得分数字
+    TetrisScorePopup.Reset()
     -- 清空数据层：网格 / 当前块 / 暂存(Hold) / 分数 / 等级；next 队列刷新为全新 7-bag（无残留旧块）
     if self.board then self.board:reset() end
     -- 重置能量槽（技能 进度 / power）
@@ -450,7 +458,14 @@ function TetrisGame:maybeScheduleLockFlash()
         self._lockFlashScheduled = false
         if not self.running or not self.board then return end
         print("[Tetris][ClearSeq] 执行 doClear（特效空白帧 0.25s 已走完）")
+        local scoreBefore = tonumber(self.board.score) or 0
         local cleared = self.board:doClear()
+        local scoreAfter = tonumber(self.board.score) or 0
+        -- 得分数字：多行只弹一个总分，取 doClear 前后的分数差值（唯一加分来源就是消行）
+        local gain = scoreAfter - scoreBefore
+        if cleared > 0 and gain > 0 then
+            TetrisScorePopup.Show(self.owner, self.renderer, rows, gain)
+        end
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:ConsumeItemCharge()        -- 道具-充能块：仅真实消行(含充能块)时取走 power 并弹提示图
         self:ConsumeBlastImage()        -- 道具-爆破块：仅真实消行(含爆破块)时弹提示图（透明度 1，隐藏时改 0）
@@ -1272,6 +1287,7 @@ function TetrisGame:HideSkillHintUI()
         { "SK06.attackBuffImg",    skills and skills.SK06 and skills.SK06.attackBuffImg },
         { "SK01.rotLockCasterImg", skills and skills.SK01 and skills.SK01.rotLockCasterImg },
         { "Skill.BigTipInstance",  TetrisConfig.Skill and TetrisConfig.Skill.BigTipInstance },
+        { "Skill.ReadyImg",        TetrisConfig.Skill and TetrisConfig.Skill.ReadyImg, opacity = true },  -- 技能可用标志：开局统一隐藏，之后由 UpdateSkillUI 按状态点亮
         -- 盘面/道具提示：原属 HideInitUI，现一并在此于对局开始隐藏
         { "UI.ComboImg",        ui and ui.ComboImg },
         { "UI.GarbageSendHint", ui and ui.GarbageSendHint },
@@ -1511,15 +1527,17 @@ function TetrisGame:UpdateSkillUI()
         pcall(function() CustomUIAPI.SetImageWidgetContent(ps, id, imgID) end)
     end
 
+    -- 技能能否释放：有 power 且不在 CD。按钮交互 / 置灰 / 「可用」标志三者共用这一判定。
+    local enabled = self.skillPower > 0
+    -- SK06/07/08 冷却中（已蓄能待触发）：不可再次释放，但按钮仍可点以便提示"技能冷却中"。
+    local inCD = ((self.selectedSkill == "SK07" and self.s07Charged == true)
+               or (self.selectedSkill == "SK08" and self.s08Charged == true)
+               or (self.selectedSkill == "SK06" and self.s06Charged == true))
+
     -- 技能按钮 BtnSkill：有 power 才可交互，无 power 禁用（避免玩家空点）
     local btn = TetrisConfig.UI.BtnSkill
     if btn then
-        local enabled = self.skillPower > 0
         pcall(function() CustomUIAPI.SetWidgetInteraction(ps, btn, enabled) end)
-        -- SK07 冷却中（已蓄能待触发）：按钮半透明提示（与无 power 同视觉，但保持可点以便提示"技能冷却中"）
-        local inCD = ((self.selectedSkill == "SK07" and self.s07Charged == true)
-                  or (self.selectedSkill == "SK08" and self.s08Charged == true)
-                  or (self.selectedSkill == "SK06" and self.s06Charged == true))
         local dimmed = (not enabled) or inCD
         -- 按钮置灰：引擎 Button 控件无 tint/灰度接口。
         --   方案 B（真·灰度）：同时配了 BtnNormalImg + BtnDisabledImg 两张图则切整图；
@@ -1531,6 +1549,18 @@ function TetrisGame:UpdateSkillUI()
         else
             pcall(function() CustomUIAPI.SetWidgetImageOpacity(ps, btn, dimmed and (cfg.DisabledOpacity or 0.4) or 1) end)
         end
+    end
+
+    -- 「技能可用」标志图片：可用时显示；power 不足 / CD 中 / 技能未启用时隐藏。
+    -- 全部状态变化都经过 UpdateSkillUI（消行得 power / 充能块 / 释放技能 / 3 个 CD 解除点 / Reset / 开局初始化），
+    -- 故此处一处即可覆盖，无需在按钮回调里额外挂钩。占位 UUID 未配置时 ci() 返回 nil，自动跳过。
+    local readyID = cfg.ReadyImg
+    if readyID then
+        local visible = (TetrisConfig.SkillEnabled ~= false) and enabled and (not inCD)
+        pcall(function()
+            CustomUIAPI.SetWidgetVisible(ps, readyID, visible)
+            CustomUIAPI.SetWidgetImageOpacity(ps, readyID, visible and 1 or 0)
+        end)
     end
 end
 
