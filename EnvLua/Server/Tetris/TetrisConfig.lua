@@ -48,6 +48,34 @@ TetrisConfig.Clear = {
     BlastEffectOffset = { X = 0.0, Y = 0.0, Z = 0.0 },    -- 位置微调（米）
 }
 
+-- ===================== 给对手扔垃圾时的拖尾飞行特效 =====================
+-- 触发：flushOutgoingGarbage() 真的把垃圾行写入对手 pendingGarbage 时（单人/无对手不播）。
+-- 轨迹：起点 = 被消除行区域「最左侧列中心 + 竖直居中」（多行取行区间中点，只播一个）；
+--       终点 = 对手盘面几何中心（对端 renderer.boardCenter）。
+-- 实现：可见表现仍是 SceneEffect 特效（不用 3D Actor 当投掷物）；位移靠「附着到隐形载体 Actor」实现。
+--       SetSceneEffectPosition 对一次性世界粒子实跑无效（DIAG: setOk=true 但原地不动），
+--       官方另有 CreateSceneEffectOnActor：特效挂到载体上，逐帧 K2_TeleportTo 传送载体即可带动特效。
+--       载体是无可见组件的 EmptyActor；AttachToActor=false 可退回纯 SetSceneEffectPosition。
+-- 单位：CreateSceneEffect / SetSceneEffectPosition 用米；K2_TeleportTo 用厘米（代码里 cmVec ×100）。
+-- 与 Clear 里的消行特效完全独立：独立资源 / 时长 / 缩放 / 偏移，改这里不影响消行表现。
+TetrisConfig.GarbageEffect = {
+    Enabled = true,
+    -- 拖尾粒子；须在 WOW Editor 注册 + update preset 后 AssetRef 才有该键，未注册时打印一次警告并跳过。
+    PresetKey = "13_EffectPreset_1193030723",
+    AttachToActor = true,                             -- true = 特效附着隐形载体，由载体传送实现真位移
+    CarrierActorPresetKey = "46_ActorPreset_1585104836",  -- 隐形根 EmptyActor（已注册，无可见几何）
+    PoolSize = 2,                                     -- 载体预热数量；双方共用一份池
+    Duration = 1.0,                                    -- 特效总时长（秒），需 >= TravelDuration
+    TravelDuration = 0.6,                              -- 起点 → 终点的飞行时长（秒）
+    TravelStep = 0.03,                                 -- 补间间隔（秒），越小轨迹越平滑
+    Scale = { X = 3, Y = 3, Z = 3 },                  -- SetSceneEffectScale 绝对倍数（1.0 = 原始大小）
+    SideOffsetM = 0,                                   -- 起点：最左列中心再沿 -right 外移 N 米
+    DistanceFrontM = -0.5,                              -- 起点：沿 boardForward 的前置距离（米）
+    HeightOffsetM = 0,                                 -- 起点：世界 +Z 微调（米）
+    TargetHeightOffsetM = 0,                           -- 终点：对手盘心再沿世界 +Z 微调（米）
+    HideLocM = { X = 0, Y = 0, Z = -200 },             -- 载体归还后的停放位置（米），无可见几何
+}
+
 -- ===================== 初始预填版面（开局即存在的方块） =====================
 -- 让开局盘面直接带有方块，可在编辑器/配置里自由布置；预填成满行时「开局即可消除」。
 -- 时机：Board:reset() 末尾、方块 spawn() 之前写入 grid；是否立即消除由 AutoClearOnStart 控制。
@@ -71,7 +99,7 @@ TetrisConfig.InitialLayout = {
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
         --   [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
-            --  [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
+              [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
     },
 }
 
@@ -268,16 +296,17 @@ TetrisConfig.Timing = {
 -- ===================== 计分 =====================
 TetrisConfig.Score = {
     -- 只有「消行」计分；锁定 / 软降 / 硬降不再加分（加分唯一入口见 TetrisBoard:clearLines）。
-    -- 分数 = LineClear[本次消行数] * level；combo 不跨回合累计，也不再叠加到分数。
+    -- 本次消行得分 = LineClear[本次消行数] * level + ComboBonus * combo。
+    -- combo：连续两次落块都触发消行才 +1；任一次落块没消行即清零（见 clearLines / lockPiece）。
     LineClear = { 100, 300, 500, 800 },  -- 1/2/3/4 行基础分（乘以等级）
-    ComboBonus = 50,                      -- 【已停用】连击奖励不再计入分数，保留字段兼容旧配置；恢复需同步改 clearLines
+    ComboBonus = 50,                      -- 每级 combo 的固定加分（不乘 level），combo 2 时 +100
 }
 
--- ===================== 消行得分数字（3D Actor UI，双方共用对象池） =====================
+-- ===================== 消行得分数字 + 连击评价（3D Actor UI，双方共用对象池） =====================
+-- 每次消行显示 2 个 Actor：分数 +XX（下方）与评价文字（上方，晚 0.2s 出现），各显示 1.7s。
 -- 消行时在「被消行的右侧、多行竖直居中」显示 1 个 +XX；多行只显示本次消行的总分。
--- PresetKey 目前是占位：需在 WOW Editor 注册带 WidgetComponent 的 ActorPreset，
--- 把子级文本控件命名为 score，再执行 update preset 让 AssetRef 生成该键。
--- 未注册时只打印一次警告并静默跳过，不影响消行流程。
+-- PresetKey 须在 WOW Editor 注册带 WidgetComponent 的 ActorPreset，子级文本控件命名为 score，
+-- 再执行 update preset 让 AssetRef 生成该键；未注册时只警告一次并静默跳过，不影响消行流程。
 -- 防闪字：Actor 创建与回收时都把 score 文本置空，且只有文本写进所有玩家 UMG 后才显示。
 TetrisConfig.ScorePopup = {
     Enabled = true,
@@ -291,9 +320,29 @@ TetrisConfig.ScorePopup = {
     SideOffsetM = 2.2,                   -- 超出盘面右边缘的额外距离（沿盘面 right，正=玩家右手侧）
     DistanceFrontM = -0.51,               -- 沿 boardForward 的前置距离，与 ClearRowWidget 一致，避免被方块挡住
     HeightOffsetM = 0,                   -- 世界 +Z 微调
-    Scale = { X = 7, Y = 7, Z = 7 },     -- CreateActor 缩放（1.0 = 原始大小）
+    -- 弹出数字尺寸：按【本次弹出的分数】线性映射，100 分 → 5，400 分及以上 → 8，中间等比。
+    ScaleMin = 5,                         -- 分数 <= ScoreForScaleMin 时的缩放
+    ScaleMax = 8,                         -- 分数 >= ScoreForScaleMax 时的缩放
+    ScoreForScaleMin = 100,               -- 消 1 行 = 100 分
+    ScoreForScaleMax = 400,               -- 400 分及以上封顶
+    Scale = { X = 5, Y = 5, Z = 5 },     -- CreateActor 创建时的基准缩放；显示时由 SetActorScale3D 按分数覆盖
     RotationBiasByIndex = { [1] = 0, [2] = 0 },  -- 双盘朝向额外偏航（度）
     Format = "+%d",                      -- 文本格式：+XX
+
+    -- ===== 连击评价（第 2 个 Actor）：沿用同一 ActorPreset / 同一 score 文本控件，只改文字与颜色 =====
+    RatingEnabled = true,
+    RatingDelay = 0.2,                    -- 分数先显示这么久，再显示评价文字（秒）
+    RatingDuration = 1.7,                 -- 评价 Actor 自身显示时长（秒）；分数用上面的 Duration
+    RatingHeightOffsetM = 2.0,            -- 评价 Actor 在分数 Actor 上方的世界 +Z 偏移（米）
+    RatingScale = 5,                      -- 评价 Actor 缩放（分数 Actor 按分数在 5~8 间变化）
+    RatingWords = { "Good", "Great", "Amazing", "Unbelievable" },  -- combo 1 / 2 / 3 / 4+ 依次
+    RatingColors = {                      -- SetTextColor 的 {X=R,Y=G,Z=B}，各分量 0~1
+        { X = 0.20, Y = 0.55, Z = 1.00 },  -- Good 蓝
+        { X = 0.20, Y = 0.90, Z = 0.30 },  -- Great 绿
+        { X = 0.70, Y = 0.30, Z = 1.00 },  -- Amazing 紫
+        { X = 1.00, Y = 0.85, Z = 0.10 },  -- Unbelievable 黄（combo >= 4）
+    },
+    DefaultColor = { X = 1.0, Y = 1.0, Z = 1.0 },  -- 分数文本 / 清空时复位用的白色
 }
 
 -- ===================== 渲染层映射（3D 世界） =====================
@@ -778,13 +827,21 @@ TetrisConfig.GarbageHint = {
     },
 }
 
--- ===================== 消行音效（按消行数播放，AssetRef 句柄由 SoundPreset Key 解析） =====================
---   1 行 / 2 行 / 3 行 / 4 行及以上 分别对应不同音效；键为 SoundPreset 资源标识，需经 AssetRef 解析为句柄。
+-- ===================== 消行音效（统一基础音效 + 连击音效） =====================
+-- 不管消 1/2/3/4+ 行，默认都播 Default；发生连击时按 combo 层数改播 ComboSounds 对应音效。
+-- 键为 SoundPreset 资源标识，需在 WOW Editor 注册 + update preset，运行时经 AssetRef 解析为句柄。
+-- 落石旁路用 clearLines(false)（不计连击），不传 combo，一律只播 Default。
 TetrisConfig.ClearSounds = {
-    [1] = "19_SoundPreset_181439305408215",
-    [2] = "19_SoundPreset_181436910389471",
-    [3] = "19_SoundPreset_181439222657359",
-    [4] = "19_SoundPreset_181439483548969",   -- 4 行及以上统一用此音效
+    Default = "19_SoundPreset_181440666235360",   -- 统一消行音效（与消行数无关）
+    ComboStart = 2,                               -- combo 达到该层数才改用连击音效；设 1 = 每次消行都用连击音效
+    PlayDefaultOnCombo = false,                   -- true = 连击时在连击音效之外额外叠加播放 Default
+    ComboSounds = {                               -- 第 i 个对应 combo = ComboStart + i - 1，最后一个为更高 combo 兜底
+        [1] = "19_SoundPreset_181437698626307",
+        [2] = "19_SoundPreset_181440134062503",
+        [3] = "19_SoundPreset_181440645321124",
+        [4] = "19_SoundPreset_181437585907323",
+        [5] = "19_SoundPreset_181438881546771",
+    },
 }
 
 -- ===================== 输入手感（长按 / 自动横移 DAS-）ARR） =====================
@@ -1572,12 +1629,13 @@ TetrisConfig.Audio = {
         Hard   = "19_SoundPreset_181438040768165",   -- 占位（后续替换）
     },
     Step = 0.1,   -- 每次点击增减幅度（0.1 = 10%，0~1 共 10 档）
-    -- 事件音效（胜利 / 失败 / 方块落地锁定）：资源键为 SoundPreset Key（经 AssetRef 解析）。
-    -- 当前为占位 nil（待编辑器放置后填 Key），nil 时对应音效自动跳过；音量乘音效音量 GetSFXVolume。
+    -- 事件音效（胜利 / 失败 / 方块落地锁定 / 释放技能）：资源键为 SoundPreset Key（经 AssetRef 解析）。
+    -- nil 时对应音效自动跳过；音量乘音效音量 GetSFXVolume。
     Sounds = {
-        Win  = "19_SoundPreset_181439672508467",  -- 胜利音效
-        Lose = "19_SoundPreset_181436843579026",  -- 失败音效
-        Lock = "19_SoundPreset_181437772959480",  -- 方块落地锁定音效
+        Win   = "19_SoundPreset_181439672508467",  -- 胜利音效
+        Lose  = "19_SoundPreset_181436843579026",  -- 失败音效
+        Lock  = "19_SoundPreset_181437772959480",  -- 方块落地锁定音效
+        Skill = "19_SoundPreset_181437151818414",  -- 释放技能音效（OnBtnSkill 消耗 power 后播放）
     },
 }
 

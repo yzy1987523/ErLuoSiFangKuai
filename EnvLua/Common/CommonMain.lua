@@ -1,0 +1,1 @@
+﻿--- Common folder is accessible at the same time for Server & Client

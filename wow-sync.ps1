@@ -67,9 +67,9 @@ function Invoke-RoboMirror {
         return
     }
     if ($ListOnly) {
-        robocopy $From $To /L /NJH /NJS /NP /NDL
+        robocopy $From $To /L /NJH /NJS /NP /NDL /R:0 /W:0
     } else {
-        robocopy $From $To /MIR /NJH /NJS /NP /NDL /NC
+        robocopy $From $To /MIR /NJH /NJS /NP /NDL /NC /R:0 /W:0
         if ($LASTEXITCODE -ge 8) {
             Write-Host "  robocopy 失败 (exit=$LASTEXITCODE): $From -> $To" -ForegroundColor Red
             exit $LASTEXITCODE
@@ -105,6 +105,18 @@ function Pull-Assets {
 Write-Host "本地工程: $SourceDir"
 Write-Host "活动目录: $WowDir"
 Write-Host ""
+
+# 管理员权限检测：活动目录位于 C:\Program Files 等受保护目录，普通会话对其写入会被
+# UAC 拒绝访问（robocopy Error 5）。push/sync 需要写活动目录，必须以管理员身份运行。
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin -and ($Action -eq 'push' -or $Action -eq 'sync')) {
+    Write-Host "错误：当前 PowerShell 未以管理员身份运行，无法写入活动目录。" -ForegroundColor Red
+    Write-Host "目标目录: $WowDir" -ForegroundColor Gray
+    Write-Host "解决：右键 PowerShell -> 『以管理员身份运行』，然后：" -ForegroundColor Yellow
+    Write-Host "  cd `"$SourceDir`"" -ForegroundColor Yellow
+    Write-Host "  .\wow-sync.ps1 -Action $Action" -ForegroundColor Yellow
+    exit 1
+}
 
 switch ($Action) {
     'push'  { Push-Server }

@@ -64,6 +64,11 @@ function TetrisGame:Start()
     -- 得分数字共享池：重开强制回收上一局残留条目，再预热 2 个（对战双方共用同一份池）
     TetrisScorePopup.Reset()
     if self.renderer then TetrisScorePopup.Prewarm(self.renderer) end
+    -- 扔垃圾特效的隐形载体共享池：重开强制回收残留条目，再预热（对战双方共用同一份池）
+    if self.renderer then
+        self.renderer:ResetGarbageActors()
+        self.renderer:PrewarmGarbageActors()
+    end
     -- 复位消行表现时序的防重入标志，避免上一局遗留的「已调度」状态阻止新局消行
     self._lockFlashScheduled = false
     self._rockfallSeqScheduled = false
@@ -464,7 +469,8 @@ function TetrisGame:maybeScheduleLockFlash()
         -- 得分数字：多行只弹一个总分，取 doClear 前后的分数差值（唯一加分来源就是消行）
         local gain = scoreAfter - scoreBefore
         if cleared > 0 and gain > 0 then
-            TetrisScorePopup.Show(self.owner, self.renderer, rows, gain)
+            -- doClear 内 clearLines(true) 已把 combo +1，这里传本次消行后的连击数决定评价文字/颜色
+            TetrisScorePopup.Show(self.owner, self.renderer, rows, gain, self.board.combo)
         end
         self:onLinesCleared(cleared)    -- 技能蓄能：累计消行次数
         self:ConsumeItemCharge()        -- 道具-充能块：仅真实消行(含充能块)时取走 power 并弹提示图
@@ -823,30 +829,49 @@ function TetrisGame:UpdateOpponentHUD()
     pcall(function() CustomUIAPI.SetTextContent(ps, id, "" .. tostring(score)) end)
 end
 
--- 按消行数播放消行音效（1/2/3/4+ 行对应不同 SoundPreset）；仅对真人盘(有 PlayerState)播放。
--- 资源键见 TetrisConfig.ClearSounds，经 AssetRef 解析为句柄后交给 AudioAPI.PlayAudio。
-function TetrisGame:PlayLineClearSound(cleared)
+-- 消行音效：不管消几行，默认统一播 ClearSounds.Default；
+-- 发生连击（combo >= ComboStart）时改播 ClearSounds.ComboSounds[idx]（idx = combo-ComboStart+1，封顶数组长度）。
+-- 落石旁路不传 combo（clearLines(false) 不计连击），一律只播 Default。
+-- 仅对真人盘(有 PlayerState)播放；资源键经 AssetRef 解析为句柄后交给 AudioAPI.PlayAudio。
+function TetrisGame:PlayLineClearSound(cleared, combo)
     cleared = (type(cleared) == "number") and cleared or 0
     if cleared < 1 then return end
-    local keys = TetrisConfig.ClearSounds
-    if not keys then return end
-    local key = keys[math.min(cleared, 4)]   -- 4 行及以上统一用第 4 个音效
-    if not key then return end
-    local ref = (type(AssetRef) == "table") and AssetRef[key]
-    if not ref then
-        if TetrisConfig.Debug and TetrisConfig.Debug.PrintClearSound then
-            print(string.format("[Tetris][Clear][WARN] 音效资源未注册 AssetRef[%s]，跳过", tostring(key)))
-        end
-        return
-    end
+    local scfg = TetrisConfig.ClearSounds
+    if not scfg then return end
     local ps = self:GetPlayerState()
     if not ps or type(AudioAPI) ~= "table" then return end
     -- AudioAPI.PlayAudio(TargetObject, AudioID, Duration, Volume, bAllMap, bShowMark, AudiencePlayerState)
-    --   TargetObject=ps(玩家自身)，bAllMap=true 全图播放但 AudiencePlayerState=ps 仅该玩家可闻（类 UI 音效，不受相机距离影响）
-    --   Duration=3 为播放时长上限（秒），若需"整段自然播放"可按实际音频长度调整
-    --   Volume 乘以音效音量（TetrisAudio.GetSFXVolume，0~1），实现音效音量控制
+    --   TargetObject=ps(玩家自身)，bAllMap=true 全图播放但 AudiencePlayerState=ps 仅该玩家可闻
+    --   Duration=3 为播放时长上限（秒）；Volume 乘音效音量 TetrisAudio.GetSFXVolume(0~1)
     local vol = (type(TetrisAudio) == "table" and TetrisAudio.GetSFXVolume()) or 1
-    pcall(function() AudioAPI.PlayAudio(ps, ref, 3, vol, true, false, ps) end)
+    local function play(key, tag)
+        if not key then return end
+        local ref = (type(AssetRef) == "table") and AssetRef[key]
+        if not ref then
+            -- 不受 Debug 开关限制、按 key 去重只打一次：新资源未注册时实跑能立刻看到原因
+            if not self._clearSoundMissing then self._clearSoundMissing = {} end
+            if not self._clearSoundMissing[key] then
+                self._clearSoundMissing[key] = true
+                print(string.format("[Tetris][Clear][WARN] %s 音效资源未注册 AssetRef[%s]，跳过（需在 WOW Editor 注册 + update preset）",
+                    tostring(tag), tostring(key)))
+            end
+            return
+        end
+        pcall(function() AudioAPI.PlayAudio(ps, ref, 3, vol, true, false, ps) end)
+    end
+
+    local c = math.max(0, math.floor(tonumber(combo) or 0))
+    local start = (type(scfg.ComboStart) == "number") and scfg.ComboStart or 2
+    local sounds = scfg.ComboSounds
+    local hasCombo = (c >= start) and (type(sounds) == "table") and (#sounds > 0)
+    if hasCombo then
+        if scfg.PlayDefaultOnCombo then play(scfg.Default, "Default") end
+        -- 第 i 个连击音效对应 combo = ComboStart + i - 1；超出数组长度时用最后一个兜底
+        local idx = math.max(1, math.min(c - start + 1, #sounds))
+        play(sounds[idx], "Combo" .. tostring(c))
+    else
+        play(scfg.Default, "Default")
+    end
 end
 
 -- 道具消除后释放能力时播放对应音效（按 PieceType 对应 TetrisConfig.ItemSounds）。
@@ -871,13 +896,17 @@ function TetrisGame:PlayItemSound(itemType)
 end
 
 -- 通用事件音效播放：key 为 TetrisConfig 中某 SoundPreset 资源键（nil 则跳过）。
--- 仅对真人盘(有 PlayerState)播放；资源未注册则跳过。音量乘音效音量 GetSFXVolume。
+-- 仅对真人盘(有 PlayerState)播放；资源未注册则按 key 去重只警告一次。音量乘音效音量 GetSFXVolume。
 function TetrisGame:PlayEventSound(key)
     if not key then return end
     local ref = (type(AssetRef) == "table") and AssetRef[key]
     if not ref then
-        if TetrisConfig.Debug and TetrisConfig.Debug.PrintClearSound then
-            print(string.format("[Tetris][Sound][WARN] 事件音效资源未注册 AssetRef[%s]，跳过", tostring(key)))
+        -- 不受 Debug 开关限制、按 key 去重只打一次：新资源未注册时实跑能立刻看到原因
+        if not self._eventSoundMissing then self._eventSoundMissing = {} end
+        if not self._eventSoundMissing[key] then
+            self._eventSoundMissing[key] = true
+            print(string.format("[Tetris][Sound][WARN] 事件音效资源未注册 AssetRef[%s]，跳过（需在 WOW Editor 注册 + update preset）",
+                tostring(key)))
         end
         return
     end
@@ -887,10 +916,11 @@ function TetrisGame:PlayEventSound(key)
     pcall(function() AudioAPI.PlayAudio(ps, ref, 3, vol, true, false, ps) end)
 end
 
--- 胜利 / 失败 / 方块落地锁定 音效（资源键见 TetrisConfig.Audio.Sounds，占位为 nil 时自动跳过）
-function TetrisGame:PlayWinSound()  self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Win) end
-function TetrisGame:PlayLoseSound() self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Lose) end
-function TetrisGame:PlayLockSound() self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Lock) end
+-- 胜利 / 失败 / 方块落地锁定 / 释放技能 音效（资源键见 TetrisConfig.Audio.Sounds，nil 时自动跳过）
+function TetrisGame:PlayWinSound()   self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Win) end
+function TetrisGame:PlayLoseSound()  self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Lose) end
+function TetrisGame:PlayLockSound()  self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Lock) end
+function TetrisGame:PlaySkillSound() self:PlayEventSound(TetrisConfig.Audio.Sounds and TetrisConfig.Audio.Sounds.Skill) end
 
 function TetrisGame:CheckPieceSpawned()
     if not TetrisConfig.Debug.ShowPieceInfo then return end
@@ -926,6 +956,18 @@ function TetrisGame:flushOutgoingGarbage()
     if self.opponent and self.opponent.board and not self.opponent.board:isOver() then
         self.opponent.board:addGarbage(n)
         self:FlashGarbageHint("GarbageSendHint", n)   -- 消行攻击：点亮「即将给对手扔出 N 行垃圾」（事件触发，避免轮询漏显）
+        -- 拖尾飞行特效：起点 = 本次被消除行的最左侧居中，终点 = 对手盘面中央（传对端 renderer）。
+        -- pendingClearedRows 可能已被渲染层 consumeClearedRows() 取走，回退到不会被清空的 _clearFullRows。
+        local rows = b.pendingClearedRows
+        if (not rows or #rows == 0) and type(b._clearFullRows) == "table" then
+            rows = {}
+            for rr in pairs(b._clearFullRows) do rows[#rows + 1] = rr end
+        end
+        if self.renderer and type(self.renderer.PlayGarbageEffectAt) == "function" then
+            pcall(function()
+                self.renderer:PlayGarbageEffectAt(rows, self.opponent and self.opponent.renderer)
+            end)
+        end
         if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
             print(string.format("[Tetris][Versus] 玩家 %s 消行 → 给对手发 %d 行垃圾", tostring(self.playerKey), n))
         end
@@ -1616,6 +1658,8 @@ function TetrisGame:OnBtnSkill()
         return
     end
     self.skillPower = self.skillPower - 1
+    -- 技能成功释放（已消耗 power，且未被冷却 / power 不足分支拦截）时播放统一技能音效
+    self:PlaySkillSound()
 
     local key = self.selectedSkill
         or (TetrisConfig.SkillSelect and TetrisConfig.SkillSelect.DefaultSkill) or "SK02"

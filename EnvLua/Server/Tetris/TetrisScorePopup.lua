@@ -1,5 +1,7 @@
--- 消行得分数字（3D Actor UI）：消行时在盘面右侧、被消行区域竖直居中显示 1 个 +XX，1.7s 后归还。
--- 多行只显示一个「本次消行总分」，文字由 doClear() 前后的 score 差值得到。
+-- 消行弹出（3D Actor UI）：每次消行用 2 个 Actor ——
+--   ① 分数 +XX：盘面右侧、被消行区域竖直居中，立即显示；
+--   ② 连击评价文字：在分数上方 RatingHeightOffsetM 米，晚 RatingDelay 秒显示，按 combo 换文字与颜色。
+-- 两者各显示 1.7s 后归还；多行只显示一个「本次消行总分」。
 --
 -- 对象池放在模块级 local：require 单例 → 对战双方两个 TetrisGame 共用同一份池。
 -- 池初始预热 2 个；free 为空时【直接新建】（池满也新建，不设上限），符合「池满就创建新的」。
@@ -8,6 +10,7 @@
 -- 单位：CreativeGameAPI.CreateActor 是 Domain API，Location 用米；
 --       K2_TeleportTo 是 Class API，用厘米（下面 cmVec 显式换算）。
 -- 资源：PresetKey 走 AssetRef["<Key>"] 句柄；须在 WOW Editor 注册 + update preset 后才可解析。
+--       两个 Actor 共用同一预设 / 同一 score 子控件，只是写入的文字与颜色不同。
 -- 防闪字：创建/回收时把 score 文本置空；显示前先写文本，写进所有玩家 UMG 后才取消隐藏。
 local TetrisConfig = require("EnvLua.Server.Tetris.TetrisConfig")
 
@@ -21,6 +24,8 @@ local pool = {
     generation = 0,     -- Reset 代际，让上一局残留定时器自动失效
     refWarned = false,
     failWarned = false,
+    scaleWarned = false,
+    colorWarned = false,
 }
 
 -- 前向声明：createEntry 在文件前半段就要清空文本，而写入函数定义在后面。
@@ -33,6 +38,20 @@ end
 -- 米 -> 厘米向量（Class API 如 K2_TeleportTo 用厘米）
 local function cmVec(loc)
     return Game:ConstructFVectorByLuaTable({ X = loc.X * 100, Y = loc.Y * 100, Z = loc.Z * 100 })
+end
+
+-- 弹出数字尺寸：按【本次弹出的分数】线性映射，[ScoreForScaleMin, ScoreForScaleMax] → [ScaleMin, ScaleMax]，两端 clamp。
+-- 默认 100→5、200→6、300→7、400→8；分数含 combo 加分。
+local function scaleForScore(score)
+    local c = cfg()
+    local lo = (type(c.ScoreForScaleMin) == "number") and c.ScoreForScaleMin or 100
+    local hi = (type(c.ScoreForScaleMax) == "number") and c.ScoreForScaleMax or 400
+    local smin = (type(c.ScaleMin) == "number") and c.ScaleMin or 5
+    local smax = (type(c.ScaleMax) == "number") and c.ScaleMax or 8
+    local s = tonumber(score) or 0
+    if s <= lo then return smin end
+    if hi <= lo or s >= hi then return smax end
+    return smin + (s - lo) / (hi - lo) * (smax - smin)
 end
 
 local function hideActor(actor)
@@ -116,6 +135,7 @@ local function createEntry(loc, rot)
         end
         return nil
     end
+    -- 创建时只给基准缩放（ScaleMin）；按分数变化的尺寸由 place() 的 SetActorScale3D 运行时覆盖。
     local sc = c.Scale or { X = 1, Y = 1, Z = 1 }
     local scaleVec = Game:ConstructFVectorByLuaTable({
         X = sc.X or 1, Y = sc.Y or 1, Z = sc.Z or 1,
@@ -146,8 +166,9 @@ end
 -- 3D 挂件子文本写入：GetUserWidgetObject(pawn) 按玩家角色返回各自的 UMG 实例，
 -- 必须遍历所有 pawn，否则第 2 名玩家看到的是编辑器默认文本。
 -- 子控件无 InstanceUUID，不能用 CustomUIAPI.SetTextContent(uuid, ...)，须直接对控件对象写。
+-- color 非 nil 时对每个玩家实例调 SetTextColor({X=R,Y=G,Z=B})，用于连击评价文字。
 -- 返回是否对【所有】玩家的 UMG 都写入成功；未成功时调用方需继续补写。
-writeText = function(e, text)
+writeText = function(e, text, color)
     local actor = e.actor
     local childName = cfg().ChildName or "score"
     local wc
@@ -185,6 +206,14 @@ writeText = function(e, text)
                 pcall(function() tw = uw:GetWidgetFromName(childName) end)
                 if tw and type(tw.SetTextContent) == "function" then
                     pcall(function() tw:SetTextContent(text) end)
+                    if color then
+                        if type(tw.SetTextColor) == "function" then
+                            pcall(function() tw:SetTextColor(color) end)
+                        elseif not pool.colorWarned then
+                            pool.colorWarned = true
+                            print("[Tetris][ScorePopup][WARN] SetTextColor 不可用，评价文字颜色保持编辑器默认")
+                        end
+                    end
                     written = written + 1
                 end
             end
@@ -203,10 +232,11 @@ writeText = function(e, text)
     return false
 end
 
--- 初始化 / 回收时把 score 文本置空。
+-- 初始化 / 回收时把 score 文本置空，同时把颜色复位为默认白，
+-- 避免上一局的评价颜色残留到下一次的分数数字上。
 -- 清空未确认时清掉 appliedText，保证下次显示一定会重新写入正确分数。
 clearText = function(e)
-    if not writeText(e, "") then
+    if not writeText(e, "", cfg().DefaultColor) then
         e.appliedText = nil
         e.textPawnN = nil
     end
@@ -217,7 +247,20 @@ end
 -- 避免先露出编辑器默认值或上一次的 +XX；UMG 长时间不就绪时由 Show 置 textForced 强制显示。
 -- K2_TeleportTo 的两个参数都不能为 nil，故 rot 为空时只切显隐。
 local function place(e)
-    local ok = writeText(e, e.text or "")
+    local ok = writeText(e, e.text or "", e.color)
+    -- 尺寸先于显隐设置：CreateActor 的 Scale 只在创建时生效，池条目复用必须每次重设；
+    -- 与位置一样，异步 spawn 会丢弃首次设置，故随 tick 持续补设。SetActorScale3D 收 FVector 倍数，无单位。
+    if e.scale then
+        local okS = pcall(function()
+            e.actor:SetActorScale3D(Game:ConstructFVectorByLuaTable({
+                X = e.scale, Y = e.scale, Z = e.scale,
+            }))
+        end)
+        if not okS and not pool.scaleWarned then
+            pool.scaleWarned = true
+            print("[Tetris][ScorePopup][WARN] SetActorScale3D 不可用，尺寸保持创建时的基准值")
+        end
+    end
     if ok or e.textForced then
         showActor(e.actor)
     else
@@ -239,6 +282,7 @@ local function release(e)
     e.textWarned = false
     clearText(e)
     e.text = nil
+    e.color = nil
     e.textForced = false
     pool.free[#pool.free + 1] = e
 end
@@ -279,6 +323,7 @@ function TetrisScorePopup.Reset()
         if e then
             e.token = nil
             e.text = nil
+            e.color = nil
             e.textForced = false
             hideActor(e.actor)
             pool.free[#pool.free + 1] = e
@@ -292,9 +337,46 @@ function TetrisScorePopup.Reset()
     end
 end
 
+-- 借一个池条目显示一段文本（分数或连击评价），各自独立计时 duration 秒后归还。
+-- 两个 Actor 共用同一份池；分数先调、评价延后 RatingDelay 秒再调。
+local function showOne(owner, loc, rot, text, color, scale, duration, gen)
+    local c = cfg()
+    local e = acquire(loc, rot)
+    if not e then return false end
+    e.loc, e.rot, e.text, e.color, e.scale = loc, rot, text, color, scale
+    e.textForced = false
+    e.textWarned = false
+    -- 条目在创建 / 回收时已置空；这里先写正确文本再决定显隐，避免闪字
+    place(e)
+
+    local token = e.token
+    local interval = (type(c.TickInterval) == "number" and c.TickInterval > 0) and c.TickInterval or 0.05
+    -- UMG 长时间不就绪时的兜底：强制显示，并继续在 tick 里补写正确文本
+    local readyTimeout = (type(c.TextReadyTimeout) == "number") and c.TextReadyTimeout or 0.4
+    owner:AddTimerOnce(readyTimeout, function()
+        if gen ~= pool.generation or e.token ~= token then return end
+        e.textForced = true
+        place(e)
+    end)
+    -- CreateActor 异步 spawn + 各玩家 UMG 延迟就绪：显示窗口内持续补摆 / 补写
+    local function tick()
+        if gen ~= pool.generation or e.token ~= token then return end
+        place(e)
+        owner:AddTimerOnce(interval, tick)
+    end
+    owner:AddTimerOnce(interval, tick)
+    owner:AddTimerOnce(duration, function()
+        if gen ~= pool.generation or e.token ~= token then return end
+        release(e)
+    end)
+    return true
+end
+
 -- 消行时调用：rows = 被消除的行号列表（多行只弹一个总分，位置取行区间中心）
--- delta = 本次消行的得分增量（doClear 前后 board.score 差值）；owner 借宿 AddTimerOnce。
-function TetrisScorePopup.Show(owner, renderer, rows, delta)
+-- delta = 本次消行的得分增量（doClear 前后 board.score 差值）
+-- combo = 本次消行后的连击数（1=Good / 2=Great / 3=Amazing / >=4=Unbelievable）
+-- owner 借宿 AddTimerOnce。
+function TetrisScorePopup.Show(owner, renderer, rows, delta, combo)
     local c = cfg()
     if not c.Enabled then return false end
     local gain = tonumber(delta) or 0
@@ -311,36 +393,29 @@ function TetrisScorePopup.Show(owner, renderer, rows, delta)
     end)
     local text = (okFmt and formatted) or ("+" .. tostring(value))
 
-    local e = acquire(loc, rot)
-    if not e then return false end
-    e.loc, e.rot, e.text = loc, rot, text
-    e.textForced = false
-    e.textWarned = false
-    -- 条目在创建 / 回收时已置空；这里先写正确分数再决定显隐，避免闪字
-    place(e)
-
     local gen = pool.generation
-    local token = e.token
-    local interval = (type(c.TickInterval) == "number" and c.TickInterval > 0) and c.TickInterval or 0.05
-    -- UMG 长时间不就绪时的兜底：强制显示，并继续在 tick 里补写正确分数
-    local readyTimeout = (type(c.TextReadyTimeout) == "number") and c.TextReadyTimeout or 0.4
-    owner:AddTimerOnce(readyTimeout, function()
-        if gen ~= pool.generation or e.token ~= token then return end
-        e.textForced = true
-        place(e)
-    end)
-    -- CreateActor 异步 spawn + 各玩家 UMG 延迟就绪：显示窗口内持续补摆 / 补写
-    local function tick()
-        if gen ~= pool.generation or e.token ~= token then return end
-        place(e)
-        owner:AddTimerOnce(interval, tick)
+    local scoreDur = (type(c.Duration) == "number") and c.Duration or 1.7
+    -- ① 分数：立即显示，尺寸按本次总分 5~8
+    local shown = showOne(owner, loc, rot, text, c.DefaultColor,
+        scaleForScore(gain), scoreDur, gen)
+
+    -- ② 连击评价：晚 RatingDelay 秒、在分数上方，自身也显示 1.7s
+    if c.RatingEnabled ~= false then
+        local words = c.RatingWords or { "Good", "Great", "Amazing", "Unbelievable" }
+        local colors = c.RatingColors or {}
+        local n = math.max(1, math.min(math.floor(tonumber(combo) or 1), #words))
+        local up = (type(c.RatingHeightOffsetM) == "number") and c.RatingHeightOffsetM or 2.0
+        local ratingLoc = { X = loc.X, Y = loc.Y, Z = loc.Z + up }
+        local ratingScale = (type(c.RatingScale) == "number") and c.RatingScale or 5
+        local ratingDur = (type(c.RatingDuration) == "number") and c.RatingDuration or scoreDur
+        local delay = (type(c.RatingDelay) == "number") and c.RatingDelay or 0.2
+        owner:AddTimerOnce(delay, function()
+            if gen ~= pool.generation then return end   -- 重开后不再补弹上一局的评价
+            showOne(owner, ratingLoc, rot, words[n] or "Good", colors[n],
+                ratingScale, ratingDur, pool.generation)
+        end)
     end
-    owner:AddTimerOnce(interval, tick)
-    owner:AddTimerOnce((type(c.Duration) == "number") and c.Duration or 1.7, function()
-        if gen ~= pool.generation or e.token ~= token then return end
-        release(e)
-    end)
-    return true
+    return shown
 end
 
 return TetrisScorePopup

@@ -1731,6 +1731,344 @@ function TetrisRenderer:PlayBlastEffectAt(col, bottomRow, topRow)
     end)
 end
 
+-- ===================== 给对手扔垃圾：拖尾特效 + 隐形位移载体 =====================
+-- 可见表现仍是 SceneEffect 特效；位移靠官方 CreateSceneEffectOnActor 把特效附着到载体 Actor 上，
+-- 飞行期逐帧 K2_TeleportTo 传送载体带动特效（SetSceneEffectPosition 对一次性世界粒子实跑不生效，
+-- 但仍每帧调用作双保险）。载体是无可见几何的 EmptyActor，不是可见投掷物。
+-- 轨迹：起点 = 被消除行区域「最左侧列中心 + 竖直居中」（多行取行区间中点）；
+--       终点 = 对手盘面几何中心（对端 renderer.boardCenter）。
+-- 单位：CreateSceneEffect / SetSceneEffectPosition / CreateActor 用米；
+--       K2_TeleportTo 是 Class API，位置必须 cmVec(×100) 转厘米。
+-- 载体对象池为模块级，对战双方两个 renderer 共用；CreateActor 异步 spawn，故每步重复传送。
+local garbageActorPool = {
+    free = {},           -- 空闲载体（停在 HideLocM 停车场）
+    busy = {},           -- 借出中（重开时由 ResetGarbageActors 强制收回）
+    serial = 0,          -- 借用代际 token，防旧定时器误归还已复用的条目
+    generation = 0,      -- 重开代际，让上一局残留定时器自动失效
+    refWarned = false,
+    failWarned = false,
+    diagWarned = false,
+    attachWarned = false,
+}
+
+local function gCfg()
+    return TetrisConfig.GarbageEffect or {}
+end
+
+-- K2_TeleportTo 的 DestRotation 不能为 nil（UStruct 报错）：优先取 Actor 自身真实旋转。
+local function garbageRot(self, actor)
+    if actor then
+        local ok, rot = pcall(function()
+            if actor.K2_GetActorRotation then return actor:K2_GetActorRotation() end
+            return nil
+        end)
+        if ok and rot then return rot end
+    end
+    if self.rot then return self.rot end
+    return makeZeroRotator()
+end
+
+-- 载体停放：刻意【不隐藏】。SetActorHiddenInGame(true) 会把附着在 Actor 上的特效一并隐藏，
+-- 而载体本身无可见几何，空闲时只要传送到地下的 HideLocM 就看不见了。
+local function parkGarbageActor(e)
+    if not e then return end
+    local park = gCfg().HideLocM or { X = 0, Y = 0, Z = -200 }
+    if e.rot then
+        pcall(function() e.actor:K2_TeleportTo(cmVec(park), e.rot) end)
+    end
+end
+
+-- 逐帧传送载体：cmVec 把米转成 K2_TeleportTo 需要的厘米。返回下发是否成功。
+local function moveGarbageCarrierTo(e, loc, rot)
+    local a = e.actor
+    if rot then
+        return pcall(function() a:K2_TeleportTo(cmVec(loc), rot) end)
+    end
+    -- 极端兜底：FRotator 不可用时只改位置。K2_SetActorLocation 四参必须传齐，
+    -- 否则隐藏的 FHitResult& 输出参缺失会静默失败（项目既有坑）。
+    return pcall(function() a:K2_SetActorLocation(cmVec(loc), false, nil, true) end)
+end
+
+-- 新建载体条目：ActorPreset(AssetRef) + CreateActor。Location 单位米，直接给起点避免首次 Teleport 被丢弃。
+-- 缩放固定 1：附着特效的世界尺寸由 SetSceneEffectScale 决定，载体再放大会造成二次放大。
+local function createGarbageActor(loc, rot)
+    local c = gCfg()
+    local key = c.CarrierActorPresetKey
+    local ref = (type(AssetRef) == "table" and AssetRef[key]) or nil
+    if not ref then
+        if not garbageActorPool.refWarned then
+            garbageActorPool.refWarned = true
+            print("[Tetris][GarbageFx][WARN] 特效载体资源未注册 AssetRef[" .. tostring(key)
+                .. "]，跳过附着（需 WOW Editor 注册 ActorPreset + update preset）")
+        end
+        return nil
+    end
+    local scaleVec = Game:ConstructFVectorByLuaTable({ X = 1, Y = 1, Z = 1 })
+    local ok, actor = pcall(function()
+        if type(CreativeGameAPI) == "table" and CreativeGameAPI.CreateActor then
+            return CreativeGameAPI.CreateActor(ref, Game:ConstructFVectorByLuaTable(loc), rot, scaleVec, nil)
+        end
+        return nil
+    end)
+    if not ok or not actor then
+        if not garbageActorPool.failWarned then
+            garbageActorPool.failWarned = true
+            print("[Tetris][GarbageFx][WARN] 特效载体 CreateActor 失败: " .. tostring(actor))
+        end
+        return nil
+    end
+    local e = { actor = actor, rot = rot }
+    parkGarbageActor(e)
+    return e
+end
+
+local function releaseGarbageActor(e)
+    if not e then return end
+    e.token = nil
+    for i = #garbageActorPool.busy, 1, -1 do
+        if garbageActorPool.busy[i] == e then table.remove(garbageActorPool.busy, i) end
+    end
+    parkGarbageActor(e)
+    garbageActorPool.free[#garbageActorPool.free + 1] = e
+end
+
+local function acquireGarbageActor(loc, rot)
+    local e = table.remove(garbageActorPool.free)
+    if not e then
+        e = createGarbageActor(loc, rot)
+        if not e then return nil end
+    end
+    garbageActorPool.serial = garbageActorPool.serial + 1
+    e.token = garbageActorPool.serial
+    e.rot = rot
+    garbageActorPool.busy[#garbageActorPool.busy + 1] = e
+    return e
+end
+
+-- 重开：强制收回所有借出条目；残留飞行定时器因 token / generation 失效自动停止。
+function TetrisRenderer:ResetGarbageActors()
+    garbageActorPool.generation = garbageActorPool.generation + 1
+    for i = #garbageActorPool.busy, 1, -1 do
+        local e = table.remove(garbageActorPool.busy, i)
+        if e then
+            e.token = nil
+            parkGarbageActor(e)
+            garbageActorPool.free[#garbageActorPool.free + 1] = e
+        end
+    end
+    for _, e in ipairs(garbageActorPool.free) do parkGarbageActor(e) end
+end
+
+-- 开局预热：CreateActor 异步 spawn，提前建好可消除首次攻击的 1~2 帧空窗。
+function TetrisRenderer:PrewarmGarbageActors()
+    if gCfg().Enabled == false then return end
+    local park = gCfg().HideLocM or { X = 0, Y = 0, Z = -200 }
+    local rot = self.rot or makeZeroRotator()
+    local target = (type(gCfg().PoolSize) == "number") and gCfg().PoolSize or 2
+    local total = #garbageActorPool.free + #garbageActorPool.busy
+    while total < target do
+        local e = createGarbageActor(park, rot)
+        if not e then break end
+        parkGarbageActor(e)
+        garbageActorPool.free[#garbageActorPool.free + 1] = e
+        total = total + 1
+    end
+end
+
+-- 给对手扔垃圾时：拖尾特效从「被消除行区域的最左侧列中心、竖直居中」飞向「对手盘面中央」。
+-- rows = 被消除的行号列表；多行取 min/max 行的中点，只播一个特效且上下居中。
+-- opponentRenderer = 对手的 TetrisRenderer，取其 boardCenter 作终点；为 nil 时退化为原地播放。
+-- 位移：优先把特效附着到隐形载体（CreateSceneEffectOnActor），逐帧传送载体带动特效；
+--       同时仍逐帧调 SetSceneEffectPosition 作双保险；OnActor 不可用/失败时自动回退纯特效路径。
+function TetrisRenderer:PlayGarbageEffectAt(rows, opponentRenderer)
+    local gc = gCfg()
+    if gc.Enabled == false then return end
+    if not SceneEffectAPI or not SceneEffectAPI.CreateSceneEffect then return end
+    if not self.owner or not self.owner.AddTimerOnce then
+        if not garbageActorPool.diagWarned then
+            garbageActorPool.diagWarned = true
+            print("[Tetris][GarbageFx][WARN] owner 无 AddTimerOnce，跳过飞行特效")
+        end
+        return
+    end
+    local key = gc.PresetKey
+    local ref = (type(AssetRef) == "table" and AssetRef[key]) or nil
+    if not ref then
+        if not garbageActorPool.refWarned then
+            garbageActorPool.refWarned = true
+            print(string.format("[Tetris][GarbageFx][WARN] 特效资源未注册 AssetRef[%s]，跳过（需 WOW Editor 注册 + update preset）",
+                tostring(key)))
+        end
+        return
+    end
+
+    local r = TetrisConfig.Render
+    local step = r.CellSize + r.CellGap
+    local o = self.origin or r.BoardOrigin
+    local right = self.boardRight or { X = 1, Y = 0, Z = 0 }
+    local fwd = self.boardForward or { X = 0, Y = 1, Z = 0 }
+    local center = self.boardCenter
+    if not center then
+        local w = (TetrisConfig.Board.Cols - 1) * step
+        center = { X = o.X + right.X * (w / 2), Y = o.Y + right.Y * (w / 2), Z = o.Z }
+    end
+
+    -- 竖直：被消行区域的中心行（与 cellLocation 的 o.Z - (row-1)*step 一致）；无行数据时兜底盘面中行
+    local minRow, maxRow
+    for _, row in ipairs(rows or {}) do
+        local n = tonumber(row)
+        if n then
+            if not minRow or n < minRow then minRow = n end
+            if not maxRow or n > maxRow then maxRow = n end
+        end
+    end
+    if not minRow then
+        minRow = (TetrisConfig.Board.Rows or 20) / 2
+        maxRow = minRow
+    end
+    local midRow = (minRow + maxRow) / 2
+
+    -- 水平：盘心沿 -right 走「半宽 + SideOffsetM」，正好落在第 1 列（最左列）中心
+    local halfW = (TetrisConfig.Board.Cols - 1) * step / 2
+    local side = -(halfW + (type(gc.SideOffsetM) == "number" and gc.SideOffsetM or 0))
+    local D = (type(gc.DistanceFrontM) == "number") and gc.DistanceFrontM or 0
+    local hgt = (type(gc.HeightOffsetM) == "number") and gc.HeightOffsetM or 0
+    local pos = {
+        X = center.X + right.X * side + fwd.X * D,
+        Y = center.Y + right.Y * side + fwd.Y * D,
+        Z = o.Z - (midRow - 1) * step + hgt,
+    }
+
+    -- 终点：对手盘面几何中心。ResolveOrigin 里 boardCenter 就是盘心（Z 为盘面竖直中点），
+    -- 若尚未算好则由对端 origin / boardRight 回退推出。
+    local target = opponentRenderer and opponentRenderer.boardCenter
+    if not target and opponentRenderer then
+        local o2 = opponentRenderer.origin or r.BoardOrigin
+        local right2 = opponentRenderer.boardRight or { X = 1, Y = 0, Z = 0 }
+        local w = (TetrisConfig.Board.Cols - 1) * step
+        local h = (TetrisConfig.Board.Rows - 1) * step
+        target = { X = o2.X + right2.X * (w / 2), Y = o2.Y + right2.Y * (w / 2), Z = o2.Z - h / 2 }
+    end
+    local travelDur = (type(gc.TravelDuration) == "number") and gc.TravelDuration or 0.6
+    local travelStep = (type(gc.TravelStep) == "number" and gc.TravelStep > 0) and gc.TravelStep or 0.03
+    -- Duration 是特效总时长：飞行 TravelDuration 秒，之后停在终点播完剩余时间。
+    local effectDur = (type(gc.Duration) == "number" and gc.Duration > 0) and gc.Duration or 1.0
+
+    -- 隐形载体：只承载特效、不参与可见表现。保持「可见」状态（不调 SetActorHiddenInGame），
+    -- 否则附着其上的特效会被一并隐藏；空闲时停到 HideLocM 的地下停车场。
+    local carrier = nil
+    local rot = garbageRot(self, nil)
+    if gc.AttachToActor ~= false then
+        carrier = acquireGarbageActor(pos, rot)
+        if carrier then
+            rot = garbageRot(self, carrier.actor) or rot
+            carrier.rot = rot
+            moveGarbageCarrierTo(carrier, pos, rot)   -- 先摆到起点，再创建特效
+        end
+    end
+
+    local ok, id
+    local attached = false
+    if carrier and type(SceneEffectAPI.CreateSceneEffectOnActor) == "function" then
+        ok, id = pcall(function()
+            return SceneEffectAPI.CreateSceneEffectOnActor(ref, carrier.actor, effectDur)
+        end)
+        attached = (ok and id and id ~= 0) and true or false
+    end
+    if not attached then
+        if carrier and not garbageActorPool.attachWarned then
+            garbageActorPool.attachWarned = true
+            print("[Tetris][GarbageFx][WARN] CreateSceneEffectOnActor 不可用/失败，回退纯 SetSceneEffectPosition 位移")
+        end
+        if carrier then
+            releaseGarbageActor(carrier)
+            carrier = nil
+        end
+        ok, id = pcall(function()
+            return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), effectDur)
+        end)
+    end
+    if not ok or not id or id == 0 then
+        print("[Tetris][GarbageFx][WARN] 特效创建失败 id=" .. tostring(id))
+        if carrier then releaseGarbageActor(carrier) end
+        return
+    end
+    local sc = gc.Scale or { X = 1, Y = 1, Z = 1 }
+    pcall(function()
+        SceneEffectAPI.SetSceneEffectScale(id, Game:ConstructFVectorByLuaTable({
+            X = sc.X or 1, Y = sc.Y or 1, Z = sc.Z or 1,
+        }))
+    end)
+
+    local token = (carrier and carrier.token) or 0
+    local gen = garbageActorPool.generation
+    local function alive()
+        return gen == garbageActorPool.generation
+            and (not carrier or carrier.token == token)
+    end
+    local function finish()
+        if not alive() then return end
+        if SceneEffectAPI.DestroySceneEffect then
+            pcall(function() SceneEffectAPI.DestroySceneEffect(id) end)
+        end
+        if carrier then releaseGarbageActor(carrier) end
+    end
+
+    -- 【诊断】沿用原有前缀，便于与之前「特效不位移」的日志对照：attached 表示是否挂在载体上。
+    local function fmt(v) return string.format("%.2f", tonumber(v) or 0) end
+    print(string.format(
+        "[Tetris][GarbageFx][DIAG] created id=%s attached=%s from=(%s,%s,%s) target=%s dur=%s step=%s",
+        tostring(id), tostring(attached), fmt(pos.X), fmt(pos.Y), fmt(pos.Z),
+        target and string.format("(%s,%s,%s)", fmt(target.X), fmt(target.Y), fmt(target.Z)) or "nil",
+        tostring(travelDur), tostring(travelStep)))
+
+    if target and travelDur > 0 then
+        target = { X = target.X, Y = target.Y,
+            Z = target.Z + (type(gc.TargetHeightOffsetM) == "number" and gc.TargetHeightOffsetM or 0) }
+        local elapsed = 0
+        local firstLogged, doneLogged = false, false
+        local function move()
+            if not alive() then return end
+            elapsed = elapsed + travelStep
+            local t = elapsed / travelDur
+            if t > 1 then t = 1 end
+            local p = {
+                X = pos.X + (target.X - pos.X) * t,
+                Y = pos.Y + (target.Y - pos.Y) * t,
+                Z = pos.Z + (target.Z - pos.Z) * t,
+            }
+            -- 载体传送用厘米（cmVec），特效位置是 Domain API 直接用米；两条都每帧下发。
+            local teleportOk = true
+            if carrier then teleportOk = moveGarbageCarrierTo(carrier, p, rot) end
+            local setOk = pcall(function()
+                SceneEffectAPI.SetSceneEffectPosition(id, Game:ConstructFVectorByLuaTable(p))
+            end)
+            if not firstLogged then
+                firstLogged = true
+                print(string.format("[Tetris][GarbageFx][DIAG] first tick t=%s teleportOk=%s setOk=%s pos=(%s,%s,%s)",
+                    fmt(t), tostring(teleportOk), tostring(setOk), fmt(p.X), fmt(p.Y), fmt(p.Z)))
+            end
+            if t >= 1 then
+                if not doneLogged then
+                    doneLogged = true
+                    print(string.format("[Tetris][GarbageFx][DIAG] travel done t=%s teleportOk=%s setOk=%s",
+                        fmt(t), tostring(teleportOk), tostring(setOk)))
+                end
+                return
+            end
+            self.owner:AddTimerOnce(travelStep, move)
+        end
+        self.owner:AddTimerOnce(travelStep, move)
+    else
+        if not target and not self._garbageFxNoTargetWarned then
+            self._garbageFxNoTargetWarned = true
+            print("[Tetris][GarbageFx][WARN] 未取到对手盘心，拖尾特效退化为原地播放")
+        end
+    end
+    -- 特效按 Duration 播完后销毁并归还载体（DestroySceneEffect 不可用时由引擎自行到期回收）
+    self.owner:AddTimerOnce(effectDur, finish)
+end
+
 -- keyOverride：爆炸消行行传入 BlastRowEffectPresetKey（旧特效），其余行传 nil 用 EffectPresetKey。
 -- isBlastRow：true = 该行走「爆炸消行」配置组（资源 + 尺寸 + 位置），nil/false 走「正常消行」组。
 -- 两组的尺寸 / 位置在 TetrisConfig.Clear 里分开配置，互不影响；时长 / 朝向 / 行中心仍共用。

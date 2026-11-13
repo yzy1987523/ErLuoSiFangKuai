@@ -82,7 +82,7 @@ function TetrisBoard:reset()
     self.score = 0
     self.lines = 0
     self.level = 1
-    self.combo = -1               -- 保留字段：combo 计数已不参与分数结算（见 clearLines）
+    self.combo = 0                -- 连续消行计数：任一次落块没消行即清零（见 lockPiece / clearLines）
     self.isGameOver = false
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
     self.lastAppliedGarbage = 0   -- 最近一次被注入的垃圾行数（Game 层弹提示用，取后清零）
@@ -538,6 +538,8 @@ function TetrisBoard:lockPiece()
         return 0
     end
 
+    -- 本次落块没触发消行：连击中断，combo 归零（下一次消行重新从 1 起算）
+    self.combo = 0
     self.stage = "fall"
     self:applyGarbage()
     if self:tryEnterRockfall() then return 0 end
@@ -617,8 +619,9 @@ function TetrisBoard:doClear()
     self.lockPaused = false
     local cleared = self:clearLines(true)   -- 1) 消行+道具：只「消除+道具」，不坍塌（坍塌延迟到特效播完后）
     if cleared > 0 and self.game then
-        -- 按消行数播放音效（仅真人盘有 PlayerState 时生效；AI 盘 GetPlayerState 返回 nil，自动跳过）
-        pcall(function() self.game:PlayLineClearSound(cleared) end)
+        -- 统一消行音效 + 连击音效：clearLines(true) 刚更新 self.combo（连续消行 +1 / 断连归零）；
+        -- 仅真人盘有 PlayerState 时生效，AI 盘 GetPlayerState 返回 nil 自动跳过。
+        pcall(function() self.game:PlayLineClearSound(cleared, self.combo) end)
     end
     self:resolveGarbageOffset()             -- 2) 抵消：要扔出的 outgoing ←→ 即将升起的 incoming(pendingGarbage)
     if cleared > 0 then
@@ -753,18 +756,23 @@ function TetrisBoard:clearLines(countScore)
         self.pendingItemFx = true
     end
 
-    if cleared > 0 then
-        if countScore ~= false then
+    if countScore ~= false then
+        if cleared > 0 then
+            -- 连续消行：每个落块都触发消行则 combo +1；中断已在 lockPiece 的无满行分支清零。
+            self.combo = (self.combo or 0) + 1
             local base = TetrisConfig.Score.LineClear[cleared] or 0
+            -- 正常消行分（乘等级） + 连击分（每个 combo 固定 50，不乘等级）
             self.score = self.score + base * self.level
-            -- combo 不计入分数：combo 指「一次消行的行数」，不跨回合累计；
-            -- 多行消行的奖励已由 LineClear 表（100/300/500/800）体现，故此处不再叠加 ComboBonus。
+                + (TetrisConfig.Score.ComboBonus or 0) * self.combo
             self.lines = self.lines + cleared
             local newLevel = math.min(
                 math.floor(self.lines / TetrisConfig.Timing.LinesPerLevel) + 1,
                 TetrisConfig.Timing.MaxLevel
             )
             if newLevel > self.level then self.level = newLevel end
+        else
+            -- 兜底：countScore=true 却没有实际消行时，同样中断连击
+            self.combo = 0
         end
     end
     -- 对战：把本次消除应发给对手的垃圾行数记下来，供外层（TetrisGame/TetrisMatch）消费
