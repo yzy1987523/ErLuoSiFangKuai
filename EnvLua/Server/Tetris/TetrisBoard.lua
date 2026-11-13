@@ -82,7 +82,7 @@ function TetrisBoard:reset()
     self.score = 0
     self.lines = 0
     self.level = 1
-    self.combo = -1               -- -1 表示上一次未消除，用于 combo 计数
+    self.combo = -1               -- 保留字段：combo 计数已不参与分数结算（见 clearLines）
     self.isGameOver = false
     self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
     self.lastAppliedGarbage = 0   -- 最近一次被注入的垃圾行数（Game 层弹提示用，取后清零）
@@ -757,20 +757,14 @@ function TetrisBoard:clearLines(countScore)
         if countScore ~= false then
             local base = TetrisConfig.Score.LineClear[cleared] or 0
             self.score = self.score + base * self.level
-            self.combo = self.combo + 1
-            if self.combo > 0 then
-                self.score = self.score + TetrisConfig.Score.ComboBonus * self.combo * self.level
-            end
+            -- combo 不计入分数：combo 指「一次消行的行数」，不跨回合累计；
+            -- 多行消行的奖励已由 LineClear 表（100/300/500/800）体现，故此处不再叠加 ComboBonus。
             self.lines = self.lines + cleared
             local newLevel = math.min(
                 math.floor(self.lines / TetrisConfig.Timing.LinesPerLevel) + 1,
                 TetrisConfig.Timing.MaxLevel
             )
             if newLevel > self.level then self.level = newLevel end
-        end
-    else
-        if countScore ~= false then
-            self.combo = -1
         end
     end
     -- 对战：把本次消除应发给对手的垃圾行数记下来，供外层（TetrisGame/TetrisMatch）消费

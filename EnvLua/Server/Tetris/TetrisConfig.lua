@@ -268,8 +268,9 @@ TetrisConfig.Timing = {
 -- ===================== 计分 =====================
 TetrisConfig.Score = {
     -- 只有「消行」计分；锁定 / 软降 / 硬降不再加分（加分唯一入口见 TetrisBoard:clearLines）。
+    -- 分数 = LineClear[本次消行数] * level；combo 不跨回合累计，也不再叠加到分数。
     LineClear = { 100, 300, 500, 800 },  -- 1/2/3/4 行基础分（乘以等级）
-    ComboBonus = 50,                      -- 连续消除奖励（乘以 combo 次数）
+    ComboBonus = 50,                      -- 【已停用】连击奖励不再计入分数，保留字段兼容旧配置；恢复需同步改 clearLines
 }
 
 -- ===================== 消行得分数字（3D Actor UI，双方共用对象池） =====================
@@ -643,10 +644,10 @@ TetrisConfig.BackgroundWidget = {
     -- 名字需与编辑器里给该图片控件命的名完全一致（含空格/全角半角）。
     ImageChildName = "正方形 29",
     OpponentImages = {
-        Human  = "23_ImagePreset_181444521601844",  -- 真人对手
-        Easy   = "23_ImagePreset_181444521601844",  -- 简单 AI
-        Normal = "23_ImagePreset_181444379937575",  -- 普通 AI
-        Hard   = "23_ImagePreset_181444122434348",  -- 困难 AI
+        Human  = "23_ImagePreset_181443265133008",  -- 真人对手
+        Easy   = "23_ImagePreset_181443265133008",  -- 简单 AI
+        Normal = "23_ImagePreset_181441388672421",  -- 普通 AI
+        Hard   = "23_ImagePreset_181442952477121",  -- 困难 AI
     },
 }
 

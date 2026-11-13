@@ -2646,6 +2646,10 @@ end
 
 function TetrisRenderer:placeWholePieceV3(p, active)
     if not p or not p.root then return end
+    -- 每帧幂等重附：纠正下落过程中任何原因变孤儿/停在停车场的子块（异步 spawn 晚就位、复用/hold 换出后重附失败等）。
+    -- 否则 _everReady 冻结后（见下方注释）不再重附 → 该子块不跟随根 → 表现为「漏显示单元 / 显示不全」。
+    -- 这正是 EnsureWholePieceAttached 注释宣称的「每帧幂等重附」用途；开销极小（4 子块 pcall，且静默失败容错）。
+    self:EnsureWholePieceAttached(p, active)
     local center = self:pieceCenterWorld(active)
 
     -- 子块附着仅在 PrimeAllPieces 初始化时设置一次（piecesReady 闸门保证此处已就绪）；

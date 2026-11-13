@@ -29,12 +29,14 @@ param(
     # 显式指定目标 WOW 工程 ID（形如 52267426440_1789354100）。
     # 默认值已锁定为本工程实际活动目录（见 config.json 的 projectID），防止自动选择误判。
     # 如需临时切换目标，用 -WowProjectId 指定。
-    [string]$WowProjectId = '52267426440_1794378556'
+    [string]$WowProjectId = '52267426440_1794464370'
 )
 
 $ErrorActionPreference = 'Stop'
 $SourceDir = $PSScriptRoot
-$DownloadRoot = Split-Path $SourceDir -Parent
+# 活动工程下载根。WOW Editor 重装后下载根已迁至 "C:\Program Files\WOW Editor Pro\Game\download"，
+# 与本地开发根（c:\Custom\...）不再同处一个父目录，故此处硬编码新下载根，不再从 $SourceDir 推导。
+$DownloadRoot = 'C:\Program Files\WOW Editor Pro\Game\download'
 
 # 定位活动工程目录
 if ($WowProjectId -ne '') {
