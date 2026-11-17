@@ -22,6 +22,8 @@ function TetrisAIDriver:new(host, opts)
     o.stepCount = 0
     o.aiSeq = 0
     o._timer = nil
+    o._clearPhase = nil   -- 消行分阶段：showRows → showCollapse → 出块
+    o._clearWait = 0      -- 当前阶段剩余等待步数
     return o
 end
 
@@ -48,15 +50,65 @@ function TetrisAIDriver:_schedule()
     self._timer = self.host:AddTimerOnce(self.interval, function() selfRef:_step() end)
 end
 
--- 推进游戏层状态机：lockPaused → doClear → clearing → 坍塌 → finishClear。
+-- 推进游戏层状态机：lockPaused → doClear → clearing(满行消失) → 坍塌 → 出块。
+-- 拆成多步 + 每步发快照，客户端才能看到「满行亮起消失 → 上方块下落 → 出下一块」的完整消行过程；
+-- 旧版在同一步跑完 doClear→collapse→finishClear，客户端只看到整行瞬间消失、无过程。
 function TetrisAIDriver:_advanceClear(b)
     if b.lockPaused then
-        pcall(function() b:doClear() end)
+        local cleared = 0
+        local ok, err = pcall(function() cleared = b:doClear() end)
+        if not ok then print("[ClearDbg][AI][ERR] doClear 报错: " .. tostring(err)) end
+        -- [特效] 对方/AI 盘消行：取被消行号，经 host(GameState) 在 seat1 播粒子特效（SceneEffectAPI ServerOnly），
+        -- 并暂存行号随快照下发，让客户端 oppRenderer 也能画 3D 消行框。
+        if cleared > 0 then
+            local rows = b:consumeClearedRows()
+            self._fxRows = (rows and #rows > 0) and rows or nil
+            if self._fxRows and self.host and type(self.host.PlayClearFxForSeat) == "function" then
+                -- [特效] AI 盘用缓存的对手 seat（可能 0 或 1），与我方真人 seat 相反，避免特效左右互换
+                local oppSeat = self.host._oppSeat or 1
+                pcall(function() self.host:PlayClearFxForSeat(oppSeat, self._fxRows) end)
+            end
+        end
+        print("[ClearDbg][AI] lockPaused→doClear cleared=" .. tostring(cleared) ..
+            " clearing=" .. tostring(b.clearing))
+        if cleared > 0 and b.clearing then
+            self._clearPhase = "showRows"
+            self._clearWait = 6   -- 6 步 × 0.1s ≈ 0.6s 展示满行消失
+        end
+        return
     end
     if b.clearing then
-        -- applyClearCollapse 会让上方块下落；随后解除 clearing 并出下一块
-        pcall(function() b:applyClearCollapse() end)
-        pcall(function() b:finishClear() end)
+        if self._clearPhase == "showRows" then
+            self._clearWait = (self._clearWait or 0) - 1
+            if self._clearWait > 0 then
+                print("[ClearDbg][AI] clearing 展示满行消失 left=" .. tostring(self._clearWait))
+                return
+            end
+            local ok, err = pcall(function() b:applyClearCollapse() end)
+            if not ok then print("[ClearDbg][AI][ERR] applyClearCollapse 报错: " .. tostring(err)) end
+            self._clearPhase = "showCollapse"
+            self._clearWait = 3   -- 3 步 × 0.1s ≈ 0.3s 展示坍塌后阵列
+            print("[ClearDbg][AI] clearing 已坍塌，等待出块")
+            return
+        elseif self._clearPhase == "showCollapse" then
+            self._clearWait = (self._clearWait or 0) - 1
+            if self._clearWait > 0 then
+                print("[ClearDbg][AI] clearing 展示坍塌 left=" .. tostring(self._clearWait))
+                return
+            end
+            local ok, err = pcall(function() b:finishClear() end)
+            if not ok then print("[ClearDbg][AI][ERR] finishClear 报错: " .. tostring(err)) end
+            self._clearPhase = nil
+            print("[ClearDbg][AI] clearing 出块完成 active=" .. tostring(b:getActive() ~= nil))
+            return
+        else
+            -- 兜底：clearing 挂起但无阶段记录 → 直接收尾，防止卡死
+            pcall(function() b:applyClearCollapse() end)
+            pcall(function() b:finishClear() end)
+            self._clearPhase = nil
+            print("[ClearDbg][AI] clearing 兜底收尾 clearing=" .. tostring(b.clearing))
+            return
+        end
     end
 end
 
@@ -89,7 +141,10 @@ function TetrisAIDriver:_step()
     if not b then self:_schedule(); return end
 
     self:_advanceClear(b)
-    if not b.isGameOver then
+    -- 消行/锁定挂起期间禁止 spawn 与下落：否则 clearing 等待阶段 active 为 nil 会被误判为"需要出块"，
+    -- 提前 spawn 破坏分阶段过程（客户端就看不到满行消失→坍塌的过程）。
+    local busy = b.clearing or b.lockPaused
+    if not b.isGameOver and not busy then
         if not b:getActive() then
             pcall(function() b:spawn() end)
         elseif self.aiSeq ~= b.spawnSeq then
@@ -120,6 +175,11 @@ end
 
 function TetrisAIDriver:_broadcastSnapshot()
     local snap = Snapshot.Capture(self.board, { tag = self.tag })
+    -- [特效] 随快照下发一次性消行框行号（客户端 oppRenderer 据此画 3D 框），发后清空避免重复
+    if self._fxRows then
+        snap.clearedRows = self._fxRows
+        self._fxRows = nil
+    end
     -- 通过 GameState 广播：方法名 P3_OnAISnapshot 需在客户端 ClassicGameState 定义
     local ok, err = pcall(function()
         local gs = Game:GetGameState()

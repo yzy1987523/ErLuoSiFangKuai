@@ -148,67 +148,105 @@ end
 
 -- ===================== 消行结算（强时序，清单 §3） =====================
 function ClientGame:_startClearSequence(cleared)
-    if self._clearBusy then return end
+    if self._clearBusy then
+        print("[ClearDbg] _startClearSequence 被_clearBusy挡住 cleared=" .. tostring(cleared))
+        return
+    end
     self._clearBusy = true
+    self._clearLastCount = cleared
+    self._clearTarget = CLEAR_CFG.ResumeDelay or 0.3
+    self._clearElapsed = 0
+    print("[ClearDbg] _startClearSequence 开始 cleared=" .. tostring(cleared) ..
+        " 定时=" .. tostring(self._clearTarget) .. "s")
 
-    -- 1) 特效：消行框 / 爆破竖列（消费 pending 标记，取后清空避免重复）
-    local rows = self.board:consumeClearedRows()
-    local blasts = self.board:consumeBlastFx()
-    if self.renderer then
-        if rows and #rows > 0 and self.renderer.ShowClearFrame then self.renderer:ShowClearFrame(rows) end
-        if blasts then
-            for _, fx in ipairs(blasts) do
-                if self.renderer.ShowBlastColumn then self.renderer:ShowBlastColumn(fx.col) end
+    -- [修复] 每一步独立 pcall 断点：任何一步抛错只记日志，绝不阻断后续 After 注册与 tick 自驱动。
+    -- 旧版这里任一步抛错会连带中断 scheduler:After 注册 + gravityTick 递归调度 → 表现为"消行卡住后一动不动"。
+    local okFx, errFx = pcall(function()
+        -- 1) 特效：消行框 / 爆破竖列（消费 pending 标记，取后清空避免重复）
+        local rows = self.board:consumeClearedRows()
+        local blasts = self.board:consumeBlastFx()
+        if self.renderer then
+            if rows and #rows > 0 and self.renderer.ShowClearFrame then self.renderer:ShowClearFrame(rows) end
+            if blasts then
+                for _, fx in ipairs(blasts) do
+                    if self.renderer.ShowBlastColumn then self.renderer:ShowBlastColumn(fx.col) end
+                end
             end
         end
-    end
-    if self.board.pendingBlastImg then self:_hint("BlastImg", 1.7); self.board.pendingBlastImg = nil end
-    if self.board.pendingShiftImg then self:_hint("ShiftImg", 1.7); self.board.pendingShiftImg = nil end
+    end)
+    if not okFx then print("[ClearDbg][ERR] 消行特效阶段报错(已隔离): " .. tostring(errFx)) end
 
-    local effectDur = CLEAR_CFG.EffectDuration or 0.35
-    self.scheduler:After(effectDur, function() self:_finishClearSequence(cleared) end)
+    pcall(function()
+        if self.board.pendingBlastImg then self:_hint("BlastImg", 1.7); self.board.pendingBlastImg = nil end
+        if self.board.pendingShiftImg then self:_hint("ShiftImg", 1.7); self.board.pendingShiftImg = nil end
+    end)
+
+    -- After 只作快速通道；回调内也 pcall 防止引擎吞错。tick 自驱动是可靠兜底。
+    local okTimer, errTimer = pcall(function()
+        self.scheduler:After(self._clearTarget, function()
+            local okF, errF = pcall(function() self:_finishClearSequence(cleared) end)
+            if not okF then print("[ClearDbg][ERR] After回调内finish失败: " .. tostring(errF)) end
+        end)
+    end)
+    if not okTimer then print("[ClearDbg][ERR] 注册消行After失败(已隔离): " .. tostring(errTimer)) end
 end
 
 function ClientGame:_finishClearSequence(cleared)
+    if not self._clearBusy then
+        print("[ClearDbg] _finishClearSequence 跳过(未busy/已完成，防重入)")
+        return
+    end
+    self._clearBusy = false   -- 先清标志：After 与 tick 双通道同时到达时只执行一次
     local b = self.board
+    print("[ClearDbg] _finishClearSequence 已触发 cleared=" .. tostring(cleared) ..
+        " clearing=" .. tostring(b.clearing) .. " fullRows=" .. tostring(b._clearFullRows ~= nil))
 
-    -- 2) 位移（早于坍塌！清单 §3 强约束）
-    b:executePendingShift()
-    -- 3) 坍塌
-    b:applyClearCollapse()
-    -- 4) SK07 额外清底行（坍塌后、垃圾前，ignoreState）
-    if self.s07Charged then
-        b:clearBottomRows(1, true)
-        self.s07Charged = false
-        self.cd.SK07 = nil
-        self:_hint("S07Indicator", 1.5)
+    local ok, err = pcall(function()
+        -- 2) 位移（早于坍塌！清单 §3 强约束）
+        b:executePendingShift()
+        -- 3) 坍塌
+        b:applyClearCollapse()
+        -- 4) SK07 额外清底行（坍塌后、垃圾前，ignoreState）
+        if self.s07Charged then
+            b:clearBottomRows(1, true)
+            self.s07Charged = false
+            self.cd.SK07 = nil
+            self:_hint("S07Indicator", 1.5)
+        end
+        -- 5) 垃圾升起（必须在坍塌之后）
+        b:applyGarbage()
+
+        -- 6) 出下一块（内部含落石判断）
+        b:finishClear()
+
+        -- 7) 结算跨端攻击 + 技能收尾
+        local outgoing = b:consumeOutgoingGarbage() or 0
+        if outgoing > 0 then self:_emitVersus("garbage", outgoing) end
+        self.lastOutgoing = outgoing
+
+        if self.s06Charged then
+            self.s06Charged = false
+            self.cd.SK06 = nil
+            self:_hint("AttackBuffImg", 1.7)
+        end
+
+        -- 8) 充能道具：取走 pendingItemCharge 转成 bar/power
+        local charge = b.pendingItemCharge or 0
+        if charge > 0 then
+            b.pendingItemCharge = 0
+            for _ = 1, charge do self:_addBar() end
+            self:_hint("ChargeItemImg", 1.7)
+        end
+    end)
+    if not ok then print("[ClearDbg][ERR] _finishClearSequence 内部报错(已隔离): " .. tostring(err)) end
+
+    -- 消行框隐藏（特效阶段用 CreateActor 画的 3D 框，收回避免残留）
+    if self.renderer and self.renderer.HideClearFrame then
+        pcall(function() self.renderer:HideClearFrame() end)
     end
-    -- 5) 垃圾升起（必须在坍塌之后）
-    b:applyGarbage()
 
-    -- 6) 出下一块（内部含落石判断）
-    b:finishClear()
-
-    -- 7) 结算跨端攻击 + 技能收尾
-    local outgoing = b:consumeOutgoingGarbage() or 0
-    if outgoing > 0 then self:_emitVersus("garbage", outgoing) end
-    self.lastOutgoing = outgoing
-
-    if self.s06Charged then
-        self.s06Charged = false
-        self.cd.SK06 = nil
-        self:_hint("AttackBuffImg", 1.7)
-    end
-
-    -- 8) 充能道具：取走 pendingItemCharge 转成 bar/power
-    local charge = b.pendingItemCharge or 0
-    if charge > 0 then
-        b.pendingItemCharge = 0
-        for _ = 1, charge do self:_addBar() end
-        self:_hint("ChargeItemImg", 1.7)
-    end
-
-    self._clearBusy = false
+    print("[ClearDbg] _finishClearSequence 完成 clearing=" .. tostring(b.clearing) ..
+        " active=" .. tostring(b:getActive() ~= nil) .. " isOver=" .. tostring(b:isOver()))
 end
 
 function ClientGame:_addBar()
@@ -258,10 +296,32 @@ function ClientGame:tick()
         self:_scheduleRockfall()
         return true
     end
-    if b.clearing then return false end
+    if b.clearing then
+        -- [修复] 消行恢复改为重力 tick 自驱动：不依赖独立的 After timer。
+        -- 即使 timer 丢失/回调被引擎吞掉，已验证稳定的重力循环仍能推进消行，杜绝永久卡死。
+        if not self._clearBusy then
+            -- 异常兜底：clearing 挂起但没有消行流程在跑 → 直接收尾，防止卡死
+            print("[ClearDbg] tick clearing=true 但 clearBusy=false，强制收尾")
+            local okR, errR = pcall(function() b:finishClear() end)
+            if not okR then print("[ClearDbg][ERR] 强制收尾失败: " .. tostring(errR)) end
+            return true
+        end
+        self._clearElapsed = (self._clearElapsed or 0) + b:getGravityInterval()
+        local target = self._clearTarget or 0.35
+        print("[ClearDbg] tick 消行等待 elapsed=" .. tostring(self._clearElapsed) ..
+            "/" .. tostring(target) .. " clearFullRows=" .. tostring(b._clearFullRows ~= nil))
+        if self._clearElapsed >= target then
+            local okF, errF = pcall(function() self:_finishClearSequence(self._clearLastCount or 0) end)
+            if not okF then print("[ClearDbg][ERR] tick自驱动finish失败: " .. tostring(errF)) end
+        end
+        return false
+    end
     if b.lockPaused then
         -- 锁定停顿结束：执行消行 + 开特效时序
         local cleared = b:doClear()
+        print("[ClearDbg] tick lockPaused→doClear cleared=" .. tostring(cleared) ..
+            " clearing=" .. tostring(b.clearing) .. " clearBusy=" .. tostring(self._clearBusy) ..
+            " fullRows=" .. tostring(b._clearFullRows ~= nil))
         if cleared > 0 then
             -- 消 N 行 = N 个 bar（清单 §7：消 1 行得 1 bar）
             for _ = 1, cleared do self:_addBar() end

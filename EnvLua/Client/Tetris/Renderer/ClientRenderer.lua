@@ -237,9 +237,79 @@ function ClientRenderer:ApplyTransform(transform)
     end
 end
 
--- 特效接口：P2 先留空实现，P3/P7 再接 SceneEffectAPI。
-function ClientRenderer:ShowClearFrame(rows) end
-function ClientRenderer:ShowBlastColumn(col) end
+-- ===================== 消行 3D 框（客户端本地表现） =====================
+-- SceneEffectAPI 全类 ServerOnly（Core/LuaHint/SceneEffectAPI.lua 已确认），客户端不能播场景粒子特效。
+-- 改用客户端已验证可用的 CreativeGameAPI.CreateActor（P4 双盘方块即用此 API）造「带 WidgetComponent 的长条框 Actor」，
+-- 资源 = Config.ClearRowWidget.PresetKey（46_ActorPreset_2125630218，带整行 UMG 图片，已注册 AssetRef）。
+-- 显隐时机由 ClientGame._startClearSequence（Show）→ _finishClearSequence（Hide）控制，覆盖整个消行特效窗口。
+local CLEAR_WIDGET = Config.ClearRowWidget or {}
+
+function ClientRenderer:_acquireClearFrame(idx)
+    self._clearActors = self._clearActors or {}
+    local actor = self._clearActors[idx]
+    if actor then return actor end
+    local ref = resolveRef(CLEAR_WIDGET.PresetKey)
+    if not ref then
+        if not self._clearRefWarned then
+            self._clearRefWarned = true
+            print("[Tetris][Renderer][WARN] 消行框预设未注册 AssetRef[" .. tostring(CLEAR_WIDGET.PresetKey) .. "]")
+        end
+        return nil
+    end
+    local ok, a = pcall(function()
+        return CreativeGameAPI.CreateActor(
+            ref, Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = 0 }), nil, nil, nil
+        )
+    end)
+    if not ok or not a then
+        print("[Tetris][Renderer][WARN] 消行框 CreateActor 失败: " .. tostring(a))
+        return nil
+    end
+    pcall(function() a:SetActorEnableCollision(false) end)
+    self._clearActors[idx] = a
+    return a
+end
+
+-- 把消行框摆到指定 (row, col) 的中心并显形。row/col 为棋盘格坐标（1 基），cellLocM 内部换算为米。
+function ClientRenderer:_placeClearFrame(idx, row, col)
+    local actor = self:_acquireClearFrame(idx)
+    if not actor then return end
+    local locM = self:cellLocM(row, col)
+    -- 米 → 厘米：K2_SetActorLocation 第 3 参是隐藏 FHitResult& 输出，必须传 nil 占位、四参传齐。
+    local cm = Game:ConstructFVectorByLuaTable({
+        X = locM.X * 100.0, Y = locM.Y * 100.0, Z = locM.Z * 100.0,
+    })
+    pcall(function() actor:K2_SetActorLocation(cm, false, nil, true) end)
+    local sc = CLEAR_WIDGET.Scale or { X = 1, Y = 1, Z = 1 }
+    pcall(function() actor:SetActorScale3D(Game:ConstructFVectorByLuaTable(sc)) end)
+    pcall(function() actor:SetActorHiddenInGame(false) end)
+end
+
+function ClientRenderer:ShowClearFrame(rows)
+    if CLEAR_WIDGET.Enabled == false then return end
+    if type(rows) ~= "table" or #rows == 0 then return end
+    local cols = (Config.Board and Config.Board.Cols) or 10
+    local colCenter = cols / 2   -- 长条框覆盖整行，落在行中心即可
+    for i, row in ipairs(rows) do
+        self:_placeClearFrame(i, row, colCenter)
+    end
+    print("[Tetris][Renderer] ShowClearFrame 显示 " .. tostring(#rows) .. " 个消行框")
+end
+
+-- 爆破竖列：客户端无竖版 SceneEffect，退化为在该列中部显示一个框作可见提示（col 为爆破列号）。
+function ClientRenderer:ShowBlastColumn(col)
+    if CLEAR_WIDGET.Enabled == false then return end
+    local rows = (Config.Board and Config.Board.Rows) or 20
+    self:_placeClearFrame(1, math.floor(rows / 2), col or 1)
+    print("[Tetris][Renderer] ShowBlastColumn 列=" .. tostring(col))
+end
+
+function ClientRenderer:HideClearFrame()
+    for _, actor in ipairs(self._clearActors or {}) do
+        pcall(function() actor:SetActorHiddenInGame(true) end)
+    end
+end
+
 function ClientRenderer:ShowStoneFalling(stones) end
 
 --- 销毁全部 Actor（对局结束/切场景时调用）。
@@ -251,6 +321,10 @@ function ClientRenderer:Release()
     for _, slot in ipairs(self._pool) do
         pcall(function() CreativeGameAPI.DestroyActor(slot.actor) end)
     end
+    for _, actor in ipairs(self._clearActors or {}) do
+        pcall(function() CreativeGameAPI.DestroyActor(actor) end)
+    end
+    self._clearActors = nil
     self._pool = {}
     self._compCache = nil
 end

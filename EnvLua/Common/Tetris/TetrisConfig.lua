@@ -13,8 +13,12 @@ TetrisConfig.Board = {
 -- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
 -- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
 TetrisConfig.Clear = {
-    EffectDuration = 1,   -- 单位：秒。被消除格上播放的特效持续时间；也是「特效播完→方块下落」的延迟（见 ScheduleClearResume）。
-    ClearDelay = 1,    -- 单位：秒。消除→下落→出块 的总窗口；必须 ≥ EffectDuration，差值 = 下落后方块展示时间（让"落下"可见）。
+    EffectDuration = 1,   -- 单位：秒。被消除格上播放的【粒子特效】持续时间（SceneEffectAPI 服务端播放，世界空间独立）。
+    -- 【消行逻辑恢复等待】秒。消除→坍塌→出块 的流程等待时长，与粒子特效时长解耦：
+    -- 客户端化后本地盘靠重力 tick 自驱动推进，EffectDuration=1 会让盘面冻结 1s+ 显得"卡住"，
+    -- 故逻辑恢复用更短的 ResumeDelay；粒子特效仍按 EffectDuration 播放，视觉不受影响。
+    ResumeDelay = 0.3,
+    ClearDelay = 1,    -- 单位：秒（旧字段，保留兼容）。消除→下落→出块 的总窗口。
     LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
     -- 【正常消行】资源 + 尺寸 + 位置（与下方「爆炸消行」是两套独立配置，互不影响）。
     EffectPresetKey = "13_EffectPreset_3617487677",  -- 正常消行（横版、按行）特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。

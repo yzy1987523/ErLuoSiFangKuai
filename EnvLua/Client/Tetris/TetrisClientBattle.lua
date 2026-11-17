@@ -262,7 +262,8 @@ function TetrisClientBattle:Start()
         end
         self.host:AddTimerOnce(0.3, reportSnapshot)
     else
-        -- 单人：请求服务端启动 AI（服务端也有延迟兜底，这里幂等）
+        -- 单人：请求服务端启动 AI。服务端不再有开局自动兜底，AI 仅由这里（真正进入 Battle 后）触发，
+        -- 避免玩家还在开始界面时 AI 独自跑完整局；服务端 P5_RequestAI 内部幂等（已运行则跳过）。
         pcall(function()
             local gs = Game:GetGameState()
             if gs then gs:CallServerFunction("P5_RequestAI") end
@@ -336,26 +337,34 @@ function TetrisClientBattle:_tryBeginFall()
     local selfRef = self
     local function gravityTick()
         if not selfRef.running or not selfRef.localGame then return end
-        selfRef.localGame:tick()
-        selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState())
-        -- [P8] 重力自然落定也上报（与硬降同走 lockPiece 旁路记录，seq 去重）
-        selfRef:_reportLockedPieces()
-        if selfRef.onHud then pcall(selfRef.onHud, selfRef.localGame:BuildUIState(), selfRef._lastOppScore or 0) end
-        selfRef._tickCount = selfRef._tickCount + 1
-        if selfRef._tickCount % 20 == 0 then
-            local rs = selfRef.localGame:BuildRenderState()
-            local cnt = 0
-            for _, line in pairs(rs.grid or {}) do for _ in pairs(line) do cnt = cnt + 1 end end
-            print("[P4] 本地盘 tick#" .. tostring(selfRef._tickCount) ..
-                " 已落格数=" .. tostring(cnt) ..
-                " score=" .. tostring(rs and selfRef.localGame.board.score or 0))
+        local okTick, errTick = pcall(function()
+            selfRef.localGame:tick()
+            selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState())
+            -- [P8] 重力自然落定也上报（与硬降同走 lockPiece 旁路记录，seq 去重）
+            selfRef:_reportLockedPieces()
+            if selfRef.onHud then pcall(selfRef.onHud, selfRef.localGame:BuildUIState(), selfRef._lastOppScore or 0) end
+            selfRef._tickCount = selfRef._tickCount + 1
+            if selfRef._tickCount % 20 == 0 then
+                local rs = selfRef.localGame:BuildRenderState()
+                local cnt = 0
+                for _, line in pairs(rs.grid or {}) do for _ in pairs(line) do cnt = cnt + 1 end end
+                print("[P4] 本地盘 tick#" .. tostring(selfRef._tickCount) ..
+                    " 已落格数=" .. tostring(cnt) ..
+                    " score=" .. tostring(rs and selfRef.localGame.board.score or 0))
+            end
+            if selfRef.localGame.board:isOver() then
+                selfRef:_settle(false, "local-over")
+                selfRef.input:Disable()
+            end
+        end)
+        if not okTick then
+            -- [修复] 断点：任何单帧异常都打日志，但绝不中断重力循环的递归调度。
+            print("[P4][ERR] gravityTick 报错(已隔离，循环继续): " .. tostring(errTick))
         end
-        if selfRef.localGame.board:isOver() then
-            selfRef:_settle(false, "local-over")
-            selfRef.input:Disable()
-            return
+        -- [修复] 无论本帧成败都重新调度；结算时 _settle 会把 running 置 false，循环自然停。
+        if selfRef.running and selfRef.localGame then
+            selfRef.host:AddTimerOnce(selfRef.localGame.board:getGravityInterval(), gravityTick)
         end
-        selfRef.host:AddTimerOnce(selfRef.localGame.board:getGravityInterval(), gravityTick)
     end
     self.host:AddTimerOnce(board:getGravityInterval(), gravityTick)
 end
@@ -365,6 +374,19 @@ function TetrisClientBattle:OnOpponentSnapshot(snap)
     if not self.running or not self.oppRenderer then return end
     local rs = Snapshot.ToRenderState(snap)
     self.oppRenderer:Update(rs)
+    -- [特效] 对手盘消行 3D 框：快照带一次性 clearedRows，画框并延迟隐藏（粒子特效由服务端播，全员可见）
+    if type(snap) == "table" and type(snap.clearedRows) == "table" and #snap.clearedRows > 0
+        and self.oppRenderer.ShowClearFrame then
+        pcall(function() self.oppRenderer:ShowClearFrame(snap.clearedRows) end)
+        local oppRef = self
+        pcall(function()
+            self.host:AddTimerOnce(0.6, function()
+                if oppRef.oppRenderer and oppRef.oppRenderer.HideClearFrame then
+                    pcall(function() oppRef.oppRenderer:HideClearFrame() end)
+                end
+            end)
+        end)
+    end
     if type(snap) == "table" and snap.score then self._lastOppScore = snap.score end
     self._oppCount = (self._oppCount or 0) + 1
     if self._oppCount % 5 == 0 then
