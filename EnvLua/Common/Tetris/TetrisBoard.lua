@@ -1,0 +1,1259 @@
+-- 俄罗斯方块数据层：纯逻辑，不依赖任何引擎 API。
+-- 渲染层只读取本模块的状态（getCell / getActivePiece），不参与计算。
+-- 约定：grid[row][col]，row 1 = 顶行，row Rows = 底行；col 1 = 最左列。
+local TetrisConfig = require("EnvLua.Common.Tetris.TetrisConfig")
+
+local TetrisBoard = {}
+TetrisBoard.__index = TetrisBoard
+
+local pieceType = TetrisConfig.PieceType
+
+-- ---------------- 工具：矩阵旋转 ----------------
+-- 顺时针 90°：newM[i][j] = oldM[N + 1 - j][i]
+local function rotateMatrixCW(m)
+    local n = #m
+    local out = {}
+    for i = 1, n do
+        out[i] = {}
+        for j = 1, n do
+            out[i][j] = m[n + 1 - j][i]
+        end
+    end
+    return out
+end
+
+-- 预生成每种方块的 4 个旋转态
+local function buildRotationStates(shape)
+    local states = { shape }
+    local cur = shape
+    for _ = 1, 3 do
+        cur = rotateMatrixCW(cur)
+        states[#states + 1] = cur
+    end
+    return states
+end
+
+local rotationStates = {}
+for id, def in pairs(TetrisConfig.Pieces) do
+    rotationStates[id] = buildRotationStates(def.shape)
+end
+
+-- ===================== 格子数据模型：{ color, item } =====================
+-- 空 = nil；占位 = { color = 1..8（1..7 颜色 / 8 垃圾灰）, item = nil | 9 | 10 | 11（道具） }
+-- 颜色与道具彻底解耦：普通块 item=nil；道具块 color=8(灰) 且 item=道具类别号。
+local COLOR_GARBAGE = 8
+local function makeCell(color, item)
+    if not color then return nil end
+    return { color = color, item = item }
+end
+
+-- ---------------- 构造 / 重置 ----------------
+function TetrisBoard:new()
+    local o = setmetatable({}, self)
+    o:reset()
+    return o
+end
+
+function TetrisBoard:reset()
+    local cfg = TetrisConfig.Board
+    self.cols = cfg.Cols
+    self.rows = cfg.Rows
+
+    -- grid[row][col] = nil(空) 或 { color=1..8, item=nil|9|10|11 }
+    self.grid = {}
+    for r = 1, self.rows do
+        self.grid[r] = {}
+    end
+
+    self.bag = {}                 -- 7-bag 随机袋（普通方块）
+    self.itemBag = nil            -- 道具小洗牌袋（空时按需 refillItemBag）
+    self._lastItemType = nil      -- 上一个道具类型（袋边界保护用）
+    self.sinceItem = 0            -- 自上次道具落地以来落下的普通方块数（道具概率计数，见 nextPieceType）
+    self._firstItemDone = false   -- 调试：首块强制道具是否已触发（每局重置）
+    self.active = nil             -- 当前下落方块 { type, rot, x, y }
+    self.grounded = false         -- 当前方块是否已贴地（正在累计落地锁定延迟）
+    self.groundTimer = 0          -- 贴地累计时间（秒，按重力周期累加）
+    self.lockResets = 0           -- 落地后已发生的「移动/旋转重置」次数（超过上限不再重置，防无限拖延）
+    self.holdType = nil           -- Hold 暂存方块类型
+    self.canHold = true           -- 每次落地前只能用一次 Hold
+    self.nextQueue = {}           -- 预览队列
+    self:fillQueue()
+
+    self.score = 0
+    self.lines = 0
+    self.level = 1
+    self.combo = 0                -- 连续消行计数：任一次落块没消行即清零（见 lockPiece / clearLines）
+    self.isGameOver = false
+    self.pendingGarbage = 0       -- 待注入的垃圾行数（对战用）
+    self.lastAppliedGarbage = 0   -- 最近一次被注入的垃圾行数（Game 层弹提示用，取后清零）
+    self.outgoingGarbage = 0      -- 本次 lock 应发给对手的垃圾行数（对战用，外层消费）
+    self.pendingItemCharge = 0     -- 道具-充能块累计的待消费 power 数（由 TetrisGame 取走）
+    self.noRotateNext = 0         -- 待生效「禁止转动」减益层数（对手 SK-01 注入，下一块起生效）
+    -- SK-08「左右对调」减益状态：swapRequested=有对手申请；pendingSwapRequester=申请方(TetrisGame)；
+    -- pendingSwapNext=下一个 spawn 的方块左右互换。对手 board:lockPiece 落地时消费 swapRequested 并解除申请方 CD。
+    self.swapRequested = false
+    self.pendingSwapRequester = nil
+    self.pendingSwapNext = false
+    self.swapLrRequester = nil   -- 处于「左右对调」生效中的方块对应的申请方(TetrisGame)，落地时清空
+    self.rotateLockRequester = nil          -- 处于「禁止转动」生效中的方块对应的申请方(TetrisGame)，落地时清空（参考 swapLrRequester）
+    self.pendingRotateLockRequester = nil   -- 申请方(TetrisGame)，落子前由施法方写入（参考 pendingSwapRequester）
+    self.attackBonusNext = 0      -- 待生效「攻势」加成次数（本盘 SK-06，下次消行攻击 +1）
+    self.lastClearRows = 0        -- 最近一次 clearBottomRows 清除的行数（Game 层提示用）
+    self.spawnSeq = 0             -- 生成计数，供外层检测"是否产出了新方块"
+    self.lastSpawned = nil
+    -- 渲染层消费用的瞬时标记（消行 parent-shift 用）
+    self.pendingClearedRows = nil     -- 本次消除的行号列表（渲染层据此播消行特效）
+    self.pendingBlastFx = nil          -- 本次爆破竖版特效列表 { {col, bottom, top}, ... }（渲染层播竖版光束）
+    self.pendingGarbageMoved = nil    -- 保留字段：渲染层已改为全数据驱动刷新，不再据此切换路径
+    self._clearFullRows = nil         -- 被消除满行集合（clearLines 暂存，applyClearCollapse 消费；延迟坍塌用）
+    self.pendingShiftImg = nil        -- 位移道具：消行含位移块时置位，供 Game 在消除特效后弹两张提示图
+    self.pendingShiftExec = nil       -- 位移道具：消行含位移块时置位，供 Game 在消除特效后执行整行右移（先于坍塌）
+    -- 三阶段状态机 fall/clearing/settle：游戏层仍以 lockPaused/clearing 布尔推进，stage 为其可读投影，供渲染层只读
+    self.stage = "fall"
+    self.clearing = false              -- 消行动画期间置 true：挂起出块与重力，等动画结束后 finishClear()
+    self.lockPaused = false             -- 锁定后、消行前的"落地停顿"期间置 true：挂起出块与重力，停顿结束后由 Game 层调用 doClear()
+
+    -- 落石（道具方块 ITEM_STONE）相关状态
+    self.pendingRockfall = 0        -- 待触发的落石垃圾块数量（对手消除落石块后累加；本方下次方块锁定后消费）
+    self.fallingStone = false       -- 是否处于落石状态（仅落石垃圾块下落，无普通方块）
+    self.stones = nil               -- 落石活动垃圾块列表 { {col=_, row=_}, ... }（已写入 grid 的垃圾格，仅跟踪位置）
+
+    self:applyInitialLayout()
+    self:spawn()
+    return self
+end
+
+-- ---------------- 初始预填版面 ----------------
+-- 从 TetrisConfig.InitialLayout 读取，写入 grid[row][col]。
+-- 时机：reset 末尾、spawn 之前；初始满行是否立即消除由 Game 层控制（AutoClearOnStart）。
+function TetrisBoard:applyInitialLayout()
+    local cfg = TetrisConfig.InitialLayout
+    if not cfg or not cfg.Enabled then return end
+
+    local function writeLine(r, line)
+        line = line or ""
+        for c = 1, math.min(self.cols, #line) do
+            local ch = line:sub(c, c)
+            if ch ~= "." and ch ~= " " then
+                local v = tonumber(ch)
+                if v and v >= 1 and v <= 8 then
+                    self.grid[r][c] = makeCell(v, nil)
+                end
+            end
+        end
+    end
+
+    if cfg.Rows then
+        for r = 1, math.min(self.rows, #cfg.Rows) do
+            writeLine(r, cfg.Rows[r])
+        end
+    end
+    if cfg.ByRow then
+        for r, line in pairs(cfg.ByRow) do
+            if r >= 1 and r <= self.rows then
+                writeLine(r, line)
+            end
+        end
+    end
+end
+
+-- ---------------- 随机袋（7-bag） ----------------
+function TetrisBoard:refillBag()
+    self.bag = {}
+    for i = 1, 7 do
+        self.bag[i] = i
+    end
+    -- Fisher-Yates 洗牌
+    for i = #self.bag, 2, -1 do
+        local j = math.random(1, i)
+        self.bag[i], self.bag[j] = self.bag[j], self.bag[i]
+    end
+end
+
+-- 道具洗牌袋：把 Item.Types 完整拷贝后 Fisher-Yates 洗牌；袋内每种道具各出现一次，
+-- 保证均匀且「袋内不会连续重复」。袋耗尽后再 refill；并做袋边界保护避免跨袋连续重复。
+function TetrisBoard:refillItemBag()
+    self.itemBag = {}
+    local types = (TetrisConfig.Item and TetrisConfig.Item.Types) or {}
+    for _, x in ipairs(types) do
+        self.itemBag[#self.itemBag + 1] = x
+    end
+    for i = #self.itemBag, 2, -1 do
+        local j = math.random(1, i)
+        self.itemBag[i], self.itemBag[j] = self.itemBag[j], self.itemBag[i]
+    end
+    -- 袋边界保护：若新袋首与上一个道具类型相同（多种道具时偶有），交换首元素，确保不连续重复
+    if #self.itemBag > 1 and self.itemBag[1] == self._lastItemType then
+        local k = math.random(2, #self.itemBag)
+        self.itemBag[1], self.itemBag[k] = self.itemBag[k], self.itemBag[1]
+    end
+end
+
+function TetrisBoard:nextPieceType()
+    local icfg = TetrisConfig.Item
+    -- 【调试】开启后本局第一个方块强制为指定道具（FirstItemType），便于单独测试某一种道具效果（绕过 warmup）
+    if icfg and icfg.DebugFirstItem and not self._firstItemDone then
+        self._firstItemDone = true
+        local ft = icfg.FirstItemType or (icfg.Types and icfg.Types[1]) or 9
+        self._lastItemType = ft
+        self.sinceItem = 0   -- 强制首块为道具：计数按"生成道具"处理（清零）
+        return ft
+    end
+    -- 道具概率（基于「自上次道具生成以来落下的普通方块数」sinceItem，见 ItemWarmup/ItemStartProb/ItemIncPerPiece/ItemMaxProb）：
+    --   前 ItemWarmup 个必为普通；之后概率 = ItemStartProb + (sinceItem-ItemWarmup)*ItemIncPerPiece（封顶 ItemMaxProb）。
+    --   注意：sinceItem 的 +1/清零均在「生成时」(本函数内)处理——出道具立即清零、出普通立即 +1；
+    --         这样队列中一旦生成道具，其后补入的块必为普通，从根上保证「道具间至少隔 ItemWarmup 个普通块」。
+    if icfg then
+        local warmup = icfg.ItemWarmup or 10
+        local startP = icfg.ItemStartProb or 0.5
+        local incP   = icfg.ItemIncPerPiece or 0.1
+        local maxP   = icfg.ItemMaxProb or 1.0
+        local n = self.sinceItem or 0
+        if n >= warmup then
+            local p = startP + (n - warmup) * incP
+            if p > maxP then p = maxP end
+            if math.random() < p then
+                -- 本次生成道具：从独立道具小洗牌袋取具体类型；计数在生成时清零（见函数头注释）
+                if not self.itemBag or #self.itemBag == 0 then
+                    self:refillItemBag()
+                end
+                local t = table.remove(self.itemBag, 1)
+                self._lastItemType = t
+                self.sinceItem = 0   -- 道具生成即清零：后续队列中的块必为普通，杜绝连续道具
+                return t
+            end
+        end
+    end
+    -- 普通方块：走 7-bag（sinceItem 计数在生成时累加，见函数头注释）
+    if #self.bag == 0 then
+        self:refillBag()
+    end
+    self.sinceItem = (self.sinceItem or 0) + 1   -- 普通方块生成即 +1（道具生成路径已清零）
+    return table.remove(self.bag, 1)
+end
+
+function TetrisBoard:fillQueue()
+    while #self.nextQueue < 3 do
+        self.nextQueue[#self.nextQueue + 1] = self:nextPieceType()
+    end
+end
+
+-- ---------------- 方块生成 ----------------
+function TetrisBoard:spawn(typeOverride)
+    local t = typeOverride
+    if not t then
+        t = table.remove(self.nextQueue, 1)
+        self:fillQueue()
+    end
+
+    local size = #TetrisConfig.Pieces[t].shape
+    -- 水平居中：列偏移 = floor((cols - size) / 2) + 1
+    local x = math.floor((self.cols - size) / 2) + 1
+    local y = 1  -- 顶行对齐，矩阵内的空行使方块视觉上略靠下
+
+    self.active = { type = t, rot = 1, x = x, y = y }
+    self:markGhostDirty()   -- 新块出现：标记预览需重绘
+    self.grounded = false   -- 新块在顶部未落定：重置落地标记（供预览"落地即移走"判断）
+    self.groundTimer = 0
+    -- 应用「禁止转动」减益（对手 SK-01 注入）：本块无法旋转
+    if self.noRotateNext and self.noRotateNext > 0 then
+        self.active.noRotate = true
+        self.noRotateNext = self.noRotateNext - 1
+        -- 真正进入"无法旋转"时显示 SK01 双向 UI：施法方 1 图 + 被限制方(受害者自身) 1 图
+        self.rotateLockRequester = self.pendingRotateLockRequester
+        if self.rotateLockRequester then
+            print(string.format("[DBG][spawnPiece] casterReq isAI=%s psNil=%s",
+                tostring(self.rotateLockRequester.isAI),
+                tostring(self.rotateLockRequester:GetPlayerState() == nil)))
+            pcall(function() self.rotateLockRequester:ShowRotationRestrictCasterUI(true) end)
+            self.pendingRotateLockRequester = nil
+        end
+        -- 被限制方自身(本盘视图，"我"被限制时)显示 1 张"被限制旋转"提示图
+        if self.game then pcall(function() self.game:ShowRotationRestrictVictimUI(true) end) end
+    end
+    -- 应用「左右对调」减益（对手 SK-08 注入）：本块左右方向互换（仅影响 move，不影响旋转）
+    if self.pendingSwapNext then
+        self.active.swapLR = true
+        self.pendingSwapNext = false
+        -- 标记本块生效中的申请方（取出 caster），并立即显示指示器；取出后清空 pendingSwapRequester
+        self.swapLrRequester = self.pendingSwapRequester
+        if self.swapLrRequester then
+            pcall(function() self.swapLrRequester:ShowS08Indicator(true) end)
+            self.pendingSwapRequester = nil
+        end
+        -- 被翻转方(受害者=本盘自身)显示 3 张翻转效果图（与 caster 的 S08 指示器并存）
+        if self.game then pcall(function() self.game:ShowFlipVictimUI(true) end) end
+    end
+    self.grounded = false         -- 新方块出生即未贴地
+    self.groundTimer = 0
+    self.lockResets = 0
+    self.canHold = true
+
+    -- 生成快照：外层据此判断是否产出了新方块（用于调试上屏）
+    self.spawnSeq = (self.spawnSeq or 0) + 1
+    self.lastSpawned = { type = t, rot = 1, x = x, y = y, seq = self.spawnSeq }
+
+    -- 生成即无法放置 => 顶到天，游戏结束
+    if not self:canPlace(self.active, x, y, 1) then
+        -- [DIAG] 落石结束即 topout 验证：打印盘面顶部占用与来源，确认新块是否被落石石头顶在高位
+        local topRows = {}
+        for r = 1, math.min(4, self.rows) do
+            local cells = {}
+            for c = 1, self.cols do cells[c] = (self.grid[r][c] ~= nil) and 1 or 0 end
+            topRows[r] = table.concat(cells, "")
+        end
+        print(string.format("[DIAG][topout] fromRockfall=%s seq=%d type=%s pos=(x=%d,y=%d) top4rows=%s",
+            tostring(self._spawnFromRockfall == true), tostring(self.spawnSeq), tostring(t),
+            x, y, table.concat(topRows, "|")))
+        self.isGameOver = true
+    end
+    self._spawnFromRockfall = false   -- [DIAG] 清除标记，避免影响后续普通 spawn 的来源判断
+    return not self.isGameOver
+end
+
+-- ---------------- 碰撞检测 ----------------
+-- 判断方块以 (x, y, rot) 放置时是否合法（不越界、不与已固定格子重叠）
+function TetrisBoard:canPlace(piece, x, y, rot)
+    local m = rotationStates[piece.type][rot]
+    local n = #m
+    for r = 1, n do
+        for c = 1, n do
+            if m[r][c] == 1 then
+                local gr = y + r - 1
+                local gc = x + c - 1
+                if gc < 1 or gc > self.cols then return false end
+                if gr > self.rows then return false end
+                if gr >= 1 then
+                    if self.grid[gr][gc] ~= nil then return false end
+                end
+                -- gr < 1 表示还在盘面上方，允许
+            end
+        end
+    end
+    return true
+end
+
+-- ---------------- 操作 ----------------
+-- 标记落点预览需重绘：生成/移动/旋转/下落/锁定等改变活动块状态时调用，渲染层据此惰性刷新（避免每帧重定位）
+function TetrisBoard:markGhostDirty()
+    if self.game and self.game.renderer then
+        self.game.renderer._ghostDirty = true
+    end
+end
+
+function TetrisBoard:move(dx)
+    if self.isGameOver or not self.active then return false end
+    if self.active.swapLR then dx = -dx end   -- SK-08「左右对调」：左右方向键互换
+    local p = self.active
+    if self:canPlace(p, p.x + dx, p.y, p.rot) then
+        p.x = p.x + dx
+        self:resetLockDelay()   -- 成功平移（含贴地滑动）→ 重置落地锁定延迟
+        self:markGhostDirty()
+        return true
+    end
+    return false
+end
+
+-- 取 SRS 踢墙偏移表（数据层与渲染层共享 TetrisConfig.Rotation）。
+-- 返回形如 { {x,y}, ... } 的列表，y 向上为正（棋盘向下为正，应用时 newY = y - ky）。
+function TetrisBoard:getKicks(type, fromRot, toRot)
+    local f = (fromRot - 1) % 4
+    local t = (toRot - 1) % 4
+    local R = TetrisConfig.Rotation
+    if type == TetrisConfig.PieceType.I then
+        return (R.I[f] and R.I[f][t]) or { { 0, 0 } }
+    elseif type == TetrisConfig.PieceType.O then
+        return { { 0, 0 } }   -- O 旋转不变形，仅原地（枢轴即 4×4 框中心）
+    else
+        return (R.JLSTZ[f] and R.JLSTZ[f][t]) or { { 0, 0 } }
+    end
+end
+
+-- 旋转：dir = 1 顺时针，-1 逆时针；带 SRS 踢墙（依次尝试偏移表，含纵向）。
+function TetrisBoard:rotate(dir)
+    if self.isGameOver or not self.active then return false end
+    if self.active.noRotate then return false end  -- 被「禁止转动」减益锁定
+    local p = self.active
+    local n = #rotationStates[p.type]
+    local from = p.rot
+    local to = ((p.rot - 1 + dir) % n) + 1
+    if to == p.rot then return false end
+
+    local kicks = self:getKicks(p.type, from, to)
+    for _, k in ipairs(kicks) do
+        -- SRS 偏移 (kx, ky)，ky 向上为正；棋盘 y 向下为正 → newY = p.y - ky
+        if self:canPlace(p, p.x + k[1], p.y - k[2], to) then
+            p.x = p.x + k[1]
+            p.y = p.y - k[2]
+            p.rot = to
+            self:resetLockDelay()   -- 成功旋转（含贴地转身）→ 重置落地锁定延迟
+            self:markGhostDirty()
+            return true
+        end
+    end
+    return false
+end
+
+-- 软降一格：成功返回 true，触底返回 false
+function TetrisBoard:softDrop()
+    if self.isGameOver or not self.active then return false end
+    local p = self.active
+    if self:canPlace(p, p.x, p.y + 1, p.rot) then
+        p.y = p.y + 1
+        self.grounded = false   -- 又能下落 → 解除贴地锁定状态
+        self.groundTimer = 0
+        -- 软降不再加分：只有消行才计分（见 clearLines）。
+        self:markGhostDirty()
+        return true
+    end
+    return false
+end
+
+-- 落地锁定延迟的「移动/旋转重置」：方块已贴地且本步成功移动/旋转时，把延迟计时归零，
+-- 让玩家能继续在底面滑动/转身（次数受 LockResetLimit 上限约束，防止无限拖延锁定）。
+function TetrisBoard:resetLockDelay()
+    if not self.grounded then return end
+    local maxResets = (TetrisConfig.Timing and TetrisConfig.Timing.LockResetLimit) or 15
+    if (self.lockResets or 0) < maxResets then
+        self.groundTimer = 0
+        self.lockResets = (self.lockResets or 0) + 1
+    end
+end
+
+-- 硬降：直接落到底并锁定
+function TetrisBoard:hardDrop()
+    if self.isGameOver or not self.active then return false end
+    local p = self.active
+    while self:canPlace(p, p.x, p.y + 1, p.rot) do
+        p.y = p.y + 1
+    end
+    -- 硬降不再加分：只有消行才计分（见 clearLines）。
+    self:lockPiece()
+    return true
+end
+
+-- Hold：与暂存方块交换，每个方块落地前仅一次
+function TetrisBoard:hold()
+    if self.isGameOver or not self.active or not self.canHold then return false end
+    local cur = self.active.type
+    local swap = self.holdType
+    self.holdType = cur
+
+    if swap then
+        -- 用暂存方块替换当前，位置重置到顶部
+        local size = #TetrisConfig.Pieces[swap].shape
+        self.active = {
+            type = swap,
+            rot = 1,
+            x = math.floor((self.cols - size) / 2) + 1,
+            y = 1,
+        }
+        self:markGhostDirty()   -- Hold 取出暂存块：标记预览需重绘
+        self.grounded = false   -- 取出的块在顶部未落定：重置落地标记
+        self.groundTimer = 0
+        -- Hold 取出的方块同样计入「禁止转动」减益
+        if self.noRotateNext and self.noRotateNext > 0 then
+            self.active.noRotate = true
+            self.noRotateNext = self.noRotateNext - 1
+        end
+        if not self:canPlace(self.active, self.active.x, self.active.y, 1) then
+            self.isGameOver = true
+        end
+    else
+        -- 首次使用：暂存当前，直接取下一个
+        self:spawn()
+    end
+    -- 必须放在最后：spawn() 内部会把 canHold 重置为 true
+    self.canHold = false
+    return true
+end
+
+-- ---------------- 锁定与消行 ----------------
+function TetrisBoard:lockPiece()
+    if not self.active then return end
+    local p = self.active
+    -- 锁定不再加分：只有消行才计分（见 clearLines），此处仅保留调试日志。
+    if TetrisConfig.Debug and TetrisConfig.Debug.LockDbg then
+        print(string.format("[Tetris][LockDbg] 锁定(不计分) board=%s isAI=%s score=%s",
+            tostring(self.index), tostring(self.isAI), tostring(self.score)))
+    end
+    -- 方块落地锁定音效（仅真人盘有 PlayerState 时生效；AI/旁观盘 GetPlayerState 返回 nil，自动跳过）
+    if self.game then pcall(function() self.game:PlayLockSound() end) end
+    local m = rotationStates[p.type][p.rot]
+    local n = #m
+
+    local lockedCells = {}
+    for r = 1, n do
+        for c = 1, n do
+            if m[r][c] == 1 then
+                local gr = p.y + r - 1
+                local gc = p.x + c - 1
+                if gr >= 1 and gr <= self.rows and gc >= 1 and gc <= self.cols then
+                    local isItem = TetrisConfig.IsItemType(p.type)
+                    self.grid[gr][gc] = makeCell(isItem and COLOR_GARBAGE or p.type, isItem and p.type or nil)
+                    lockedCells[#lockedCells + 1] = { row = gr, col = gc }
+                end
+            end
+        end
+    end
+    -- 记录本次锁定方块的原始格位置（消行前的行号），供渲染层在消行重排前先提交为静态块，
+    -- 使其能像普通旧块一样参与 delta 计算与延迟下落。
+    self.pendingLockedCells = (#lockedCells > 0) and lockedCells or nil
+    self.active = nil
+    self:markGhostDirty()   -- 锁定→无活动块：标记预览需隐藏
+
+    -- SK-08「左右对调」：对手当前方块落地 → 解除申请方冷却，并标记下一个方块左右互换
+    if self.swapRequested and self.pendingSwapRequester then
+        self.pendingSwapNext = true
+        local req = self.pendingSwapRequester
+        if req and req.s08Charged then
+            req.s08Charged = false
+            pcall(function() req:UpdateSkillUI() end)
+        end
+        -- 注意：pendingSwapRequester 暂不清空，留待下一块（swapLR）spawn 时取出，用于落地后隐藏指示器
+        self.swapRequested = false
+    end
+
+    -- SK-08「左右对调」：若刚落地的方块正是带 swapLR 的那一块（swapLrRequester 仍存活），
+    -- 说明技能失效 → 隐藏申请方指示器并清空引用
+    if self.swapLrRequester then
+        -- pcall(function() self.swapLrRequester:ShowS08Indicator(false) end)
+        if self.game then pcall(function() self.game:ShowFlipVictimUI(false) end) end
+        self.swapLrRequester = nil
+    end
+
+    -- SK-01「禁止转动」：若刚落地的方块正是带 noRotate 的那一块（rotateLockRequester 仍存活），
+    -- 说明限制结束 → 隐藏施法方 1 图 + 被限制方 1 图并清空引用（被翻转方 3 图属 SK08，见上方 swapLrRequester 分支）
+    if self.rotateLockRequester then
+        pcall(function() self.rotateLockRequester:ShowRotationRestrictCasterUI(false) end)
+        if self.game then pcall(function() self.game:ShowRotationRestrictVictimUI(false) end) end
+        self.rotateLockRequester = nil
+    end
+
+    -- 先不消行：进入"落地停顿"（lockPaused）。此时 grid 中已含刚锁定的方块、满行仍是亮着的，
+    -- 渲染层会把这一帧画出来，玩家能看到"方块落定 + 满行完成"的一瞬；停顿结束后由 Game 层调用 doClear() 再消行。
+    if self:hasFullRows() then
+        self.lockPaused = true
+        self.stage = "clearing"
+        return 0
+    end
+
+    -- 本次落块没触发消行：连击中断，combo 归零（下一次消行重新从 1 起算）
+    self.combo = 0
+    self.stage = "fall"
+    self:applyGarbage()
+    if self:tryEnterRockfall() then return 0 end
+    self:spawn()
+    return 0
+end
+
+-- 锁定后是否存在满行（仅判定，不修改网格）。供 lockPiece 决定是否进入落地停顿。
+function TetrisBoard:hasFullRows()
+    for r = self.rows, 1, -1 do
+        local full = true
+        for c = 1, self.cols do
+            if self.grid[r][c] == nil then full = false break end
+        end
+        if full then return true end
+    end
+    return false
+end
+
+-- 返回当前所有满行的行号列表（纯查询，不修改网格）。
+-- 供渲染层在「落地停顿(lockPaused)、满行仍亮着、尚未执行 clearLines」时提前显示消行提示框。
+function TetrisBoard:getFullRows()
+    local rows = {}
+    for r = self.rows, 1, -1 do
+        local full = true
+        for c = 1, self.cols do
+            if self.grid[r][c] == nil then full = false break end
+        end
+        if full then rows[#rows + 1] = r end
+    end
+    return rows
+end
+
+-- 预检：给定满行里是否含爆破块，返回其列号列表（纯查询，不修改网格）。
+-- 供 Game 层在「落地锁定、尚未 clearLines」阶段判断本次是否要出爆炸表现。
+-- 注意：真正的爆破清列/特效标记仍由 clearLines() 在清除时置位，这里只做前置判断与日志。
+function TetrisBoard:getBlastColsInRows(rows)
+    local cols = {}
+    if type(rows) ~= "table" then return cols end
+    local PT = TetrisConfig.PieceType
+    local seen = {}
+    for _, r in ipairs(rows) do
+        for c = 1, self.cols do
+            local cell = self.grid[r] and self.grid[r][c]
+            if cell and cell.item == PT.ITEM_BLAST and not seen[c] then
+                seen[c] = true
+                cols[#cols + 1] = c
+            end
+        end
+    end
+    return cols
+end
+
+-- 预检：给定满行里哪些行含爆破块，返回这些行号（纯查询，不修改网格）。
+-- 供消行特效按行分流：爆炸行用旧特效 BlastRowEffectPresetKey，其余行用 EffectPresetKey。
+-- rows 来自 getFullRows()（行号唯一、按 r 递减），故一行只记一次；同行多个爆破块仍算一个爆炸行。
+function TetrisBoard:getBlastRows(rows)
+    local br = {}
+    if type(rows) ~= "table" then return br end
+    local PT = TetrisConfig.PieceType
+    for _, r in ipairs(rows) do
+        for c = 1, self.cols do
+            local cell = self.grid[r] and self.grid[r][c]
+            if cell and cell.item == PT.ITEM_BLAST then
+                br[#br + 1] = r
+                break
+            end
+        end
+    end
+    return br
+end
+
+-- 落地停顿结束后由 Game 层调用：执行真正的消行 + 注入垃圾 + 决定是否出下一块。
+-- 必须在 lockPaused 期间调用；否则（无满行或非锁定态）直接忽略。
+function TetrisBoard:doClear()
+    if not self.lockPaused then return false end
+    self.lockPaused = false
+    local cleared = self:clearLines(true)   -- 1) 消行+道具：只「消除+道具」，不坍塌（坍塌延迟到特效播完后）
+    if cleared > 0 and self.game then
+        -- 统一消行音效 + 连击音效：clearLines(true) 刚更新 self.combo（连续消行 +1 / 断连归零）；
+        -- 仅真人盘有 PlayerState 时生效，AI 盘 GetPlayerState 返回 nil 自动跳过。
+        pcall(function() self.game:PlayLineClearSound(cleared, self.combo) end)
+    end
+    self:resolveGarbageOffset()             -- 2) 抵消：要扔出的 outgoing ←→ 即将升起的 incoming(pendingGarbage)
+    if cleared > 0 then
+        -- 消除阶段：数据层已「消除+道具」完成（尚未坍塌），转 clearing 阶段；
+        -- 渲染层按数据刷新（回收整行/整列、播特效、位移），特效播完后由 Game 层 applyClearCollapse 执行下落。
+        -- 注意：垃圾升起(applyGarbage)也延迟到特效播完后、坍塌之后执行（避免上移整盘破坏坍塌行号）。
+        self.clearing = true
+        self.stage = "clearing"
+    else
+        -- 无消行：垃圾仍照常升起，直接出下一块（无消除特效，无需等待）
+        self:applyGarbage()
+        if self:tryEnterRockfall() then
+            self.stage = "fall"
+            return cleared
+        end
+        self:spawn()
+        self.stage = "fall"
+    end
+    return cleared
+end
+
+-- 消除满行并结算道具，返回消除行数。
+-- 道具结算三阶段顺序：1) 先消除（扫描收道具 → 移除满行，暂不坍塌）；
+--   2) 再执行道具（爆破清列 / 位移右移 / 充能）；3) 最后其他再落下（正常坍塌：消多少行，上方方块下落多少行）。
+-- countScore：默认 true（正常锁定消除，计分/连击/升级）；false 用于开局初始消除，仅清网格、不污染分数。
+function TetrisBoard:clearLines(countScore)
+    local cleared = 0
+
+    -- ===================== STEP 1：消除 =====================
+    local PT = TetrisConfig.PieceType
+    local itemEffects = { blast = {}, shift = false, charge = 0, shiftRows = {} }
+    -- 扫描满行：此时满行仍在盘面上，道具格就位于满行内，先收集其所在列号供 STEP2 使用（本步不改网格）。
+    local fullRows = {}
+    local clearedRows = {}
+    for r = self.rows, 1, -1 do
+        local full = true
+        for c = 1, self.cols do
+            if self.grid[r][c] == nil then full = false; break end
+        end
+        if full then
+            fullRows[r] = true
+            cleared = cleared + 1
+            clearedRows[#clearedRows + 1] = r
+            for c = 1, self.cols do
+                local it = self.grid[r][c] and self.grid[r][c].item
+                if it == PT.ITEM_BLAST then
+                    itemEffects.blast[#itemEffects.blast + 1] = { r = r, c = c }
+                elseif it == PT.ITEM_SHIFT then
+                    itemEffects.shift = true
+                    itemEffects.shiftRows[#itemEffects.shiftRows + 1] = r   -- 记录位移块所在行（数据层坐标）
+                elseif it == PT.ITEM_CHARGE then
+                    itemEffects.charge = itemEffects.charge + 1
+                elseif it == PT.ITEM_STONE then
+                    -- 落石：对对手触发落石（其下次方块锁定后生成 5~9 个随机列垃圾块下落）
+                    if countScore ~= false then
+                        local opp = self.game and self.game.opponent
+                        if opp and opp.board then
+                            opp.board:queueRockfall(math.random(5, 9))
+                            -- 落石能力释放音效（仅真实消行时触发）
+                            if self.game then pcall(function() self.game:PlayItemSound(PT.ITEM_STONE) end) end
+                            -- 落石道具消除提示图：显示 StoneImg 1.7s 后自动隐藏（仅真人盘生效）
+                            if self.game then pcall(function() self.game:ShowStoneImage() end) end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- 移除满行（仅消除：把满行格子清空；下落坍塌放到 STEP3，保证「先消除→再道具→最后下落」顺序）
+    for _, r in ipairs(clearedRows) do
+        for c = 1, self.cols do self.grid[r][c] = nil end
+    end
+    -- 记录本次被消除的行，供渲染层做消除特效
+    self.pendingClearedRows = (#clearedRows > 0) and clearedRows or nil
+
+    -- ===================== STEP 2：道具（在「消除+坍塌」后的盘面状态上执行） =====================
+    -- 爆破：清除爆破格所在的一整列（满行已移除，此处直接清整列）。
+    -- 竖版特效必须按「数据层爆破块坐标（bc.c 列）」锚定，与列内是否还残留方块无关——
+    -- 满行可能在 STEP1 已被移除、使该列暂无方块，但不能因此漏播特效。故按整列覆盖记录特效。
+    -- 约定（对齐 PlayBlastEffectAt）：bottom=较大行号(盘底 self.rows)，top=较小行号(盘顶 1)，整列高度=(rows-1)*step。
+    -- 爆破：仅真实消行(countScore~=false)时触发清除整列；落石专用消行(countScore=false)不触发任何道具效果
+    if countScore ~= false and #itemEffects.blast > 0 then
+        local blastFx = {}
+        for _, bc in ipairs(itemEffects.blast) do
+            local col = bc.c
+            if col >= 1 and col <= self.cols then
+                -- 清除整列
+                for rr = 1, self.rows do self.grid[rr][col] = nil end
+                -- 始终记录整列特效：以爆破块所在列(bc.c)锚定、覆盖整列，不再依赖列内是否有方块
+                blastFx[#blastFx + 1] = { col = col, bottom = self.rows, top = 1 }
+            end
+        end
+        if #blastFx > 0 then self.pendingBlastFx = blastFx end
+        self._lastBlastCols = blastFx   -- [DIAG] 供 applyClearCollapse 诊断打印使用（含本次爆破列号）
+        -- 爆破能力释放音效（仅真实消行 countScore~=false 时触发，落石专用消行不会走到这里）
+        if self.game then pcall(function() self.game:PlayItemSound(PT.ITEM_BLAST) end) end
+    end
+    -- 2D 提示图标记：仅真实消行(countScore~=false)时累计，供上层 TetrisGame 在 doClear 后弹图（避免开局预处理消除误触发）
+    if countScore ~= false and #itemEffects.blast > 0 then
+        self.pendingBlastImg = true
+    end
+    -- 位移：仅记录"待执行"标记；真正的整行右移延迟到「消除特效播完、方块下落前」(Game 的 effectDur 定时器)
+    -- 由 executePendingShift() 执行。这样位移与提示图片都在消除特效之后、方块下落之前出现（符合需求），
+    -- 且右移在坍塌(applyClearCollapse)之前完成——横向右移与竖向坍塌可交换、最终盘面一致，仅改时序不改数据。
+    if itemEffects.shift and countScore ~= false then
+        self.pendingShiftExec = true   -- 供 Game 在消除特效后执行真正右移（先于 applyClearCollapse）
+        self.pendingShiftImg = true    -- 供 Game 在消除特效后弹两张提示图
+    end
+    -- 充能：累计待上层(TetrisGame)消费的 power 数，由 OnTick 取走并加进技能能量。
+    -- 仅真实消行(countScore~=false)时累计；开局预处理消除(countScore=false)不计，避免开局即弹提示图/送免费 power。
+    if itemEffects.charge > 0 and countScore ~= false then
+        self.pendingItemCharge = (self.pendingItemCharge or 0) + itemEffects.charge
+    end
+
+    -- ===================== STEP 3（下落）已拆出，不在本函数执行 =====================
+    -- 正常坍塌（消多少行、上方方块下落多少行）延迟到「特效播放完」后，由 Game 层调用 applyClearCollapse() 执行，
+    -- 实现「先播特效/回收整行(整列)/位移，播完特效后方块正常落下」的分阶段时序（对齐 Puyo BeginResolve）。
+    -- 这里仅暂存被消除满行集合，供 applyClearCollapse 跳过这些行做压缩。
+    self._clearFullRows = fullRows
+
+    -- [DIAG] 打印被消除的满行集合，以及被收集的爆破块坐标，用于核对"消除的是不是正确的行"
+    local fr = {}
+    for k in pairs(fullRows) do fr[#fr + 1] = k end
+    table.sort(fr)
+    local bl = {}
+    for _, b in ipairs(itemEffects.blast) do bl[#bl + 1] = string.format("(%d,%d)", b.r, b.c) end
+    print(string.format("[DIAG][clearLines] cleared=%d fullRows={%s} blast=%s",
+        cleared, table.concat(fr, ","), table.concat(bl, " ")))
+
+    -- 道具爆破改动了非整体行移动的格子（爆破清列打洞），渲染层需走逐格全量重排（仅真实消行时）
+    if countScore ~= false and #itemEffects.blast > 0 then
+        self.pendingItemFx = true
+    end
+
+    if countScore ~= false then
+        if cleared > 0 then
+            -- 连续消行：每个落块都触发消行则 combo +1；中断已在 lockPiece 的无满行分支清零。
+            self.combo = (self.combo or 0) + 1
+            local base = TetrisConfig.Score.LineClear[cleared] or 0
+            -- 正常消行分（乘等级） + 连击分（每个 combo 固定 50，不乘等级）
+            self.score = self.score + base * self.level
+                + (TetrisConfig.Score.ComboBonus or 0) * self.combo
+            self.lines = self.lines + cleared
+            local newLevel = math.min(
+                math.floor(self.lines / TetrisConfig.Timing.LinesPerLevel) + 1,
+                TetrisConfig.Timing.MaxLevel
+            )
+            if newLevel > self.level then self.level = newLevel end
+        else
+            -- 兜底：countScore=true 却没有实际消行时，同样中断连击
+            self.combo = 0
+        end
+    end
+    -- 对战：把本次消除应发给对手的垃圾行数记下来，供外层（TetrisGame/TetrisMatch）消费
+    if cleared > 0 and countScore ~= false then
+        local base = (TetrisConfig.Versus and TetrisConfig.Versus.GarbageTable and TetrisConfig.Versus.GarbageTable[cleared]) or 0
+        -- 「攻势」加成（SK-06）：本次消行攻击行数 +1，仅对本次实际消行生效，用完即弃
+        local bonus = self.attackBonusNext or 0
+        if bonus > 0 then self.attackBonusNext = 0 end
+        self.outgoingGarbage = base + bonus
+        -- 攻势(SK06)消行触发：在施法方(本盘拥有者)视角弹图片提示 1.7s
+        if bonus > 0 and self.game then
+            pcall(function() self.game:ShowAttackBuffImage() end)
+            self.game.s06Charged = false   -- CD 结束（消行结算）
+            pcall(function() self.game:UpdateSkillUI() end)
+        end
+    else
+        self.outgoingGarbage = 0
+    end
+    return cleared
+end
+
+-- 消行坍塌（下落）：在消行特效播放完成后由 Game 层调用（见 TetrisGame:ScheduleClearResume）。
+-- 把消除后剩下的方块整体下移填补被消除满行留下的空缺——标准消行坍塌：消 N 行，其上所有方块下落 N 行。
+-- 与 clearLines 拆分：clearLines 只「消除+道具」（不坍塌），本函数负责「最后其他再落下」；
+-- 因 doClear 在 clearLines 之后还会 applyGarbage 上移整盘，故坍塌必须在垃圾升起之前执行，被消除行号才正确。
+function TetrisBoard:applyClearCollapse()
+    local fullRows = self._clearFullRows
+    self._clearFullRows = nil
+    if not fullRows then return end
+    local writeRow = self.rows
+    for r = self.rows, 1, -1 do
+        if not fullRows[r] then
+            if writeRow ~= r then
+                for c = 1, self.cols do self.grid[writeRow][c] = self.grid[r][c] end
+            end
+            writeRow = writeRow - 1
+        end
+    end
+    -- 顶部剩余行清空
+    for r = writeRow, 1, -1 do
+        for c = 1, self.cols do self.grid[r][c] = nil end
+    end
+    self.stage = "settle"
+    -- [DIAG] 打印坍塌后各列占用（每列从盘底到盘顶），用于确认爆破场景其他列是否真的下落（X=有块 . =空）
+    local out = {}
+    for c = 1, self.cols do
+        local s = {}
+        for r = self.rows, 1, -1 do s[#s + 1] = (self.grid[r][c] ~= nil) and "X" or "." end
+        out[c] = table.concat(s, "")
+    end
+    print(string.format("[DIAG][collapse done] blast=%d cols=%s",
+        self._lastBlastCols and #self._lastBlastCols or 0, table.concat(out, " ")))
+end
+
+-- 位移道具：在「消除特效播放完、方块下落前」(Game 的 effectDur 定时器)执行真正的整行右移。
+-- 仅当本次消行含位移块(pendingShiftExec)时执行；执行后清空标记并置 pendingItemFx，供渲染层走逐格全量重排。
+-- 必须早于 applyClearCollapse：右移(横向)与坍塌(竖向)可交换、最终盘面一致，但时序上需「先位移→再下落」。
+function TetrisBoard:executePendingShift()
+    if not self.pendingShiftExec then return end
+    self.pendingShiftExec = nil
+    -- 位移能力释放音效（真正执行整行右移时播放）
+    if self.game then pcall(function() self.game:PlayItemSound(TetrisConfig.PieceType.ITEM_SHIFT) end) end
+    local moved = false
+    for r = 1, self.rows do
+        for c = self.cols, 1, -1 do
+            if self.grid[r][c] ~= nil and c + 1 <= self.cols and self.grid[r][c + 1] == nil then
+                self.grid[r][c + 1] = self.grid[r][c]
+                self.grid[r][c] = nil
+                moved = true
+            end
+        end
+    end
+    if moved then self.pendingItemFx = true end
+end
+
+-- 清除最下方 n 行（SK-02「清除最下方两行」）：
+-- 删除可见区最下方 n 行，上方全部内容整体下移 n 行（顶部 n 行清空）。
+-- 当前下落方块随场地下移（逐格尝试，避免穿过障碍 / 越界）。
+-- 不计分 / 不消行 / 不送攻击：不修改 score / lines / outgoingGarbage / combo。
+function TetrisBoard:clearBottomRows(n, ignoreState)
+    if not ignoreState and (self.isGameOver or self.clearing or self.lockPaused) then return 0 end
+    n = n or 2
+    if n <= 0 then return 0 end
+    -- 网格整体下移 n 行：row r 取旧 row (r-n)；顶部 n 行清空；底部 n 行被删除
+    for r = self.rows, 1, -1 do
+        local src = r - n
+        if src >= 1 then
+            for c = 1, self.cols do self.grid[r][c] = self.grid[src][c] end
+        else
+            for c = 1, self.cols do self.grid[r][c] = nil end
+        end
+    end
+    -- 当前下落方块随场地下移（逐格尝试，避免穿过障碍 / 越界）
+    if self.active then
+        local p = self.active
+        for _ = 1, n do
+            if self:canPlace(p, p.x, p.y + 1, p.rot) then
+                p.y = p.y + 1
+            else
+                break
+            end
+        end
+    end
+    self.lastClearRows = n
+    return n
+end
+
+-- 渲染层消费：取走本次被消除的行号（取后清空，避免重复处理）
+function TetrisBoard:consumeClearedRows()
+    local r = self.pendingClearedRows
+    self.pendingClearedRows = nil
+    return r
+end
+
+-- 渲染层消费：取走本次爆破竖版特效列表 { {col, bottom, top}, ... }（取后清空）
+function TetrisBoard:consumeBlastFx()
+    local v = self.pendingBlastFx
+    self.pendingBlastFx = nil
+    return v
+end
+
+
+-- 渲染层消费：取走"本帧是否发生过道具单元格级改动（爆破打洞/位移右移）"（取后清空）。
+-- 为 true 时渲染层不能用 parent-shift，须走逐格全量重排以正确反映这些格子变化。
+function TetrisBoard:consumeItemFx()
+    local v = self.pendingItemFx
+    self.pendingItemFx = nil
+    return v
+end
+
+-- 渲染层消费：取走本次锁定方块的原始格位置（取后清空，避免重复提交）
+function TetrisBoard:consumeLockedCells()
+    local c = self.pendingLockedCells
+    self.pendingLockedCells = nil
+    return c
+end
+
+-- 渲染层消费：本次是否发生过垃圾行上移（取后清空）
+function TetrisBoard:consumedGarbageMoved()
+    local g = self.pendingGarbageMoved
+    self.pendingGarbageMoved = nil
+    return g
+end
+
+-- ---------------- 垃圾行（对战） ----------------
+function TetrisBoard:addGarbage(count)
+    if not count or count <= 0 then return end
+    local cap = TetrisConfig.Versus and TetrisConfig.Versus.MaxPending
+    if cap and self.pendingGarbage + count > cap then
+        count = cap - self.pendingGarbage
+    end
+    if count < 0 then count = 0 end
+    self.pendingGarbage = self.pendingGarbage + count
+end
+
+-- 对战：取走本次应发给对手的垃圾行数（取后清零，避免重复发送）
+function TetrisBoard:consumeOutgoingGarbage()
+    local g = self.outgoingGarbage or 0
+    self.outgoingGarbage = 0
+    return g
+end
+
+-- 垃圾抵消：落地后先判定消行(见 doClear → clearLines 生成 outgoingGarbage)，
+-- 再检测「是否即将有垃圾升起」(pendingGarbage > 0)；若即将升起，则与「要扔出的垃圾」
+-- outgoing 进行抵消计算：抵消数 = min(outgoing, incoming)，二者同时扣减。
+--   抵消后 pendingGarbage 仍有剩余 → 随后的 applyGarbage() 照常升起为垃圾行；
+--   outgoing 仍有剩余 → 由 Game 层 flushOutgoingGarbage() 发给对手。
+-- 返回本次实际抵消的行数（调试/提示用）。任何一侧 <=0 则无需抵消，返回 0。
+function TetrisBoard:resolveGarbageOffset()
+    local out = self.outgoingGarbage or 0
+    local inc = self.pendingGarbage or 0
+    if out <= 0 or inc <= 0 then return 0 end
+    local off = (out < inc) and out or inc
+    self.outgoingGarbage = out - off
+    self.pendingGarbage = inc - off
+    if TetrisConfig.Debug and TetrisConfig.Debug.PrintGarbage then
+        print(string.format(
+            "[Tetris][Versus] 垃圾抵消: 要扔出 outgoing=%d ←→ 即将升起 incoming=%d → 抵消 %d（剩余 扔出=%d, 升起=%d）",
+            out, inc, off, self.outgoingGarbage, self.pendingGarbage))
+    end
+    return off
+end
+
+-- 从底部注入垃圾行：整行填充，随机留一个缺口
+function TetrisBoard:applyGarbage()
+    local count = self.pendingGarbage
+    if count <= 0 then return 0 end
+    self.pendingGarbage = 0
+    self.pendingGarbageMoved = true   -- 垃圾行上移会改变方块位置，渲染层应退化为逐格重排
+    self.lastAppliedGarbage = count  -- 供 Game 层判断「本盘被扔垃圾」并弹提示（独立于渲染消费标记）
+
+    local gap = math.random(1, self.cols)   -- 整批垃圾共用同一缺口列（多行对齐）
+    for _ = 1, count do
+        -- 整体上移一行，顶行被挤出（若顶行非空则游戏结束）
+        for r = 1, self.rows - 1 do
+            for c = 1, self.cols do
+                self.grid[r][c] = self.grid[r + 1][c]
+            end
+        end
+        for c = 1, self.cols do
+            self.grid[self.rows][c] = (c ~= gap) and makeCell(COLOR_GARBAGE, nil) or nil  -- 8 = 垃圾块颜色(灰)
+        end
+    end
+
+    -- 上移导致方块越顶即结束
+    for c = 1, self.cols do
+        if self.grid[1][c] ~= nil then
+            self.isGameOver = true
+            break
+        end
+    end
+    return count
+end
+
+-- ---------------- 落石（道具方块 ITEM_STONE） ----------------
+-- 对手消除落石块后累加待触发数量；本方下次方块锁定后由 tryEnterRockfall 消费并进入落石状态。
+function TetrisBoard:queueRockfall(n)
+    if not n or n <= 0 then return end
+    self.pendingRockfall = (self.pendingRockfall or 0) + n
+end
+
+-- 进入落石状态：消费 pendingRockfall，在随机不同列生成对应数量垃圾块（写入 grid 顶部空位），
+-- 之后由 Game 层以 FallingStoneInterval 节奏驱动 stepStones 下落。返回 true 表示已进入（替代正常出块）。
+function TetrisBoard:tryEnterRockfall()
+    if self.fallingStone or not self.pendingRockfall or self.pendingRockfall <= 0 then return false end
+    local n = math.min(self.pendingRockfall, self.cols)
+    self.pendingRockfall = nil
+    self.fallingStone = true
+    self.active = nil
+    self.stones = {}
+    -- 选 n 个不同列
+    local cols = {}
+    for i = 1, self.cols do cols[i] = i end
+    for i = #cols, 2, -1 do
+        local j = math.random(1, i)
+        cols[i], cols[j] = cols[j], cols[i]
+    end
+    local pick = math.min(n, self.cols)
+    for i = 1, pick do
+        local col = cols[i]
+        local sr = 1
+        while sr <= self.rows and self.grid[sr][col] ~= nil do sr = sr + 1 end
+        if sr <= self.rows then
+            self.grid[sr][col] = makeCell(COLOR_GARBAGE, nil)
+            self.stones[#self.stones + 1] = { col = col, row = sr }
+        end
+    end
+    self.stage = "fall"
+    print(string.format("[Tetris][Rockfall] 进入落石状态 board=%s 石头数=%d", tostring(self.index), #self.stones))
+    if self.game then
+        pcall(function() self.game:OnRockfallStart() end)
+        if self.game.renderer then pcall(function() self.game.renderer:Update(self, self.game.running) end) end
+    end
+    return true
+end
+
+-- 落石垃圾块下落一格（由 Game 层按 FallingStoneInterval 节奏调用）。
+-- 返回 true 表示仍有石头在下落（继续驱动）；false 表示已无活动石头或已进入消行（停止驱动）。
+function TetrisBoard:stepStones()
+    if not self.fallingStone or self.clearing then return false end
+    if not self.stones or #self.stones == 0 then return false end
+    for i = #self.stones, 1, -1 do
+        local s = self.stones[i]
+        local r, c = s.row, s.col
+        local cell = self.grid[r][c]
+        local nr = r + 1
+        if nr > self.rows or self.grid[nr][c] ~= nil then
+            table.remove(self.stones, i)   -- 落不动：落地（cell 已留在 grid 中），移出活动列表
+        else
+            self.grid[nr][c] = cell        -- 下落一格
+            self.grid[r][c] = nil
+            s.row = nr
+        end
+    end
+    if self:hasFullRows() then
+        self:beginRockfallClear()
+        return false
+    end
+    if #self.stones == 0 then
+        self:onRockfallFallingDone()
+        return false
+    end
+    return true
+end
+
+-- 落石状态中的消行：仅执行消行特效（不计分 / 不送垃圾 / 不触发道具能量），分阶段播放后由 Game 层收尾。
+function TetrisBoard:beginRockfallClear()
+    if not self.fallingStone or self.clearing then return end
+    self.clearing = true
+    self.stage = "clearing"
+    -- 落石消行也纳入统一表现时序：先显示框 + 播普通消行特效，走完 0.25s 前摇再清除。
+    -- 真正的 clearLines(false) 与收尾调度延后到 Game 层的 onClear 回调里执行。
+    local rows = self:getFullRows()
+    if self.game and self.game.BeginRockfallClearSequence then
+        self.game:BeginRockfallClearSequence(rows)
+        return
+    end
+    -- 兜底：Game 层无统一序列时保持原同步清除流程
+    local cleared = self:clearLines(false)
+    if cleared > 0 and self.game then
+        pcall(function() self.game:PlayLineClearSound(cleared) end)
+    end
+    if self.game then pcall(function() self.game:ScheduleRockfallClearResume() end) end
+end
+
+-- 所有石头已落定且未成行：结束落石状态，恢复正常方块下落。
+function TetrisBoard:onRockfallFallingDone()
+    self.fallingStone = false
+    self.stones = nil
+    self.clearing = false
+    self.stage = "fall"
+    if self.game then pcall(function() self.game:OnRockfallEnd() end) end
+    self._spawnFromRockfall = true   -- [DIAG] 标记：此次 spawn 由落石结束触发，用于 topout 日志区分来源
+    self:spawn()
+end
+
+-- 落石消行结算完毕后的收尾：若还有石头未落定则继续下落，否则结束落石状态、恢复正常方块。
+function TetrisBoard:afterRockfallClear()
+    self.clearing = false
+    self.stage = "fall"
+    if self.fallingStone and (#self.stones or 0) > 0 then
+        if self.game then pcall(function() self.game:ScheduleStoneFall() end) end
+        return
+    end
+    self.fallingStone = false
+    self.stones = nil
+    if self.game then pcall(function() self.game:OnRockfallEnd() end) end
+    self._spawnFromRockfall = true   -- [DIAG] 标记：此次 spawn 由落石结束触发，用于 topout 日志区分来源
+    self:spawn()
+end
+
+-- ---------------- 重力 tick ----------------
+-- 每个重力周期调用一次：能下落则下落一格，否则锁定
+function TetrisBoard:tick()
+    if self.isGameOver then return false end
+    if self.fallingStone then return false end  -- 落石状态：普通方块重力暂停，由独立石头下落定时器驱动
+    if self.clearing then return false end  -- 消行动画期间暂停重力与出块，等 finishClear()
+    if self.lockPaused then return false end  -- 落地停顿期间暂停重力与出块，等 Game 层 doClear()
+    if not self.active then
+        self:spawn()
+        return false
+    end
+    local p = self.active
+    if self:canPlace(p, p.x, p.y + 1, p.rot) then
+        -- 仍能下落：解除落地锁定状态，正常下落一格
+        self.grounded = false
+        self.groundTimer = 0
+        p.y = p.y + 1
+        self:markGhostDirty()   -- 重力下落一格：预览需跟随
+        return true
+    end
+    -- 落不动：进入/累计「落地锁定延迟」，给玩家在底面滑动/转身的时间（经典 lock delay）。
+    if not self.grounded then
+        self.grounded = true
+        self.groundTimer = 0
+        self.lockResets = 0
+    end
+    local cfg = TetrisConfig.Timing
+    local lockDelay = (cfg and cfg.LockDelay) or 0.25
+    -- 以「一个重力周期」为累计步长：高等级（重力快）精度足够；低等级（重力慢）窗口 ≥ 重力周期，仍可滑动。
+    self.groundTimer = self.groundTimer + self:getGravityInterval()
+    if self.groundTimer >= lockDelay then
+        self:lockPiece()
+    end
+    return false
+end
+
+-- 消行动画结束后由 Game 层调用：解除挂起并出下一个方块（见 lockPiece 的 clearing 逻辑）。
+function TetrisBoard:finishClear()
+    if not self.clearing then return false end
+    self.clearing = false
+    self.stage = "fall"
+    if self:tryEnterRockfall() then return true end
+    self:spawn()
+    return true
+end
+
+-- ---------------- 供渲染层读取 ----------------
+-- 返回 grid[row][col]：{ color=1..8, item=nil|9|10|11 } 或 nil(空/越界)
+function TetrisBoard:getCell(row, col)
+    if row < 1 or row > self.rows or col < 1 or col > self.cols then return nil end
+    return self.grid[row][col]
+end
+
+-- 当前阶段：fall(下落) / clearing(消除过程) / settle(消除后)。渲染层只读，不写。
+function TetrisBoard:getStage()
+    return self.stage or "fall"
+end
+
+-- 当前下落方块整体状态 {type, rot, x, y}（或 nil），供渲染层整体方块使用
+function TetrisBoard:getActive()
+    return self.active
+end
+
+-- 当前下落方块占用的格子列表 {{row, col, colorType}, ...}，供渲染层叠加显示
+function TetrisBoard:getActiveCells()
+    local out = {}
+    if not self.active then return out end
+    local p = self.active
+    local m = rotationStates[p.type][p.rot]
+    local n = #m
+    for r = 1, n do
+        for c = 1, n do
+            if m[r][c] == 1 then
+                local gr = p.y + r - 1
+                local gc = p.x + c - 1
+                if gr >= 1 and gr <= self.rows and gc >= 1 and gc <= self.cols then
+                    out[#out + 1] = { row = gr, col = gc, colorType = p.type }
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- 返回某方块在 (rot) 下的相对填充格 {r, c}（1-indexed，矩阵内），供 AI 枚举落点
+function TetrisBoard:getPieceCells(type, rot)
+    local m = rotationStates[type][rot]
+    local n = #m
+    local out = {}
+    for r = 1, n do
+        for c = 1, n do
+            if m[r][c] == 1 then out[#out + 1] = { r = r, c = c } end
+        end
+    end
+    return out
+end
+
+-- 幽灵块（硬降落点预览）
+function TetrisBoard:getGhostCells()
+    local out = {}
+    if not self.active then return out end
+    local p = self.active
+    local ghostY = p.y
+    while self:canPlace(p, p.x, ghostY + 1, p.rot) do
+        ghostY = ghostY + 1
+    end
+    local m = rotationStates[p.type][p.rot]
+    local n = #m
+    for r = 1, n do
+        for c = 1, n do
+            if m[r][c] == 1 then
+                local gr = ghostY + r - 1
+                local gc = p.x + c - 1
+                if gr >= 1 and gr <= self.rows and gc >= 1 and gc <= self.cols then
+                    out[#out + 1] = { row = gr, col = gc, colorType = p.type }
+                end
+            end
+        end
+    end
+    return out
+end
+
+function TetrisBoard:getGravityInterval()
+    local t = TetrisConfig.Timing.GravityIntervalByLevel
+    return t[math.min(self.level, #t)]
+end
+
+function TetrisBoard:isOver()
+    return self.isGameOver
+end
+
+function TetrisBoard:getNextQueue()
+    return self.nextQueue
+end
+
+function TetrisBoard:getHoldType()
+    return self.holdType
+end
+
+-- 调试用：把盘面打印成字符串
+function TetrisBoard:dump()
+    local s = ""
+    for r = 1, self.rows do
+        for c = 1, self.cols do
+            local cell = self.grid[r][c]
+            s = s .. (cell and (cell.item and ("i" .. cell.item) or tostring(cell.color)) or ".")
+        end
+        s = s .. "\n"
+    end
+    return s
+end
+
+return TetrisBoard

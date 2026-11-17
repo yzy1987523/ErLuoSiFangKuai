@@ -7,38 +7,11 @@ function ServerGameMain:ctor()
     print("[ServerGameMain]ctor")
 end
 
--- 玩法模块改为「首次使用时才 require」，不要在本文件的加载期 require。
--- 原因：加载期（下方三行契约之前）追踪 Core，会让引擎 require 层连带拉起内部模块
---（GameLua.Mod.CreativeBase.BinaryData.CreativeModePbUtility 被白名单拦截），
--- 且此时全局 WoWClass 尚未注入，Core/ 里形如 WoWClass(...) 的顶层调用会报
--- "attempt to call a nil value (global 'WoWClass')"。
--- 推迟到 OnStart（回调期）加载即可，底部三行契约保持不变。
-local TetrisMatch = nil
-local function GetTetrisMatch()
-    if not TetrisMatch then
-        TetrisMatch = require("EnvLua.Server.Tetris.TetrisMatch")
-    end
-    return TetrisMatch
-end
-
---- OnStart: Primary game main start callback. Called from host bridge _OnStart after the default game-process listener is registered.
--- 方块格子（10x20 个 Actor）只需建一次，因此放在 OnStart 而非每回合重建。
+--- OnStart: 服务端不执行任何 UI 操作。
+-- 玩法逻辑全部在客户端（Client/Tetris）；原生 UI 的显隐由编辑器端配置，代码不再屏蔽。
+-- 旧的 TetrisMatch 服务端玩法不再启动，其文件保留作备份（不物理删除）。
 function ServerGameMain:OnStart()
-    print("[ServerGameMain]OnStart")
-    local MatchClass = GetTetrisMatch()
-    self.tetris = MatchClass:new(self)
-    self.tetris:Init()
-
-    -- 玩家打开游戏（加载完成）即屏蔽原生 UI，不等回合/战斗开始；且不再还原。
-    -- 由各玩法自身的 Hide/Restore 改为全局一次性屏蔽，靠 RetryFrames + PlayerBorn 兜底保持隐藏。
-    local ok, NativeUI = pcall(require, "EnvLua.Server.Tetris.TetrisNativeUI")
-    if ok and NativeUI then
-        -- 仅创建实例（收集控件类型）；实际隐藏推迟到玩家点击「开始游戏」按钮时执行，
-        -- 见 TetrisSkillSelect:OnStartClicked。
-        self.nativeUI = NativeUI:new(self)
-    else
-        print("[ServerGameMain][WARN] TetrisNativeUI 加载失败，原生 UI 未屏蔽")
-    end
+    print("[ServerGameMain]OnStart (client-authoritative: 无 UI 操作)")
 end
 
 --- OnGameStart: Callback when game process enters start.
@@ -50,18 +23,13 @@ end
 ---@param Round number Current round index.
 function ServerGameMain:OnRoundStart(Round)
     print("[ServerGameMain]OnRoundStart", Round)
-    if self.tetris then
-        self.tetris:Start()
-    end
+    -- 玩法已在客户端启动；服务端 AI/数据桥由 GameState 挂载脚本负责。
 end
 
 --- OnRoundEnd: Callback when a round ends.
 ---@param Round number Current round index.
 function ServerGameMain:OnRoundEnd(Round)
     print("[ServerGameMain]OnRoundEnd", Round)
-    if self.tetris then
-        self.tetris:Stop()
-    end
 end
 
 --- OnGameEnd: Callback when game process finishes.
