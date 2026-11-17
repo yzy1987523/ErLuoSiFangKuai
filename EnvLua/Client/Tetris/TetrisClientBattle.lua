@@ -15,6 +15,7 @@ TetrisClientBattle.__index = TetrisClientBattle
 local STEP_M = ((Config.Render or {}).CellSize or 1.0) + ((Config.Render or {}).CellGap or 0.02)
 
 TetrisClientBattle.Current = nil  -- 当前实例，供 GameState 转发对手盘快照
+TetrisClientBattle.PendingBoardTransform = nil  -- [P7] 开局广播早于 Battle 创建时的盘面基底缓存
 
 function TetrisClientBattle:new(host)
     local o = setmetatable({}, self)
@@ -34,6 +35,11 @@ function TetrisClientBattle:new(host)
     o.onPlayerInfo = nil
     o.quality = 0.8
     o.aiName = "AI"
+    -- [P7] 盘面基底 + 下落门控：必须「基底已到」且「loading 已隐藏」才开始下落
+    o._boardReady = false
+    o._loadingHidden = false
+    o._fallStarted = false
+    o._boardSeats = nil
     return o
 end
 
@@ -120,8 +126,8 @@ function TetrisClientBattle:Start()
         scheduler = { After = function(delay, fn) self.host:AddTimerOnce(delay, fn) end },
         playerKey = 1,
     })
-    self.localGame:Start()
-    print("[P4] 本地盘 ClientGame 已启动, 重力间隔=" .. tostring(board:getGravityInterval()))
+    -- [P7] 不再立即 Start：等「盘面基底已到 + loading 已隐藏」才在 _tryBeginFall 里启动（原 self.localGame:Start() 已迁出）
+    print("[P4] 本地盘 ClientGame 已构建（等待盘面基底）, 重力间隔=" .. tostring(board:getGravityInterval()))
 
     -- 诊断：6 个操作按钮 InstanceID 是否在当前工程注册（决定能否接输入）
     local U = Config.UI or {}
@@ -204,13 +210,75 @@ function TetrisClientBattle:Start()
         end)
     end
 
-    -- 本地盘重力循环
+    -- [P7] 盘面基底：优先取开局广播缓存，否则请求服务端重发；5s 超时用占位基底保证不卡死
+    local pending = TetrisClientBattle.PendingBoardTransform
+    if pending then
+        TetrisClientBattle.PendingBoardTransform = nil
+        self:OnBoardTransform(pending)
+    else
+        pcall(function()
+            local gs = Game:GetGameState()
+            if gs then gs:CallServerFunction("P7_RequestBoardTransform") end
+        end)
+    end
+    local battleRef = self
+    self.host:AddTimerOnce(5.0, function()
+        if not battleRef._boardReady and battleRef.running then
+            print("[P7][Battle][WARN] 盘面基底 5s 未到，使用占位基底继续")
+            battleRef._boardReady = true
+            battleRef:_tryBeginFall()
+        end
+    end)
+end
+
+-- [P7] 应用服务端下发的盘面基底（seats 为两个 seat 表，按 playerKey 匹配自己/对手）。
+function TetrisClientBattle:OnBoardTransform(seats)
+    if type(seats) ~= "table" or #seats < 2 then return end
+    local mine, other = nil, nil
+    for _, s in ipairs(seats) do
+        if type(s) == "table" and s.origin and s.right then
+            if s.playerKey == self.selfKey and s.playerKey ~= 0 then
+                mine = s
+            elseif not other then
+                other = s
+            end
+        end
+    end
+    -- 单人时若 selfKey 未匹配（如 selfKey=0 或读取晚于广播），退化为 seat0=自己、seat1=AI/对手
+    if not mine then mine, other = seats[1], seats[2] end
+    if not mine or not other then return end
+    if self.localRenderer then
+        self.localRenderer:SetBasis(mine.origin, mine.right)
+        pcall(function() self.localRenderer:Update(self.localGame:BuildRenderState()) end)
+    end
+    if self.oppRenderer then self.oppRenderer:SetBasis(other.origin, other.right) end
+    self._boardSeats = seats
+    self._boardReady = true
+    print("[P7][Battle] 盘面基底已应用 我方 origin=(" .. tostring(mine.origin.X) .. "," ..
+        tostring(mine.origin.Y) .. "," .. tostring(mine.origin.Z) .. ") 对手 origin=(" ..
+        tostring(other.origin.X) .. "," .. tostring(other.origin.Y) .. "," .. tostring(other.origin.Z) .. ")")
+    self:_tryBeginFall()
+end
+
+-- [P7] loading 隐藏事件：由 TetrisClient 在 EnterBattle 后显式通知。
+function TetrisClientBattle:SetLoadingHidden()
+    self._loadingHidden = true
+    self:_tryBeginFall()
+end
+
+-- [P7] 两条件齐备才启动本地盘下落（重力循环从 Start 迁出，避免 loading 期间就落块）。
+function TetrisClientBattle:_tryBeginFall()
+    if not (self._boardReady and self._loadingHidden and not self._fallStarted) then return end
+    self._fallStarted = true
+    local board = self.localGame and self.localGame.board
+    if not board then return end
+    self.localGame:Start()
+    print("[P4] BeginFall：loading已隐藏+盘面基底已就绪，本地盘开始下落")
     local selfRef = self
     local function gravityTick()
         if not selfRef.running or not selfRef.localGame then return end
         selfRef.localGame:tick()
         selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState())
-        -- 回调 TetrisClient 更新 HUD（第二参=对手分数，来自对手/AI 快照）
         if selfRef.onHud then pcall(selfRef.onHud, selfRef.localGame:BuildUIState(), selfRef._lastOppScore or 0) end
         selfRef._tickCount = selfRef._tickCount + 1
         if selfRef._tickCount % 20 == 0 then
@@ -221,7 +289,6 @@ function TetrisClientBattle:Start()
                 " 已落格数=" .. tostring(cnt) ..
                 " score=" .. tostring(rs and selfRef.localGame.board.score or 0))
         end
-        -- [P5] 本地盘顶出 → 玩家输，结算一次并停止循环
         if selfRef.localGame.board:isOver() then
             selfRef:_settle(false, "local-over")
             selfRef.input:Disable()

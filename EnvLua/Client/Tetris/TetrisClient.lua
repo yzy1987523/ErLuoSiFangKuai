@@ -181,6 +181,8 @@ function TetrisClient:_startBattle()
         self.battle.quality = self.aiQuality or 0.8
         self.battle.aiName = self.aiName or "AI"
         self.battle:Start()
+        -- [P7] 通知 Battle：loading 遮罩已隐藏（EnterBattle 在前），满足下落门控条件之一
+        self.battle:SetLoadingHidden()
     end)
     if not ok then
         print("[TetrisClient] _startBattle 失败: " .. tostring(err))

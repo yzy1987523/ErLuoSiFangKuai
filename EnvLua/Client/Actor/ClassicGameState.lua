@@ -93,6 +93,26 @@ function ClassicGameState:P2_OnBoardSnapshot(snap)
     end)
 end
 
+-- ===== P7：盘面基底（服务端按出生点计算，扁平标量下发）=====
+-- 开局广播时 Battle 可能尚未创建，先存模块级 Pending；Battle:Start 会主动取用。
+function ClassicGameState:P7_BoardTransform(p0, o0x, o0y, o0z, r0x, r0y, r0z,
+                                            p1, o1x, o1y, o1z, r1x, r1y, r1z)
+    local seats = {
+        { playerKey = p0, origin = { X = o0x, Y = o0y, Z = o0z }, right = { X = r0x, Y = r0y, Z = r0z } },
+        { playerKey = p1, origin = { X = o1x, Y = o1y, Z = o1z }, right = { X = r1x, Y = r1y, Z = r1z } },
+    }
+    print("[P7][Client/GS] BoardTransform 收到 p0=" .. tostring(p0) .. " p1=" .. tostring(p1) ..
+        " origin0=(" .. tostring(o0x) .. "," .. tostring(o0y) .. "," .. tostring(o0z) .. ")")
+    local okBT, Battle = pcall(require, "EnvLua.Client.Tetris.TetrisClientBattle")
+    if not okBT then return end
+    if Battle.Current then
+        pcall(Battle.Current.OnBoardTransform, Battle.Current, seats)
+    else
+        Battle.PendingBoardTransform = seats
+        print("[P7][Client/GS] BoardTransform 已缓存到 Pending（Battle 未创建）")
+    end
+end
+
 -- ===== P0 验证：C→S 实发（服务端需已 RegisterServerFunction 白名单）=====
 function ClassicGameState:OnReceiveBeginPlay()
     local selfRef = self

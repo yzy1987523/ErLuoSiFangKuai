@@ -81,6 +81,13 @@ function ClientRenderer:new(origin, right)
     return o
 end
 
+-- [P7] 运行时更新盘面基底（服务端按出生点下发的真实坐标）。
+-- cellLocM/_place 每次按当前 originM/rightM 算 locKey，基底改变后下次 Update 自动重定位，无需重建 renderer。
+function ClientRenderer:SetBasis(origin, right)
+    if origin and origin.X ~= nil then self.originM = origin end
+    if right and right.X ~= nil then self.rightM = right end
+end
+
 -- 格坐标 → 世界坐标（米）。right 是盘面横向单位向量，origin 为左上角。
 function ClientRenderer:cellLocM(row, col)
     local offR = (col - 1) * self.stepM
