@@ -302,10 +302,19 @@ function TetrisBoard:spawn(typeOverride)
             for c = 1, self.cols do cells[c] = (self.grid[r][c] ~= nil) and 1 or 0 end
             topRows[r] = table.concat(cells, "")
         end
-        print(string.format("[DIAG][topout] fromRockfall=%s seq=%d type=%s pos=(x=%d,y=%d) top4rows=%s",
-            tostring(self._spawnFromRockfall == true), tostring(self.spawnSeq), tostring(t),
-            x, y, table.concat(topRows, "|")))
-        self.isGameOver = true
+        -- [P8] 影子盘（服务端权威重放）抑制内部随机 spawn 的撞顶判定：
+        -- 影子盘不跑真实 nextQueue，内部 spawn 的 type 是随机的，两端不同，不能据此判 over。
+        -- 权威 over 由客户端 Auth_TopOut 显式上报，影子盘只认 self._authTopOutReported。
+        if not self.suppressTopOut then
+            print(string.format("[DIAG][topout] fromRockfall=%s seq=%d type=%s pos=(x=%d,y=%d) top4rows=%s",
+                tostring(self._spawnFromRockfall == true), tostring(self.spawnSeq), tostring(t),
+                x, y, table.concat(topRows, "|")))
+            self.isGameOver = true
+            -- [P8] 显式记录顶出事实（spawnSeq 即触发顶出的那块），供客户端上报服务端权威判定。
+            self.topoutSeq = self.spawnSeq
+        else
+            self.isGameOver = false
+        end
     end
     self._spawnFromRockfall = false   -- [DIAG] 清除标记，避免影响后续普通 spawn 的来源判断
     return not self.isGameOver
@@ -472,6 +481,10 @@ end
 function TetrisBoard:lockPiece()
     if not self.active then return end
     local p = self.active
+    -- [P8] 记录「刚落定的块」的原始 type/rot/x/y（含重力自然落定与硬降），供客户端上报服务端权威重放。
+    -- 双端共享的 Board 都记录，客户端只读取自己本地盘；不参与任何玩法判定，纯旁路记录。
+    self.lockSeq = (self.lockSeq or 0) + 1
+    self.lastLockedPiece = { seq = self.lockSeq, type = p.type, rot = p.rot, x = p.x, y = p.y }
     -- 锁定不再加分：只有消行才计分（见 clearLines），此处仅保留调试日志。
     if TetrisConfig.Debug and TetrisConfig.Debug.LockDbg then
         print(string.format("[Tetris][LockDbg] 锁定(不计分) board=%s isAI=%s score=%s",

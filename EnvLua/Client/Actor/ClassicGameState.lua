@@ -113,6 +113,14 @@ function ClassicGameState:P7_BoardTransform(p0, o0x, o0y, o0z, r0x, r0y, r0z,
     end
 end
 
+-- ===== P8：服务端权威 ack（每块重放后的权威 score/lines/over），转给 Battle 对账 =====
+function ClassicGameState:Auth_Ack(seq, score, lines, over)
+    local okBT, Battle = pcall(require, "EnvLua.Client.Tetris.TetrisClientBattle")
+    if okBT and Battle.Current and Battle.Current.OnAuthAck then
+        pcall(Battle.Current.OnAuthAck, Battle.Current, seq, score, lines, over)
+    end
+end
+
 -- ===== P0 验证：C→S 实发（服务端需已 RegisterServerFunction 白名单）=====
 function ClassicGameState:OnReceiveBeginPlay()
     local selfRef = self

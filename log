@@ -1,0 +1,206 @@
+
+过滤（如：文本、!排除、\转义）或 ↕ 浏览历史
+.*
+清空日志
+[16:45:06] [VSCode] [Server] [Info] [00:09] [DIAG][clearLines] cleared=1 fullRows={18} blast=
+[16:45:06] [VSCode] [Server] [Info] [00:09] [DIAG][collapse done] blast=0 cols=XX.................. XXXXX............... XXXXXX.............. XXXXXXXX............ XXXXXXXX............ XXXXXX.............. XXXXXX.............. .....XX............. XXXXXX.............. XXXXX...............
+[16:45:06] [VSCode] [Client] [Info] [00:09] [P3][Client/GS] AI快照#=5 Apply=true score=500 lines=3 active=5 over=false
+[16:45:10] [VSCode] [Server] [Info] [00:13] [DIAG][topout] fromRockfall=false seq=24 type=4 pos=(x=4,y=1) top4rows=0000000000|0001000000|0001100000|0001100000
+[16:45:10] [VSCode] [Server] [Info] [00:13] [P3][AIDriver] AI 顶出，停止。score=500
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] GamePanel时机: want=true cached=false id=23643901302086725 screen=loading
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] Show id=23643901302086725(GamePanel(对局HUD容器 1_CreativeInstance_23643901302086725)) visible=true frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901123532648(ChargeItemImg) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643898862002159(BlastImg) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900945912659(ShiftImg1) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900333628969(ShiftImg2) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643899521674335(StoneImg) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] 初始化隐藏 SKIP（id=nil） GarbageSendHint
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] 初始化隐藏 SKIP（id=nil） GarbageRecvHint
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901081703507(UI.ComboImg(连击提示图)) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901728269420(Skill.ReadyImg(技能就绪图)) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900239436700(HintText(通用飘字)) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900834440806(Skill.BigTipInstance(技能中央大图)) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900207729698(SK06.attackBuffImg) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901871727548(SK01.rotLockCasterImg) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643899098553539(SK01.rotLockVictimImg) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643899321563373(SK07.cdIndicator) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901052682011(GarbageHint[1].Recv.base) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643898075956766(GarbageHint[1].Recv.num) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643902307206943(GarbageHint[1].Send.base) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900084761451(GarbageHint[1].Send.num) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901080731614(GarbageHint[2].Recv.base) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901473887207(GarbageHint[2].Recv.num) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643898639510745(GarbageHint[2].Send.base) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900738802786(GarbageHint[2].Send.num) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643900563538121(GarbageHint[3].Recv.base) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901376145582(GarbageHint[3].Recv.num) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643899943366286(GarbageHint[3].Send.base) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] HideForce id=23643901357562115(GarbageHint[3].Send.num) visible=false frame=-1
+[16:45:10] [VSCode] [Client] [Info] [00:13] [ClientUI][TRACE] === 初始隐藏完成 隐藏=25 跳过(nil)=2 ===
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901123532648(ChargeItemImg) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643898862002159(BlastImg) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900945912659(ShiftImg1) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900333628969(ShiftImg2) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643899521674335(StoneImg) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] 初始化隐藏 SKIP（id=nil） GarbageSendHint
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] 初始化隐藏 SKIP（id=nil） GarbageRecvHint
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901081703507(UI.ComboImg(连击提示图)) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901728269420(Skill.ReadyImg(技能就绪图)) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900239436700(HintText(通用飘字)) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900834440806(Skill.BigTipInstance(技能中央大图)) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900207729698(SK06.attackBuffImg) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901871727548(SK01.rotLockCasterImg) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643899098553539(SK01.rotLockVictimImg) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643899321563373(SK07.cdIndicator) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901052682011(GarbageHint[1].Recv.base) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643898075956766(GarbageHint[1].Recv.num) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643902307206943(GarbageHint[1].Send.base) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900084761451(GarbageHint[1].Send.num) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901080731614(GarbageHint[2].Recv.base) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901473887207(GarbageHint[2].Recv.num) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643898639510745(GarbageHint[2].Send.base) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900738802786(GarbageHint[2].Send.num) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643900563538121(GarbageHint[3].Recv.base) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901376145582(GarbageHint[3].Recv.num) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643899943366286(GarbageHint[3].Send.base) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] HideForce id=23643901357562115(GarbageHint[3].Send.num) visible=false frame=1
+[16:45:11] [VSCode] [Client] [Info] [00:14] [ClientUI][TRACE] === 初始隐藏完成 隐藏=25 跳过(nil)=2 ===
+[16:45:11] [VSCode] [Server] [Info] [00:14] [P7][Server/GS] P7_HideMasks 已隐藏 Mask 场景对象 2/2
+[16:45:12] [VSCode] [Server] [Info] [00:14] [P7][Server/GS] P7_HideMasks 已隐藏 Mask 场景对象 2/2
+[16:45:12] [VSCode] [Client] [Info] [00:15] [ClientUI][TRACE] === 1.5s 复查点：若上面出现过 [TRACE] Show ...visible=true，说明被重新显示；否则是初始没隐藏成功 ===
+[16:45:12] [VSCode] [Client] [Info] [00:15] [ClientUI][TRACE] === 1.5s 复查点：若上面出现过 [TRACE] Show ...visible=true，说明被重新显示；否则是初始没隐藏成功 ===
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P4] 启动单人闭环双盘渲染
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P4] 本地盘 ClientGame 已构建（等待盘面基底）, 重力间隔=0.8
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P4] CreativeInstance 存在=true 按钮解析: Left=23643899028893263 Right=23643902202474034 Roll=23643902309645984 Down=23643900874412580 Hold=23643900251825011 Skill=23643901308713165
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120000 Seq:10000027 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120000 Seq:10000028 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120000 Seq:10000029 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120000 Seq:10000030 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120000 Seq:10000031 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120000 Seq:10000032 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120001 Seq:10000033 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120001 Seq:10000034 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120001 Seq:10000035 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120001 Seq:10000036 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120001 Seq:10000037 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120001 Seq:10000038 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120002 Seq:10000039 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120002 Seq:10000040 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120002 Seq:10000041 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120002 Seq:10000042 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120002 Seq:10000043 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [SandboxRcMain] VP_AddEvent EventID:120002 Seq:10000044 OwnerUID:nil
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P4] ClientInput 已启用，可点击左右/旋转/下落按钮操作本地盘
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P5] 本地玩家 key=2438996376
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P5-5b] 玩家数=1 模式=单人AI
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P7][Battle] 盘面基底已应用 我方 origin=(266.99999877761,170.40999147788,111.07999694824) 对手 origin=(283,154.59,111.07999694824)
+[16:45:13] [VSCode] [Client] [Info] [00:16] [P4] BeginFall：loading已隐藏+盘面基底已就绪，本地盘开始下落
+[16:45:14] [VSCode] [Client] [Info] [00:17] [P7][Client/GS] 玩家信息收到, 人数=1
+[16:45:14] [VSCode] [Client] [Info] [00:17] [P7] 玩家信息: 我方=秋风1EIGu idx=0 对方=强敌 idx=1
+[16:45:14] [VSCode] [Client] [Info] [00:17] [ClientUI] 玩家信息已写入: 秋风1EIGu idx=0 / 强敌 idx=1
+[16:45:14] [VSCode] [Server] [Info] [00:17] [P7][Server/GS] 玩家信息 key=2438996376 name=秋风1EIGu avatarIndex=0
+[16:45:14] [VSCode] [Server] [Info] [00:17] [P5][Server/GS] P5_RequestAI 单人模式，启动 AI
+[16:45:14] [VSCode] [Server] [Info] [00:17] [P3][AIDriver] Start quality=0.8 tag=AI-P3
+[16:45:14] [VSCode] [Server] [Info] [00:17] [P5][Server/GS] StartAI = true 
+[16:45:17] [VSCode] [Client] [Info] [00:20] [P3][Client/GS] AI快照#=10 Apply=true score=0 lines=0 active=nil over=false
+[16:45:17] [VSCode] [Server] [Info] [00:20] [DIAG][clearLines] cleared=3 fullRows={18,19,20} blast=
+[16:45:17] [VSCode] [Server] [Info] [00:20] [DIAG][collapse done] blast=0 cols=X................... X................... X.XXX............... X.XXXX.............. XXXXXXX............. XXXXXXX............. XX.................. X................... X................... ....................
+[16:45:18] [VSCode] [Server] [Info] [00:20] [DIAG][clearLines] cleared=3 fullRows={18,19,20} blast=
+[16:45:18] [VSCode] [Server] [Info] [00:20] [DIAG][collapse done] blast=0 cols=X................... X................... X.XXX............... X.XXXX.............. XXXXXXX............. XXXXXXX............. XX.................. X................... X................... ....................
+[16:45:18] [VSCode] [Client] [Info] [00:21] [P4] 输入累计=5 最近动作=move
+[16:45:19] [VSCode] [Server] [Info] [00:20] [DIAG][clearLines] cleared=3 fullRows={18,19,20} blast=
+[16:45:19] [VSCode] [Server] [Info] [00:20] [DIAG][collapse done] blast=0 cols=X................... X................... X.XXX............... X.XXXX.............. XXXXXXX............. XXXXXXX............. XX.................. X................... X................... ....................
+[16:45:19] [VSCode] [Server] [Info] [00:22] [DIAG][clearLines] cleared=1 fullRows={20} blast=
+[16:45:19] [VSCode] [Server] [Info] [00:22] [DIAG][collapse done] blast=0 cols=.................... .................... .XXXXXX............. .XXXXX.............. XXXXXX.............. XXXXXX.............. XXXX................ XXXX................ X................... ....................
+[16:45:20] [VSCode] [Server] [Info] [00:22] [DIAG][clearLines] cleared=1 fullRows={20} blast=
+[16:45:20] [VSCode] [Server] [Info] [00:22] [DIAG][collapse done] blast=0 cols=.................... .................... .XXXXXX............. .XXXXX.............. XXXXXX.............. XXXXXX.............. XXXX................ XXXX................ X................... ....................
+[16:45:21] [VSCode] [Client] [Info] [00:24] [P4] 对手盘 快照#5 已落格数=52 tag=AI-P3
+[16:45:22] [VSCode] [Client] [Info] [00:25] [P4] 输入累计=10 最近动作=move
+[16:45:24] [VSCode] [Client] [Info] [00:27] [P3][Client/GS] AI快照#=15 Apply=true score=700 lines=4 active=10 over=false
+[16:45:26] [VSCode] [Client] [Info] [00:29] [P4] 输入累计=15 最近动作=move
+[16:45:26] [VSCode] [Client] [Info] [00:29] [Tetris][Renderer][WARN] 彩色模型 AssetRef 未注册，保持预设单色
+[16:45:27] [VSCode] [Client] [Info] [00:30] [Auth][Client] 上报落块 seq=5 type=4 rot=1 x=1 y=14
+[16:45:28] [VSCode] [Server] [Info] [00:30] [Auth][Server/GS] 重放 seq=5 type=4 rot=1 x=1 y=14 → score=0 lines=0 over=false
+[16:45:28] [VSCode] [Server] [Info] [00:30] [DIAG][clearLines] cleared=2 fullRows={17,18} blast=
+[16:45:28] [VSCode] [Server] [Info] [00:30] [DIAG][collapse done] blast=0 cols=X................... XXX................. .XXXX..XXX.......... .XXXXXXXXX.......... XXXXXXXXXX.......... XXXXXXXXXX.......... XXXXXXXXXX.......... XXXXXXXXXXX......... XXX................. XXXXX...............
+[16:45:29] [VSCode] [Client] [Info] [00:32] [P4] 输入累计=20 最近动作=move
+[16:45:29] [VSCode] [Client] [Info] [00:32] [P4] 对手盘 快照#10 已落格数=89 tag=AI-P3
+[16:45:29] [VSCode] [Client] [Info] [00:32] [P4] 本地盘 tick#20 已落格数=55 score=0
+[16:45:31] [VSCode] [Client] [Info] [00:34] [P5] 结算: win=true reason=opponent-over selfKey=2438996376
+[16:45:31] [VSCode] [Client] [Info] [00:34] [P3][Client/GS] AI快照#=20 Apply=true score=1050 lines=6 active=7 over=true
+[16:45:31] [VSCode] [Server] [Info] [00:34] [DIAG][topout] fromRockfall=false seq=36 type=7 pos=(x=4,y=1) top4rows=0000000000|0000011000|0000011000|0000001000
+[16:45:31] [VSCode] [Server] [Info] [00:34] [P3][AIDriver] AI 顶出，停止。score=1050
+[16:45:32] [VSCode] [Server] [Info] [00:35] [P5][Server/GS] ReportResult win=true playerKey=2438996376
+[16:45:32] [VSCode] [Server] [Info] [00:35] [P5][Server/GS] 玩家 2438996376 胜数 0 → 1
+[16:45:32] [VSCode] [Server] [Info] [00:34] [DIAG][topout] fromRockfall=false seq=36 type=7 pos=(x=4,y=1) top4rows=0000000000|0000011000|0000011000|0000001000
+[16:45:32] [VSCode] [Server] [Info] [00:34] [P3][AIDriver] AI 顶出，停止。score=1050
+[16:45:33] [VSCode] [Server] [Info] [00:35] [P5][Server/GS] 排行榜已回传, 条数=1
+[16:45:33] [VSCode] [Server] [Info] [00:35] [P5][Server/GS] ReportResult win=true playerKey=2438996376
+[16:45:33] [VSCode] [Server] [Info] [00:35] [P5][Server/GS] 玩家 2438996376 胜数 0 → 1
+[16:45:33] [VSCode] [Server] [Info] [00:34] [DIAG][topout] fromRockfall=false seq=36 type=7 pos=(x=4,y=1) top4rows=0000000000|0000011000|0000011000|0000001000
+[16:45:33] [VSCode] [Server] [Info] [00:34] [P3][AIDriver] AI 顶出，停止。score=1050
+[16:45:33] [VSCode] [Client] [Info] [00:36] [P5][Client/GS] 排行榜数据收到, 条数=1
+[16:45:33] [VSCode] [Client] [Info] [00:36] [P5][Client/GS]   #1 秋风1EIGu = 1
+[16:45:33] [VSCode] [Client] [Info] [00:36] [P5] Battle 收到排行榜数据, 条数=1
+[16:45:33] [VSCode] [Server] [Info] [00:35] [P5][Server/GS] 排行榜已回传, 条数=1
+[16:45:33] [VSCode] [Client] [Info] [00:36] [P4] 停止，输入与 Renderer 已释放
+[16:45:33] [VSCode] [Client] [Info] [00:36] [ClientUI][TRACE] GamePanel时机: want=false cached=true id=23643901302086725 screen=settle
+[16:45:33] [VSCode] [Client] [Info] [00:36] [ClientUI][TRACE] HideForce id=23643901302086725(GamePanel(对局HUD容器 1_CreativeInstance_23643901302086725)) visible=false frame=2
+[16:45:36] [VSCode] [Client] [Info] [00:39] WoWActor OnReceiveEndPlay
+[16:45:36] [VSCode] [Client] [Info] [00:39] WoWActor OnReceiveEndPlay
+[16:45:36] [VSCode] [Client] [Info] [00:39] [WoWGameMain]_OnDestroy
+[16:45:36] [VSCode] [Client] [Info] [00:39] [ClientGameMain]OnRoundEnd
+[16:45:36] [VSCode] [Client] [Info] [00:39] [ClientGameMain]OnGameEnd
+[16:45:36] [VSCode] [Client] [Info] [00:39] [ClientGameMain]OnDestroy
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000001
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000002
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000003
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000004
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000005
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000006
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000007
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000008
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000009
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000010
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000011
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000012
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000013
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000014
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000015
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000016
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000017
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000018
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000019
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000020
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000021
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000022
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000023
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000024
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000025
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000026
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000027
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000028
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000029
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000030
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000031
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120000 Seq:10000032
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120001 Seq:10000033
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120001 Seq:10000034
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120001 Seq:10000035
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120001 Seq:10000036
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120001 Seq:10000037
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120001 Seq:10000038
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120002 Seq:10000039
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120002 Seq:10000040
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120002 Seq:10000041
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120002 Seq:10000042
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120002 Seq:10000043
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:120002 Seq:10000044
+[16:45:36] [VSCode] [Client] [Info] [00:39] [SandboxRcMain] VP_RemoveEvent EventID:20000 Seq:10000000
+[16:45:36] [VSCode] [Server] [Info] [00:38] WoWActor OnReceiveEndPlay
+[16:45:36] [VSCode] [Server] [Info] [00:38] WoWActor OnReceiveEndPlay
+[16:45:36] [VSCode] [Server] [Info] [00:38] [WoWGameMain]_OnDestroy
+[16:45:36] [VSCode] [Server] [Info] [00:38] [ServerGameMain]OnRoundEnd
+[16:45:36] [VSCode] [Server] [Info] [00:38] [ServerGameMain]OnGameEnd
+[16:45:36] [VSCode] [Server] [Info] [00:38] [ServerGameMain]OnDestroy
+[16:45:36] [VSCode] [Server] [Info] [00:38] [SandboxRcMain] VP_RemoveEvent EventID:20000 Seq:10000000

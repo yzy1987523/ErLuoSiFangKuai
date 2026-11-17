@@ -107,6 +107,8 @@ function ClassicGameState:OnReceiveBeginPlay()
         self:RegisterServerFunction("P7_HideMasks")          -- [P7] 选完技能后隐藏 Mask 场景对象（ServerOnly）
         self:RegisterServerFunction("P7_RequestPlayerInfo")  -- [P7] 请求玩家名字+头像序号（服务端分配）
         self:RegisterServerFunction("P7_RequestBoardTransform") -- [P7] 请求盘面基底（出生点几何，ServerOnly 计算）
+        self:RegisterServerFunction("Auth_Piece")            -- [P8] 客户端上报每块(type,rot,x,y)，服务端重放权威分数
+        self:RegisterServerFunction("Auth_TopOut")           -- [P8] 客户端显式上报顶出，服务端据此权威判 over
     end)
     print("[P0][Server/GS] RegisterServerFunction = " .. tostring(okReg) .. " " .. tostring(errReg))
 
@@ -161,7 +163,7 @@ function ClassicGameState:StartAI()
     if self._p3Driver and self._p3Driver.running then return end
     local okDrv, drvOrErr = pcall(function()
         local Driver = require("EnvLua.Server.Tetris.TetrisAIDriver")
-        self._p3Driver = Driver:new(self, { quality = 0.8, tag = "AI-P3", interval = 0.5, snapshotEvery = 3 })
+        self._p3Driver = Driver:new(self, { quality = 0.8, tag = "AI-P3", interval = 0.1, snapshotEvery = 1 })
         self._p3Driver:Start()
         return self._p3Driver
     end)
@@ -252,6 +254,78 @@ end
 -- [P7] 客户端兜底请求（开局广播丢包/晚到时重发缓存）
 function ClassicGameState:P7_RequestBoardTransform()
     self:BroadcastBoardTransform()
+end
+
+-- ===== P8：服务端权威账本（客户端本地即时操作，随机源/每块落点由客户端上报，服务端重放得权威分数）=====
+-- 客户端每落一块上报 (seq, type, rot, x, y) = Board.lockPiece 记录的 lastLockedPiece（含重力落定与硬降的实际位置）。
+-- 影子 Board 直接把 active 设为该值再 lockPiece()，不调用 spawn()/hardDrop()，因此完全不依赖服务端随机、落点与客户端逐格一致。
+-- lockPiece 内部无消行时会自己 spawn 下一块（随机），但下一次上报会直接覆盖 active，不影响权威判定。
+-- 权威 score/lines/over 存于 self._authBoard，回 ack(seq, score, lines, over) 供客户端对账。
+function ClassicGameState:Auth_Piece(seq, pieceType, rot, x, y)
+    local okB, Board = pcall(require, "EnvLua.Common.Tetris.TetrisBoard")
+    if not okB or not Board then return end
+    if not self._authBoard then
+        local okNew, b = pcall(function()
+            local nb = Board:new()
+            nb.isAI = false
+            nb.suppressTopOut = true   -- 影子盘内部 spawn 的随机块不判 over，权威 over 由 Auth_TopOut 显式给
+            return nb
+        end)
+        if not okNew or not b then
+            print("[Auth][Server/GS] 影子盘创建失败: " .. tostring(b))
+            return
+        end
+        self._authBoard = b
+    end
+    local b = self._authBoard
+    seq = tonumber(seq) or 0
+    if seq <= (self._authSeq or 0) then return end   -- 去重/乱序：只接受严格递增 seq
+    self._authSeq = seq
+
+    pcall(function()
+        -- 直接按上报的落定状态摆好活动块再锁定，绕开 spawn() 的随机 type/nextQueue
+        b.active = {
+            type = pieceType,
+            rot = tonumber(rot) or 1,
+            x = tonumber(x) or 1,
+            y = tonumber(y) or 1,
+        }
+        b:lockPiece()
+        -- 同步消行状态机（对齐 ClientGame.tick：lockPaused→doClear→clearing→坍塌→出下一块）
+        local guard = 0
+        while guard < 8 and (b.lockPaused or b.clearing) do
+            guard = guard + 1
+            if b.lockPaused then pcall(function() b:doClear() end) end
+            if b.clearing then
+                pcall(function() b:applyClearCollapse() end)
+                pcall(function() b:finishClear() end)
+            end
+        end
+    end)
+
+    pcall(function()
+        self:CallClientFunctionMulticast("Auth_Ack", seq, b.score or 0, b.lines or 0, self._authTopOutReported == true)
+    end)
+    self._authLogged = (self._authLogged or 0) + 1
+    if self._authLogged % 5 == 0 then
+        print("[Auth][Server/GS] 重放 seq=" .. tostring(seq) .. " type=" .. tostring(pieceType) ..
+            " rot=" .. tostring(rot) .. " x=" .. tostring(x) .. " y=" .. tostring(y) ..
+            " → score=" .. tostring(b.score) .. " lines=" .. tostring(b.lines) ..
+            " over=" .. tostring(self._authTopOutReported == true))
+    end
+end
+
+-- [P8] 客户端显式上报顶出：服务端权威记 over，并回一帧 ack 让客户端确认。
+function ClassicGameState:Auth_TopOut(authSeq)
+    if self._authTopOutReported then return end
+    self._authTopOutReported = true
+    local b = self._authBoard
+    local score, lines = b and (b.score or 0) or 0, b and (b.lines or 0) or 0
+    pcall(function()
+        self:CallClientFunctionMulticast("Auth_Ack", tonumber(authSeq) or (self._authSeq or 0), score, lines, true)
+    end)
+    print("[Auth][Server/GS] 权威顶出已确认 authSeq=" .. tostring(authSeq) ..
+        " score=" .. tostring(score) .. " lines=" .. tostring(lines))
 end
 
 -- [P2] 客户端回执：客户端 ApplySnapshot 后可调此白名单方法回报。

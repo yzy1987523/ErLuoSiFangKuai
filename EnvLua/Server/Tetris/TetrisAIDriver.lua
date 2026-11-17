@@ -60,8 +60,9 @@ function TetrisAIDriver:_advanceClear(b)
     end
 end
 
--- AI 决策：旋转+平移到 bestMove，然后硬降落子（避开 lock delay，纯数据快速演进）。
-function TetrisAIDriver:_aiPlace(b)
+-- AI 规划：新块 spawn 后决策一次，旋转+平移到 bestMove 的 x/rot（不下落）。
+-- 之后由 _step 每步 softDrop 一格，客户端就能看到逐格下落过程。
+function TetrisAIDriver:_planPiece(b)
     if b.isGameOver or b.clearing or b.lockPaused then return end
     local a = b:getActive()
     if not a then return end
@@ -80,7 +81,6 @@ function TetrisAIDriver:_aiPlace(b)
         if not b:move(dx) then break end
         guard = guard + 1
     end
-    pcall(function() b:hardDrop() end)
 end
 
 function TetrisAIDriver:_step()
@@ -92,13 +92,22 @@ function TetrisAIDriver:_step()
     if not b.isGameOver then
         if not b:getActive() then
             pcall(function() b:spawn() end)
+        elseif self.aiSeq ~= b.spawnSeq then
+            -- 新块：规划一次（旋转+平移到位），本步暂不下落
+            self:_planPiece(b)
         else
-            self:_aiPlace(b)
+            -- 已规划：逐格下落一格；触底则锁定（等价于硬降落点，但中间状态可见）
+            local dropped = false
+            pcall(function() dropped = b:softDrop() end)
+            if not dropped and not b.isGameOver then
+                pcall(function() b:lockPiece() end)
+            end
         end
     end
 
     self.stepCount = self.stepCount + 1
-    if self.stepCount % self.snapshotEvery == 0 or b.isGameOver then
+    -- 每步发快照：客户端能看到 active.y 逐格递增的下落过程
+    if b.isGameOver or self.snapshotEvery <= 1 or self.stepCount % self.snapshotEvery == 0 then
         self:_broadcastSnapshot()
     end
     if b.isGameOver then

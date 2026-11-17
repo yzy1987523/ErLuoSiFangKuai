@@ -40,13 +40,70 @@ function TetrisClientBattle:new(host)
     o._loadingHidden = false
     o._fallStarted = false
     o._boardSeats = nil
+    -- [P8] 权威对账：本地即时跑，每落一块上报 lastLockedPiece；服务端回 ack 比对 score/lines
+    o._authSeq = 0
+    o._authLastLockSeq = 0
+    o._authAckScore = nil
+    o._authAckLines = nil
+    o._authMismatch = 0
+    o._authTopOutReported = false
     return o
+end
+
+-- [P8] 检测本地盘新落定的块并上报（type/rot/x/y 由 Board.lockPiece 旁路记录，随机源交给客户端）
+function TetrisClientBattle:_reportLockedPieces()
+    if not self.running then return end
+    local b = self.localGame and self.localGame.board
+    if not b then return end
+    -- [P8] 顶出检测放最前：顶出块是 spawn 失败块，不经过 lockPiece，lastLockedPiece 不会变化
+    if b.isGameOver and b.topoutSeq and not self._authTopOutReported then
+        self._authTopOutReported = true
+        pcall(function()
+            local gs = Game:GetGameState()
+            if gs then gs:CallServerFunction("Auth_TopOut", self._authSeq) end
+        end)
+        print("[Auth][Client] 上报顶出 topoutSeq=" .. tostring(b.topoutSeq) .. " authSeq=" .. tostring(self._authSeq))
+    end
+    if not b.lastLockedPiece then return end
+    local lockSeq = b.lastLockedPiece.seq or 0
+    if lockSeq <= self._authLastLockSeq then return end
+    self._authLastLockSeq = lockSeq
+    local p = b.lastLockedPiece
+    self._authSeq = self._authSeq + 1
+    local seq, t, r, x, y = self._authSeq, p.type, p.rot, p.x, p.y
+    pcall(function()
+        local gs = Game:GetGameState()
+        if gs then gs:CallServerFunction("Auth_Piece", seq, t, r, x, y) end
+    end)
+    if self._authSeq % 5 == 0 then
+        print("[Auth][Client] 上报落块 seq=" .. tostring(seq) .. " type=" .. tostring(t) ..
+            " rot=" .. tostring(r) .. " x=" .. tostring(x) .. " y=" .. tostring(y))
+    end
+end
+
+-- [P8] 服务端权威 ack：与本地 score/lines 比对，不一致则计数告警（手感不受影响，仅作权威校验）
+function TetrisClientBattle:OnAuthAck(seq, score, lines, over)
+    self._authAckScore, self._authAckLines = score, lines
+    local b = self.localGame and self.localGame.board
+    if not b then return end
+    local localScore, localLines = b.score or 0, b.lines or 0
+    if score ~= localScore or lines ~= localLines then
+        self._authMismatch = self._authMismatch + 1
+        if self._authMismatch <= 3 then
+            print("[Auth][Client][WARN] 权威不一致 seq=" .. tostring(seq) ..
+                " 本地=" .. tostring(localScore) .. "/" .. tostring(localLines) ..
+                " 服务端=" .. tostring(score) .. "/" .. tostring(lines))
+        end
+    end
 end
 
 -- 一局只结算一次：上报胜负到服务端（胜数榜赢+1输不扣）。
 function TetrisClientBattle:_settle(win, reason)
     if self._settled then return end
     self._settled = true
+    -- [P8] 结算即停本地盘：重力 tick 与落块上报都检查 running，避免结算后继续跑/产生垃圾上报
+    self.running = false
+    self.input:Disable()
     print("[P5] 结算: win=" .. tostring(win) .. " reason=" .. tostring(reason) .. " selfKey=" .. tostring(self.selfKey))
     local ok, gsOrErr = pcall(function()
         local gs = Game:GetGameState()
@@ -157,6 +214,8 @@ function TetrisClientBattle:Start()
                     if k == "ApplyAction" and selfRef.localRenderer then
                         pcall(function() selfRef.localRenderer:Update(gameRef:BuildRenderState()) end)
                     end
+                    -- [P8] 硬降/操作导致落定后，立即把该块上报服务端权威重放
+                    if k == "ApplyAction" then selfRef:_reportLockedPieces() end
                     return result
                 end
             end
@@ -279,6 +338,8 @@ function TetrisClientBattle:_tryBeginFall()
         if not selfRef.running or not selfRef.localGame then return end
         selfRef.localGame:tick()
         selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState())
+        -- [P8] 重力自然落定也上报（与硬降同走 lockPiece 旁路记录，seq 去重）
+        selfRef:_reportLockedPieces()
         if selfRef.onHud then pcall(selfRef.onHud, selfRef.localGame:BuildUIState(), selfRef._lastOppScore or 0) end
         selfRef._tickCount = selfRef._tickCount + 1
         if selfRef._tickCount % 20 == 0 then
