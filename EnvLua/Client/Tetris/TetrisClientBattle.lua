@@ -31,6 +31,7 @@ function TetrisClientBattle:new(host)
     o.onSettle = nil
     o.onHud = nil
     o.onLeaderboard = nil
+    o.onPlayerInfo = nil
     o.quality = 0.8
     o.aiName = "AI"
     return o
@@ -69,6 +70,33 @@ function TetrisClientBattle:OnLeaderboard(list)
     self._leaderboard = list
     print("[P5] Battle 收到排行榜数据, 条数=" .. tostring(type(list) == "table" and #list or 0))
     if self.onLeaderboard then pcall(self.onLeaderboard, list) end
+end
+
+-- [P7] 玩家信息（服务端下发 {playerKey,name,avatarIndex}）：按 selfKey 区分我方/对方。
+-- 双人：另一名真人即对方；单人：对方用 AI 难度名 + 避开真人的头像序号（真人 0 → AI 用 1）。
+function TetrisClientBattle:OnPlayerInfo(list)
+    if type(list) ~= "table" then return end
+    local myName, myAvatar, oppName, oppAvatar = nil, 0, nil, nil
+    local oppFound = false
+    for _, e in ipairs(list) do
+        if type(e) ~= "table" then goto continue end
+        if e.playerKey == self.selfKey then
+            myName = e.name
+            myAvatar = e.avatarIndex or 0
+        else
+            oppName = e.name
+            oppAvatar = e.avatarIndex or 0
+            oppFound = true
+        end
+        ::continue::
+    end
+    if not oppFound then   -- 单人 AI 对手：名字取难度名，头像序号避开真人
+        oppName = self.aiName or "AI"
+        oppAvatar = (myAvatar + 1) % 8
+    end
+    print("[P7] 玩家信息: 我方=" .. tostring(myName) .. " idx=" .. tostring(myAvatar) ..
+        " 对方=" .. tostring(oppName) .. " idx=" .. tostring(oppAvatar))
+    if self.onPlayerInfo then pcall(self.onPlayerInfo, myName, oppName, myAvatar, oppAvatar) end
 end
 
 function TetrisClientBattle:Start()
@@ -140,6 +168,12 @@ function TetrisClientBattle:Start()
     end)
     print("[P5] 本地玩家 key=" .. tostring(self.selfKey))
 
+    -- [P7] 请求服务端分配玩家名字+头像序号（服务端按 playerKey 排序分配，回传 P7_PlayerInfo）
+    pcall(function()
+        local gs = Game:GetGameState()
+        if gs then gs:CallServerFunction("P7_RequestPlayerInfo") end
+    end)
+
     -- [P5-5b] 判断模式：玩家数>=2 双人，否则单人打 AI
     local playerCount = 0
     pcall(function()
@@ -176,8 +210,8 @@ function TetrisClientBattle:Start()
         if not selfRef.running or not selfRef.localGame then return end
         selfRef.localGame:tick()
         selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState())
-        -- 回调 TetrisClient 更新 HUD
-        if selfRef.onHud then pcall(selfRef.onHud, selfRef.localGame:BuildUIState()) end
+        -- 回调 TetrisClient 更新 HUD（第二参=对手分数，来自对手/AI 快照）
+        if selfRef.onHud then pcall(selfRef.onHud, selfRef.localGame:BuildUIState(), selfRef._lastOppScore or 0) end
         selfRef._tickCount = selfRef._tickCount + 1
         if selfRef._tickCount % 20 == 0 then
             local rs = selfRef.localGame:BuildRenderState()

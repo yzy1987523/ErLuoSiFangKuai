@@ -27,6 +27,7 @@ function ClassicGameState:OnReceiveBeginPlay()
         self:RegisterServerFunction("P5_RequestAI")          -- [P5-5b] 单人请求启动 AI
         self:RegisterServerFunction("P5_ReportSnapshot")     -- [P5-5b] 双人快照中转
         self:RegisterServerFunction("P7_HideMasks")          -- [P7] 选完技能后隐藏 Mask 场景对象（ServerOnly）
+        self:RegisterServerFunction("P7_RequestPlayerInfo")  -- [P7] 请求玩家名字+头像序号（服务端分配）
     end)
     print("[P0][Server/GS] RegisterServerFunction = " .. tostring(okReg) .. " " .. tostring(errReg))
 
@@ -187,6 +188,33 @@ function ClassicGameState:P7_HideMasks()
         end
     end
     print("[P7][Server/GS] P7_HideMasks 已隐藏 Mask 场景对象 " .. tostring(hidden) .. "/" .. tostring(#list))
+end
+
+-- ===== P7：玩家名字 + 头像序号（服务端分配，保证每人不同）=====
+-- 头像不传图片本身，只分配序号 index（0/1/...），客户端按序号从 AvatarUI.AvatarPresets 选图。
+-- 按 playerKey 排序后按序分配，保证双端一致、序号稳定不重复。
+-- 单人 AI 对手由客户端自行用 aiName + 一个避开真人的序号填充（这里只下发真人）。
+function ClassicGameState:P7_RequestPlayerInfo()
+    local players = Game:GetAllPlayerStates()
+    if not players or not players.Num then return end
+    local list = {}
+    for i = 0, players:Num() - 1 do
+        local ps = players:Get(i)
+        if ps then
+            local key, name = 0, ""
+            pcall(function() if ps.GetPlayerKey then key = ps:GetPlayerKey() or 0 end end)
+            pcall(function() name = ps.PlayerName or "" end)
+            list[#list + 1] = { playerKey = key, name = tostring(name), avatarIndex = 0 }
+        end
+    end
+    table.sort(list, function(a, b) return a.playerKey < b.playerKey end)
+    for i, e in ipairs(list) do e.avatarIndex = i - 1 end   -- 0 基序号
+    for _, e in ipairs(list) do
+        print("[P7][Server/GS] 玩家信息 key=" .. tostring(e.playerKey) ..
+            " name=" .. tostring(e.name) .. " avatarIndex=" .. tostring(e.avatarIndex))
+    end
+    local okSend, err = pcall(function() self:CallClientFunctionMulticast("P7_PlayerInfo", list) end)
+    if not okSend then print("[P7][Server/GS] P7_PlayerInfo 广播失败: " .. tostring(err)) end
 end
 
 --- Callback after Actor construction is complete.

@@ -111,6 +111,23 @@ $ClientActorPullExclude = 'ClassicGameState.lua'
 # 单向：本地 Server + Common + Client -> 活动目录（覆盖）
 # Client 推送必须排除 Actor 子目录，否则 /MIR 会删掉活动目录里引擎生成的 Actor_*.lua。
 function Push-Server {
+    # 构建版本号 +1：写完本地文件后随本次 push 一起上传到活动目录。
+    # 运行时 Server/Client 的 GameMain:OnStart 会打印它，用于确认当前跑的是否为最新上传版本。
+    $versionFile = Join-Path $CommonSrc "BuildVersion.lua"
+    if (Test-Path $versionFile) {
+        $verText = [System.IO.File]::ReadAllText($versionFile)
+        $verMatch = [regex]::Match($verText, '(?m)^\s*return\s+(\d+)')
+        if ($verMatch.Success) {
+            $newVer = [int]$verMatch.Groups[1].Value + 1
+            $newVerText = [regex]::Replace($verText, '(?m)^(\s*return\s+)(\d+)', '${1}' + $newVer, 1)
+            [System.IO.File]::WriteAllText($versionFile, $newVerText)
+            Write-Host "[push] 构建版本号: $($verMatch.Groups[1].Value) -> $newVer" -ForegroundColor Magenta
+        } else {
+            Write-Host "[push] 警告: BuildVersion.lua 未找到 return <数字> 行，跳过版本号自增" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "[push] 警告: 未找到 $versionFile，跳过版本号自增" -ForegroundColor Yellow
+    }
     Write-Host "[push] Server 本地 -> 活动目录 (单向覆盖)" -ForegroundColor Cyan
     Invoke-RoboMirror -From $ServerSrc -To $ServerDst
     Write-Host "[push] Common 本地 -> 活动目录 (双端共享区)" -ForegroundColor Cyan

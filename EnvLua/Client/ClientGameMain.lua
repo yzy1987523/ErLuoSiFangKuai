@@ -19,6 +19,9 @@ end
 
 function ClientGameMain:OnStart()
     print("[ClientGameMain]OnStart")
+    -- 构建版本确认：由 wow-sync.ps1 每次 push/sync 自增，用来确认当前跑的是否为最新上传版本
+    local okVer, ver = pcall(function() return require("EnvLua.Common.BuildVersion") end)
+    print("[BuildVersion] Client = " .. tostring(okVer and ver or ("读取失败:" .. tostring(ver))))
     -- 创建客户端总控（准备界面流程 + UI + 音效；对局交给 Battle）
     local ok, err = pcall(function()
         local Client = GetTetrisClient()

@@ -20,6 +20,15 @@ function ClassicGameState:P5_OpponentSnapshot(snap)
     pcall(Battle.Current.OnOpponentSnapshot, Battle.Current, snap)
 end
 
+-- ===== P7：玩家信息（服务端分配的名字+头像序号）=====
+function ClassicGameState:P7_PlayerInfo(list)
+    print("[P7][Client/GS] 玩家信息收到, 人数=" .. tostring(type(list) == "table" and #list or 0))
+    local okBT, Battle = pcall(require, "EnvLua.Client.Tetris.TetrisClientBattle")
+    if okBT and Battle.Current and Battle.Current.OnPlayerInfo then
+        pcall(Battle.Current.OnPlayerInfo, Battle.Current, list)
+    end
+end
+
 -- ===== P5：排行榜数据回传（服务端 GetTopN → 广播）=====
 function ClassicGameState:P5_LeaderboardData(list)
     print("[P5][Client/GS] 排行榜数据收到, 条数=" .. tostring(type(list) == "table" and #list or 0))

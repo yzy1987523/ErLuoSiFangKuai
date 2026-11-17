@@ -165,13 +165,17 @@ function TetrisClient:_startBattle()
         self.battle.onSettle = function(win, score, opponentScore)
             selfRef:_endBattle(win, score, opponentScore)
         end
-        -- 回调：HUD 更新
-        self.battle.onHud = function(uiState)
-            if selfRef.ui then selfRef.ui:UpdateHUD(uiState) end
+        -- 回调：HUD 更新（第二参=对手分数）
+        self.battle.onHud = function(uiState, opponentScore)
+            if selfRef.ui then selfRef.ui:UpdateHUD(uiState, opponentScore) end
         end
         -- 回调：排行榜数据 → 填表
         self.battle.onLeaderboard = function(list)
             if selfRef.ui then selfRef.ui:FillLeaderboard(list) end
+        end
+        -- 回调：玩家名字 + 头像序号 → 写对局 HUD
+        self.battle.onPlayerInfo = function(myName, oppName, myAvatar, oppAvatar)
+            if selfRef.ui then selfRef.ui:SetPlayerInfo(myName, oppName, myAvatar, oppAvatar) end
         end
         -- 难度传给 AI（单人时 Battle 会用服务端 AI，难度影响 quality）
         self.battle.quality = self.aiQuality or 0.8

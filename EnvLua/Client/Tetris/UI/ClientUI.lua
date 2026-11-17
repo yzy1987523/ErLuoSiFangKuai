@@ -53,6 +53,19 @@ local function enableInteract(ps, id)
     end)
 end
 
+-- 【诊断】中央临时提示控件的显隐追踪：登记后 Show/HideForce/ShowForce 每次写都打印。
+-- 引擎没有 GetWidgetVisible 查询 API，只能靠写入日志判断"没隐藏"还是"隐藏后又被显示"。
+local TRACE_IDS = {}   -- id -> 名称，由 _traceId() 填充
+local function traceName(id)
+    return TRACE_IDS[id] or nil
+end
+local function traceWrite(self, id, what, visible)
+    local name = traceName(id)
+    if not name then return end
+    print(string.format("[ClientUI][TRACE] %s id=%s(%s) visible=%s frame=%d",
+        what, tostring(id), name, tostring(visible), self._traceFrame or -1))
+end
+
 ---@param host table 提供 AddTimerOnce(delay, fn) 的宿主
 ---@param ps WoWPlayerStateBase|nil 真实玩家（客户端写控件首参）
 ---@param deps table|nil { requestLeaderboard=function(), onSubmitResult=function(win) end }
@@ -78,8 +91,13 @@ end
 function ClientUI:Show(id, visible)
     if not id then return end
     visible = visible and true or false
-    if self._visible[id] == visible then return end  -- 幂等：同值不写
+    if self._visible[id] == visible then
+        if traceName(id) then print("[ClientUI][TRACE] Show SKIP(幂等同值) id=" .. tostring(id) ..
+            "(" .. traceName(id) .. ") visible=" .. tostring(visible)) end
+        return
+    end
     self._visible[id] = visible
+    traceWrite(self, id, "Show", visible)
     writeWidget(id, function(target)
         CustomUIAPI.SetWidgetVisible(self.ps, target, visible)
     end)
@@ -90,6 +108,7 @@ end
 function ClientUI:HideForce(id)
     if not id then return end
     self._visible[id] = false
+    traceWrite(self, id, "HideForce", false)
     writeWidget(id, function(target)
         CustomUIAPI.SetWidgetVisible(self.ps, target, false)
         pcall(function() CustomUIAPI.SetWidgetImageOpacity(self.ps, target, 0.0) end)
@@ -102,6 +121,7 @@ end
 function ClientUI:ShowForce(id)
     if not id then return end
     self._visible[id] = true
+    traceWrite(self, id, "ShowForce", true)
     writeWidget(id, function(target)
         CustomUIAPI.SetWidgetVisible(self.ps, target, true)
         pcall(function() CustomUIAPI.SetWidgetImageOpacity(self.ps, target, 1.0) end)
@@ -157,6 +177,101 @@ function ClientUI:HideInitUI()
     -- Loading 遮罩/进度条编辑器可能预置常驻可见，开局强制隐藏（遮罩是图片，HideForce 连透明度一起压 0）
     self:HideForce(C.LoadingScreen)
     self:HideForce(C.LoadingProgress)
+    -- 对局 HUD（头像/操作区）与游戏内声音入口：开局强制隐藏，选完技能显示 Loading 时再点亮
+    self:_setHudVisible(false)
+    -- 敌方分数初始化为 0（编辑器预置残留分数，如截图里的 1960），双方 HUD 文本一并归零
+    self:Text(C.UI and C.UI.OpponentScoreLabel, 0)
+    self:Text(C.UI and C.UI.ScoreLabel, 0)
+    self:Text(C.UI and C.UI.LinesLabel, 0)
+    self:Text(C.UI and C.UI.LevelLabel, 0)
+    -- 注意：临时提示图不在开局隐藏——它们属于 GamePanel 的子控件，必须在 GamePanel 显示之后
+    -- 再隐藏，否则 GamePanel Show(true) 时会把它们一起带出来。时机见 ShowLoading()。
+end
+
+-- 事件型临时提示图隐藏（道具消除图 / 技能特效图 / 垃圾行提示 / 落石图等）。
+-- 必须在 GamePanel 显示之后调用：这些是 GamePanel 子控件，先藏后显示父容器会被引擎带出。
+-- 这些都是"触发时才短暂显示"的控件，与 HideSkillHintUI 的技能锁/冷却指示器分开列，避免遗漏。
+function ClientUI:_hideTransientHints()
+    local U = Config.UI or {}
+    -- 具名登记：{id, 名称}，名称写进 TRACE_IDS 供追踪打印用
+    local named = {
+        { U.ChargeItemImg, "ChargeItemImg" }, { U.BlastImg, "BlastImg" },
+        { U.ShiftImg1, "ShiftImg1" }, { U.ShiftImg2, "ShiftImg2" }, { U.StoneImg, "StoneImg" },
+        { U.GarbageSendHint, "GarbageSendHint" }, { U.GarbageRecvHint, "GarbageRecvHint" },
+        { U.ComboImg, "UI.ComboImg(连击提示图)" },
+        { Config.Skill and Config.Skill.ReadyImg, "Skill.ReadyImg(技能就绪图)" },
+        { Config.HintText, "HintText(通用飘字)" },
+        { Config.Skill and Config.Skill.BigTipInstance, "Skill.BigTipInstance(技能中央大图)" },
+        { Config.Skills and Config.Skills.SK06 and Config.Skills.SK06.attackBuffImg, "SK06.attackBuffImg" },
+        { Config.Skills and Config.Skills.SK01 and Config.Skills.SK01.rotLockCasterImg, "SK01.rotLockCasterImg" },
+        { Config.Skills and Config.Skills.SK01 and Config.Skills.SK01.rotLockVictimImg, "SK01.rotLockVictimImg" },
+        { Config.Skills and Config.Skills.SK07 and Config.Skills.SK07.cdIndicator, "SK07.cdIndicator" },
+    }
+    -- GarbageHint 多语言 12 组件（底图 base + 数字 num，zh/en/ar × Send/Recv）
+    local G = Config.GarbageHint or {}
+    for li, lang in pairs(G.Components or {}) do
+        if type(lang) == "table" then
+            for kind, pair in pairs(lang) do
+                if type(pair) == "table" then
+                    named[#named + 1] = { pair.base, "GarbageHint[" .. tostring(li) .. "]." .. tostring(kind) .. ".base" }
+                    named[#named + 1] = { pair.num,  "GarbageHint[" .. tostring(li) .. "]." .. tostring(kind) .. ".num" }
+                end
+            end
+        end
+    end
+    local hidden, skipped = 0, 0
+    for _, e in ipairs(named) do
+        local id, name = e[1], e[2]
+        if id == nil then
+            skipped = skipped + 1
+            print("[ClientUI][TRACE] 初始化隐藏 SKIP（id=nil） " .. tostring(name))
+        else
+            TRACE_IDS[id] = name      -- 登记追踪：之后每次 Show/HideForce 都会打印
+            self:HideForce(id)
+            hidden = hidden + 1
+        end
+    end
+    self._traceFrame = (self._traceFrame or 0) + 1
+    print("[ClientUI][TRACE] === 初始隐藏完成 隐藏=" .. tostring(hidden) .. " 跳过(nil)=" .. tostring(skipped) ..
+        " ===")
+    -- 延迟复查：打一条标记，看这之后有没有 [TRACE] Show/HideForce 把这些控件重新显示
+    self.host:AddTimerOnce(1.5, function()
+        print("[ClientUI][TRACE] === 1.5s 复查点：若上面出现过 [TRACE] Show ...visible=true，说明被重新显示；否则是初始没隐藏成功 ===")
+    end)
+end
+
+-- 对局 HUD 显示/隐藏（对齐历史 TetrisMatch:ShowLoading / HideStartScreen）。
+-- ShowHudAfterSkill 存的是 UUID 字符串 key，需经 CreativeInstance[key] 取数字 ID 后 writeWidget 双写。
+-- HUD 多为图片控件，显示时成对恢复 opacity=1.0（HideForce/编辑器默认透明会压下），隐藏用 HideForce。
+function ClientUI:_setHudVisible(visible)
+    local list = Config.ShowHudAfterSkill or {}
+    local S = Config.SoundSettings or {}
+    local ids = {}
+    for _, key in ipairs(list) do
+        if type(CreativeInstance) == "table" then
+            local id = CreativeInstance[key]
+            if id ~= nil then
+                ids[#ids + 1] = id
+                TRACE_IDS[id] = "GamePanel(对局HUD容器 " .. tostring(key) .. ")"  -- 登记追踪显示时机
+            end
+        end
+    end
+    if S.GameOpenBtn then ids[#ids + 1] = S.GameOpenBtn end
+    -- 无条件打 GamePanel 当前缓存值，判断 Show 会不会被幂等跳过
+    local gp = ids[1]
+    if gp ~= nil then
+        print("[ClientUI][TRACE] GamePanel时机: want=" .. tostring(visible) ..
+            " cached=" .. tostring(self._visible[gp]) ..
+            " id=" .. tostring(gp) .. " screen=" .. tostring(self.screen))
+    end
+    for _, id in ipairs(ids) do
+        if visible then
+            self:Show(id, true)
+            self:Opacity(id, 1.0)
+        else
+            self:HideForce(id)
+        end
+    end
 end
 
 function ClientUI:HideSkillHintUI()
@@ -460,6 +575,13 @@ function ClientUI:ShowLoading()
     end
     self.host:AddTimerOnce(CLICK_GUARD, function()
         apply(true)
+        self:_setHudVisible(true)   -- ① 先显示 GamePanel（对局 HUD 父容器）
+        -- ② 再隐藏临时提示图：它们是 GamePanel 子控件，父容器显示会带出，必须在显示之后藏
+        self:_hideTransientHints()
+        -- ③ 父容器异步带出子控件，延迟补写一次确保干净
+        self.host:AddTimerOnce(0.3, function()
+            if self._loadingVisible then self:_hideTransientHints() end
+        end)
         self:_setLoadingProgress(0)
         self._loadingVisible = true
         self._progressGen = (self._progressGen or 0) + 1
@@ -635,13 +757,47 @@ function ClientUI:FillLeaderboard(entries)
     end
 end
 
--- ===== 对战 HUD（只收 UIState） =====
-function ClientUI:UpdateHUD(state)
+-- ===== 对局 HUD：名字 + 头像（服务端分配序号，客户端按序号选图） =====
+-- myName/oppName 为显示名；myAvatar/oppAvatar 为 0 基序号，从 AvatarUI.AvatarPresets 取图（取模防越界）。
+function ClientUI:SetPlayerInfo(myName, oppName, myAvatar, oppAvatar)
+    local N = Config.NameUI or {}
+    local A = Config.AvatarUI or {}
+    local pool = A.AvatarPresets or {}
+    if #pool == 0 then
+        print("[ClientUI][WARN] AvatarPresets 为空，跳过头像设置")
+        return
+    end
+    local function avatarKey(idx)
+        if type(idx) ~= "number" then return nil end
+        local i = (idx % #pool) + 1
+        return pool[i]
+    end
+    -- 名字
+    if myName then self:Text(N.SelfName, myName) end
+    if oppName then self:Text(N.OppName, oppName) end
+    -- 头像：先确保可见并恢复透明度（HideForce 开局压过 0），再写图
+    local function setAvatar(id, idx)
+        if not id then return end
+        local key = avatarKey(idx)
+        if not key then return end
+        self:Show(id, true)
+        self:Opacity(id, 1.0)
+        self:Image(id, key)
+    end
+    setAvatar(A.SelfAvatarIcon, myAvatar)
+    setAvatar(A.OppAvatarIcon, oppAvatar)
+    print("[ClientUI] 玩家信息已写入: " .. tostring(myName) .. " idx=" .. tostring(myAvatar) ..
+        " / " .. tostring(oppName) .. " idx=" .. tostring(oppAvatar))
+end
+
+-- ===== 对战 HUD（只收 UIState + 对手分数） =====
+function ClientUI:UpdateHUD(state, opponentScore)
     if type(state) ~= "table" then return end
     local U = Config.UI or {}
     self:Text(U.ScoreLabel, state.score)
     self:Text(U.LinesLabel, state.lines)
     self:Text(U.LevelLabel, state.level)
+    if opponentScore ~= nil then self:Text(U.OpponentScoreLabel, opponentScore) end
     -- 技能能量条倒置渲染：写值=(1-进度)×100（清单 §7）
     local need = Config.Skill and Config.Skill.NeedBars or 3
     local progress = ((state.skillBars or 0) / need)
@@ -666,6 +822,7 @@ end
 function ClientUI:OnExitClicked()
     local S = Config.Settle or {}
     self:Show(S.PanelKey, false)
+    self:_setHudVisible(false)   -- 回开始界面：隐藏上一局对局 HUD（含游戏内声音入口）
     self.screen = "none"
     -- 重置：回到开始界面（不显示准备界面），重置幂等标志以便下一局重新隐藏
     self._initHidden = false

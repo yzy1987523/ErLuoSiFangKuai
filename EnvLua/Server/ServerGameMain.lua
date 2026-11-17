@@ -12,6 +12,9 @@ end
 -- 旧的 TetrisMatch 服务端玩法不再启动，其文件保留作备份（不物理删除）。
 function ServerGameMain:OnStart()
     print("[ServerGameMain]OnStart (client-authoritative: 无 UI 操作)")
+    -- 构建版本确认：由 wow-sync.ps1 每次 push/sync 自增，用来确认当前跑的是否为最新上传版本
+    local okVer, ver = pcall(function() return require("EnvLua.Common.BuildVersion") end)
+    print("[BuildVersion] Server = " .. tostring(okVer and ver or ("读取失败:" .. tostring(ver))))
 end
 
 --- OnGameStart: Callback when game process enters start.
