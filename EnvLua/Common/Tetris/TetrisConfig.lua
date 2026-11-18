@@ -529,45 +529,15 @@ TetrisConfig.NativeUI = {
     RetryInterval = 0.5,   -- 重发间隔（秒）
 }
 
--- ===================== 远景背景墙（4×3 模型块，置于盘面背后） =====================
--- 完全复用盘面的「视线前向 / 右向 / 上向(+Z) / 偏航」基底：
---   墙心 = 盘心 + 视线前向(装置→盘面) * DistanceX（即盘面背后 X 米）；
---   4 列沿盘面 right 向量展开，3 行沿世界 +Z 展开；每块复用盘面偏航旋转、放大 ScaleN 倍。
--- X 与 N 均为运行后手调参数（直接改这里重跑即可）。
-TetrisConfig.BackgroundWall = {
-    Enabled = true,         -- 是否生成远景背景墙
-    DistanceX = 30,         -- 墙心位于盘心沿视线方向再前 X 米（盘面背后距离，调此值）
-    ScaleN = 10,            -- 每个块放大倍数（模型原生尺寸 × N）
-    Cols = 4,               -- 横向块数（沿盘面 right）
-    Rows = 3,               -- 纵向块数（沿世界 +Z）
-    BlockBaseSize = 1,      -- 模型原生边长（米），块间距 pitch = BaseSize*N + Gap
-    BlockGap = 0,           -- 块间空隙（米）
-    -- 12 个模型块的资源键（AssetRef / CreativeAsset 预设 key，形如 "44_CreativeAsset_3400003"）。
-    -- 数量 < 12 时按索引循环复用；只填 1 个 key 即代表 12 块为同一模型。为空则跳过并告警。
-    BlockKeys = {
-        "50_CreativeAsset_111637870",
-        "50_CreativeAsset_111726298",
-        "50_CreativeAsset_111005022",
-        "50_CreativeAsset_114960804",
-        "50_CreativeAsset_115776786",
-        "50_CreativeAsset_117344364",
-        "50_CreativeAsset_113077723",
-        "50_CreativeAsset_114321708",
-        "50_CreativeAsset_111886810",
-        "50_CreativeAsset_113868679",
-        "50_CreativeAsset_116411456",
-        "50_CreativeAsset_111151203",
-    },
-}
-
 -- ===================== 盘面背后 3D UI 挂件（WidgetComponent Actor） =====================
 -- 需求：每个盘面（双盘各一）的「背后」各生成 1 个带 WidgetComponent 的 Actor，用于显示 3D UI。
--- 定位完全复用盘面基底（与背景墙同源）：
+-- 定位完全复用盘面基底（盘面背后方向）：
 --   挂件位置 = 盘心 + 视线前向(装置→盘面, 即 boardForward) * DistanceBehindM（盘面背后若干米）；
 --   旋转复用盘面偏航 self.rot（与盘面同向，使 3D UI 正面朝向玩家）。
 -- 必须在 AssetRef 注册该 ActorPreset 并执行 update preset（GenerateAssetRef.lua 才会生成键）。
 TetrisConfig.BehindBoardWidget = {
     Enabled = true,                                   -- 是否生成盘面背后 3D UI 挂件
+    SpawnMode = "Server",                             -- 生成端："Server"=服务端生成（当前，只生成 Actor 不灌分数）/ "Client"=后期客户端生成
     PresetKey = "46_ActorPreset_1273493010",           -- 带 WidgetComponent 的 Actor 预设键（AssetRef）
     DistanceBehindM = 0.51,                               -- 盘心沿视线方向再向后推的距离（盘面背后，调此值）
     Scale = { X = 7.52, Y = 7.52, Z = 7.52 },                   -- 整体缩放（影响 WidgetComponent 的世界尺寸）
@@ -593,6 +563,7 @@ TetrisConfig.BehindBoardWidget = {
 -- 显示道具图片（类型 >= Item.TypeMin，即 PieceImages[9/10/11]）时颜色强制为白色；普通方块按 PieceTint 染色。
 TetrisConfig.BigFrame3D = {
     Enabled = true,                                       -- 默认关闭；填入下方 PresetKey 并置 true 后生效（替代 2D Hold/Next）
+    SpawnMode = "Server",                                 -- 生成端："Server"=服务端生成（当前）/ "Client"=后期客户端生成（Hold/Next 实时预览需要低延迟）
     -- 3D 大框 Actor 预设键（46_ActorPreset_*，带 WidgetComponent 的 UMG，内含 Hold / Next 两个 Image 控件）
     -- 【必填】在编辑器里创建一个带 WidgetComponent 的 ActorPreset，UMG 内放两个 Image 控件，注册后填入其键
     PresetKey = "46_ActorPreset_612940845",
@@ -652,6 +623,7 @@ TetrisConfig.ClearRowWidget = {
 -- 资源键(PresetKey)占位为 nil 时本模块自动跳过，不会创建/报错。
 TetrisConfig.BoardBackdrop3D = {
     Enabled = true,                                       -- 是否生成盘面背面黑底背板
+    SpawnMode = "Server",                                 -- 生成端："Server"=服务端生成（当前）/ "Client"=后期客户端生成
     -- 黑底背板 Actor 预设键（46_ActorPreset_*，带 WidgetComponent 的 UMG，UMG 内填纯黑底色/图片）。
     -- 【占位】在编辑器里创建带 WidgetComponent 的 ActorPreset（UMG 放一个黑色 Image/底色），注册后填入其键；nil 时自动跳过。
     PresetKey = "46_ActorPreset_1434872060",
@@ -666,6 +638,7 @@ TetrisConfig.BoardBackdrop3D = {
 
 TetrisConfig.BoardBackdrop3D_small = {
     Enabled = true,                                       -- 是否生成盘面背面黑底背板
+    SpawnMode = "Server",                                 -- 生成端："Server"=服务端生成（当前）/ "Client"=后期客户端生成
     -- 黑底背板 Actor 预设键（46_ActorPreset_*，带 WidgetComponent 的 UMG，UMG 内填纯黑底色/图片）。
     -- 【占位】在编辑器里创建带 WidgetComponent 的 ActorPreset（UMG 放一个黑色 Image/底色），注册后填入其键；nil 时自动跳过。
     PresetKey = "46_ActorPreset_1434872060",
@@ -685,9 +658,12 @@ TetrisConfig.BoardBackdrop3D_small = {
 -- 必须在 AssetRef 注册该 ActorPreset 并执行 update preset（GenerateAssetRef.lua 才会生成键）。
 TetrisConfig.BackgroundWidget = {
     Enabled = true,                                   -- 是否生成远景背景 3D UI 挂件（双盘 → 2 个 Actor）
+    -- 【3D UI 生成端开关】"Server"=服务端生成+灌图；"Client"=客户端生成。
+    -- 【临时测试】官方建议客户端用 wc:GetWidget() 取 WoWClientUserWidget，正在验证，暂改 Client。
+    SpawnMode = "Client",
     PresetKey = "46_ActorPreset_830160950",           -- 带 WidgetComponent 的远景背景 Actor 预设键（AssetRef）
     DistanceBehindM = -1,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
-    Scale = { X = 13, Y = 13, Z = 13 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    Scale = { X = 153, Y = 153, Z = 153 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
     SideOffsetM = -30,                                  -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
     HeightOffsetM = 0,                                -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
     -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让远景呈对称倾斜。

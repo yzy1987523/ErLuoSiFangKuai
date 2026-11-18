@@ -96,9 +96,7 @@ function TetrisRenderer:new(owner, index)
     o.mode = nil    -- "instance" | "actor"
     o.ref = nil
     o.rot = nil
-    o.boardForward = nil  -- 装置→盘心方向（视线前向），背景墙定位用
-    o._wallBuilt = false  -- 远景背景墙是否已生成
-    o._wallActors = nil   -- 背景墙块对象列表（重建前清场）
+    o.boardForward = nil  -- 装置→盘心方向（视线前向），盘面背后 3D UI 定位用
     o.previewing = false  -- 开局预览阶段：true 时暂停活动方块渲染、改摆 7 种展示
     o.createFailLogged = false
     o.visibleFailLogged = false
@@ -419,74 +417,9 @@ function TetrisRenderer:CreateOne(loc, scale, ref, rotOverride)
     return nil
 end
 
--- ---------------- 远景背景墙 ----------------
--- 复用盘面基底：墙心 = 盘心 + 视线前向 * DistanceX；4 列沿 right、3 行沿 +Z；同向偏航、放大 ScaleN。
-function TetrisRenderer:BuildBackgroundWall()
-    local cfg = TetrisConfig.BackgroundWall
-    if not (cfg and cfg.Enabled) then return end
-    if not self.boardCenter or not self.boardForward or not self.boardRight
-       or not self.rot or not self.mode then
-        print("[Tetris][Wall][WARN] 盘面基底未就绪，暂缓背景墙")
-        return
-    end
-    -- 重建前先清掉旧的（应对重新 ResolveOrigin 重摆）
-    if self._wallActors then
-        for _, a in ipairs(self._wallActors) do
-            pcall(function() if a and a.K2_DestroyActor then a:K2_DestroyActor() end end)
-        end
-    end
-    self._wallActors = {}
-    local keys = cfg.BlockKeys or {}
-    if #keys == 0 then
-        print("[Tetris][Wall][WARN] BlockKeys 为空，跳过远景背景墙（请在 TetrisConfig.BackgroundWall.BlockKeys 填入模型资源键）")
-        return
-    end
-    local N = (type(cfg.ScaleN) == "number") and cfg.ScaleN or 1
-    local base = (type(cfg.BlockBaseSize) == "number") and cfg.BlockBaseSize or 1
-    local gap = (type(cfg.BlockGap) == "number") and cfg.BlockGap or 0
-    local pitch = base * N + gap
-    local X = (type(cfg.DistanceX) == "number") and cfg.DistanceX or 40
-    local cols = cfg.Cols or 4
-    local rows = cfg.Rows or 3
-    local wc = {
-        X = self.boardCenter.X + self.boardForward.X * X,
-        Y = self.boardCenter.Y + self.boardForward.Y * X,
-        Z = self.boardCenter.Z,
-    }
-    local scaleVec = Game:ConstructFVectorByLuaTable({ X = N, Y = N, Z = N })
-    local n = 0
-    for c = 0, cols - 1 do
-        for r = 0, rows - 1 do
-            local offR = (c - (cols - 1) / 2) * pitch
-            local offU = (r - (rows - 1) / 2) * pitch
-            local pos = {
-                X = wc.X + self.boardRight.X * offR,
-                Y = wc.Y + self.boardRight.Y * offR,
-                Z = wc.Z + offU,
-            }
-            local key = keys[((r * cols + c) % #keys) + 1]
-            local ref = (type(AssetRef) == "table" and AssetRef[key])
-                     or (type(CreativeAsset) == "table" and CreativeAsset[key])
-            if ref then
-                local ok, obj = pcall(function()
-                    return self:CreateOne(Game:ConstructFVectorByLuaTable(pos), scaleVec, ref)
-                end)
-                if ok and obj then
-                    self._wallActors[#self._wallActors + 1] = obj
-                    n = n + 1
-                end
-            else
-                print("[Tetris][Wall][WARN] 资源键无引用: " .. tostring(key))
-            end
-        end
-    end
-    print(string.format("[Tetris] 远景背景墙生成 %d/%d 块 (X=%.1f N=%.1f pitch=%.2f)",
-        n, cols * rows, X, N, pitch))
-end
-
 -- ---------------- 盘面背后 3D UI 挂件（WidgetComponent Actor） ----------------
 -- 在「盘面背后」各生成 1 个带 WidgetComponent 的 Actor（双盘各一，由各自 renderer 调用）。
--- 定位：挂件位置 = 盘心 + 视线前向(boardForward) * DistanceBehindM（与背景墙同源，即盘面背后）；
+-- 定位：挂件位置 = 盘心 + 视线前向(boardForward) * DistanceBehindM（即盘面背后）；
 --       旋转：默认与盘面同向（3D UI 正面朝该盘玩家）；若本盘 index 在 FlipBoardIndices 中，
 --       则绕竖直轴 +180°（背对玩家，给“对面盘”用，避免两边都朝向观察方）。
 -- 幂等：已生成则跳过；重建（ReanchorBoard 重摆）时重定位到新基底。
@@ -4007,11 +3940,6 @@ function TetrisRenderer:Update(board, running)
     -- 未就绪前绝不摆静态方块，否则 K2_TeleportTo 被静默丢弃 → 方块卡在停车场。
     if not self.poolReady and self.frame >= (TetrisConfig.Render.PoolReadyFrames or 2) then
         self.poolReady = true
-    end
-    -- 对象池就绪后一次性生成远景背景墙（此时 self.mode/rot/basis 均已稳定，避免异步丢块）
-    if self.poolReady and not self._wallBuilt then
-        self._wallBuilt = true
-        self:BuildBackgroundWall()
     end
     -- 兜底生成盘面背后 3D UI 挂件：Build 阶段（开局第一帧）若 AssetRef 尚未注册该 ActorPreset 会失败，
     -- 这里 poolReady 后再次尝试；函数内有 _behindWidgetActor 幂等保护，已生成则跳过，不会重复创建。

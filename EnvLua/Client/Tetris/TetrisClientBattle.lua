@@ -266,7 +266,7 @@ function TetrisClientBattle:Start()
         -- 避免玩家还在开始界面时 AI 独自跑完整局；服务端 P5_RequestAI 内部幂等（已运行则跳过）。
         pcall(function()
             local gs = Game:GetGameState()
-            if gs then gs:CallServerFunction("P5_RequestAI") end
+            if gs then gs:CallServerFunction("P5_RequestAI", self.quality or 0.8) end
         end)
     end
 
@@ -307,11 +307,17 @@ function TetrisClientBattle:OnBoardTransform(seats)
     -- 单人时若 selfKey 未匹配（如 selfKey=0 或读取晚于广播），退化为 seat0=自己、seat1=AI/对手
     if not mine then mine, other = seats[1], seats[2] end
     if not mine or not other then return end
+    -- [BG] 客户端背景挂件生成开关在 ClientRenderer.EnsureBackgroundWidget 内读 Config.BackgroundWidget.SpawnMode；
+    -- 当前 "Server" 由服务端生成，这里调用会直接 return（保留调用，后期改 "Client" 即生效）
     if self.localRenderer then
         self.localRenderer:SetBasis(mine.origin, mine.right)
         pcall(function() self.localRenderer:Update(self.localGame:BuildRenderState()) end)
+        pcall(function() self.localRenderer:EnsureBackgroundWidget(1) end)
     end
-    if self.oppRenderer then self.oppRenderer:SetBasis(other.origin, other.right) end
+    if self.oppRenderer then
+        self.oppRenderer:SetBasis(other.origin, other.right)
+        pcall(function() self.oppRenderer:EnsureBackgroundWidget(2) end)
+    end
     self._boardSeats = seats
     self._boardReady = true
     print("[P7][Battle] 盘面基底已应用 我方 origin=(" .. tostring(mine.origin.X) .. "," ..
@@ -327,6 +333,26 @@ function TetrisClientBattle:SetLoadingHidden()
 end
 
 -- [P7] 两条件齐备才启动本地盘下落（重力循环从 Start 迁出，避免 loading 期间就落块）。
+-- [BigFrame3D] 上报自己盘的 hold/next/backlight 给服务端（仅在变化时发 RPC）。
+function TetrisClientBattle:_reportBigFrame()
+    local game = self.localGame
+    local board = game and game.board
+    if not board then return end
+    local ht = board.getHoldType and board:getHoldType() or nil
+    local nq = board.getNextQueue and board:getNextQueue() or nil
+    local nt = (nq and nq[1]) or nil
+    local bl = (board.attackBonusNext and board.attackBonusNext > 0) and true or false
+    -- 变更检测：nil 用哨兵 "#" 区分「未初始化」与「真的无内容(nil)」
+    local hk = ht == nil and "#" or tostring(ht)
+    local nk = nt == nil and "#" or tostring(nt)
+    if self._bfLastHold == hk and self._bfLastNext == nk and self._bfLastBL == bl then return end
+    self._bfLastHold, self._bfLastNext, self._bfLastBL = hk, nk, bl
+    pcall(function()
+        local gs = Game:GetGameState()
+        if gs then gs:CallServerFunction("P7_ReportBigFrame", self.selfKey or 0, ht, nt, bl) end
+    end)
+end
+
 function TetrisClientBattle:_tryBeginFall()
     if not (self._boardReady and self._loadingHidden and not self._fallStarted) then return end
     self._fallStarted = true
@@ -340,6 +366,8 @@ function TetrisClientBattle:_tryBeginFall()
         local okTick, errTick = pcall(function()
             selfRef.localGame:tick()
             selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState())
+            -- [BigFrame3D] 上报 hold/next/backlight 给服务端灌 3D 大框（变更检测，避免每帧发 RPC）
+            selfRef:_reportBigFrame()
             -- [P8] 重力自然落定也上报（与硬降同走 lockPiece 旁路记录，seq 去重）
             selfRef:_reportLockedPieces()
             if selfRef.onHud then pcall(selfRef.onHud, selfRef.localGame:BuildUIState(), selfRef._lastOppScore or 0) end

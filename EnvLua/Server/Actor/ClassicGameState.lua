@@ -3,6 +3,8 @@
 local ClassicGameState = {}
 
 local WoWClassicGameState = require("EnvLua.Core.WoWClassicGameState")
+local TetrisBackgroundServer = require("EnvLua.Server.Tetris.TetrisBackgroundServer")
+local TetrisScene3DUIServer = require("EnvLua.Server.Tetris.TetrisScene3DUIServer")
 
 -- 排行榜类型：CustomRank[RankType]，未注入时回退数字（与 TetrisMatch:LeaderboardRankType 一致）
 local function rankType(Config)
@@ -176,6 +178,7 @@ function ClassicGameState:OnReceiveBeginPlay()
         self:RegisterServerFunction("P7_RequestBoardTransform") -- [P7] 请求盘面基底（出生点几何，ServerOnly 计算）
         self:RegisterServerFunction("Auth_Piece")            -- [P8] 客户端上报每块(type,rot,x,y)，服务端重放权威分数
         self:RegisterServerFunction("Auth_TopOut")           -- [P8] 客户端显式上报顶出，服务端据此权威判 over
+        self:RegisterServerFunction("P7_ReportBigFrame")     -- [BigFrame3D] 客户端上报 hold/next/backlight，服务端灌 3D 大框
     end)
     print("[P0][Server/GS] RegisterServerFunction = " .. tostring(okReg) .. " " .. tostring(errReg))
 
@@ -194,7 +197,7 @@ function ClassicGameState:StartAI()
     if self._p3Driver and self._p3Driver.running then return end
     local okDrv, drvOrErr = pcall(function()
         local Driver = require("EnvLua.Server.Tetris.TetrisAIDriver")
-        self._p3Driver = Driver:new(self, { quality = 0.8, tag = "AI-P3", interval = 0.1, snapshotEvery = 1 })
+        self._p3Driver = Driver:new(self, { quality = self._aiQuality or 0.8, tag = "AI-P3", interval = 0.1, snapshotEvery = 1 })
         self._p3Driver:Start()
         return self._p3Driver
     end)
@@ -226,6 +229,18 @@ function ClassicGameState:BroadcastBoardTransform()
         end
         g = { o0 = o0, r0 = r0, o1 = o1, r1 = r1 }
         self._boardGeom = g
+        -- [BGS] 几何首次就绪即生成远景背景挂件（服务端生成+灌图，实跑验证可显示）
+        self:_ensureBackgroundWidgets(0)
+        -- [S3D] 几何首次就绪即生成其余场景 3D UI（BigFrame3D/BehindBoardWidget/BoardBackdrop3D）
+        pcall(function()
+            TetrisScene3DUIServer.Ensure(self, g)
+            -- 大框生成后，若客户端已上报过 hold/next，补灌一次（避免上报早于大框生成而丢失）
+            if self._bigFrameData then
+                for idx, d in pairs(self._bigFrameData) do
+                    TetrisScene3DUIServer.SetBigFrameHoldNext(self, idx, d[1], d[2], d[3])
+                end
+            end
+        end)
     end
     local o0, r0, o1, r1 = g.o0, g.r0, g.o1, g.r1
 
@@ -267,6 +282,8 @@ function ClassicGameState:BroadcastBoardTransform()
         end
     end
     local p0, p1 = keyBySeat[0] or 0, keyBySeat[1] or 0
+    -- [BigFrame3D] 缓存 seat→playerKey（bigframe_1=seat0, bigframe_2=seat1），供 hold/next 上报按 playerKey 定位大框
+    self._seatKeys = { [0] = p0, [1] = p1 }
     -- [特效] 缓存真人所在 seat 与对手 seat：消行特效必须按「真人实际站位」定位，
     -- 不能写死 我方=seat0/对方=seat1（真人可能出生在 SpawnPoint2=seat1，写死会导致特效左右互换）。
     -- 单人时只有一个 seat 有真人(p~=0)，另一个即 AI 盘；双人有线时取第一个真人为我方。
@@ -293,9 +310,43 @@ function ClassicGameState:BroadcastBoardTransform()
         (okSend and "" or (" err=" .. tostring(err))))
 end
 
+-- [BGS] 远景背景挂件：服务端生成 + 灌图（几何就绪后调用；UMG 异步加载失败时延迟重试）。
+-- 难度图键 _bgImageKey 由单人 P5_RequestAI(quality) 注入，双人时在下方按人数改为 Human。
+function ClassicGameState:_ensureBackgroundWidgets(tries)
+    if not self._boardGeom then return end
+    local pending = 0
+    pcall(function()
+        pending = TetrisBackgroundServer.Ensure(self, self._boardGeom, self._bgImageKey or "Human") or 0
+    end)
+    if pending > 0 and tries < 12 then
+        self:AddTimerOnce(0.4, function() self:_ensureBackgroundWidgets(tries + 1) end)
+    end
+end
+
 -- [P7] 客户端兜底请求（开局广播丢包/晚到时重发缓存）
 function ClassicGameState:P7_RequestBoardTransform()
     self:BroadcastBoardTransform()
+end
+
+-- [BigFrame3D] 客户端上报自己盘的 hold/next/backlight，服务端灌对应盘的 3D 大框。
+-- 参数：selfKey（玩家标识，用于定位 seat）、holdType/nextType（1..7/道具 9..11/nil）、backlight（bool）。
+function ClassicGameState:P7_ReportBigFrame(selfKey, holdType, nextType, backlight)
+    local seat = nil
+    if self._seatKeys then
+        local k = tonumber(selfKey)
+        if k and self._seatKeys[0] == k then seat = 0
+        elseif k and self._seatKeys[1] == k then seat = 1 end
+    end
+    -- 单人兜底：selfKey 为 0/未匹配时，用缓存的真人 seat
+    if not seat and self._humanSeat ~= nil then seat = self._humanSeat end
+    if seat == nil then return end
+    local boardIndex = seat + 1  -- seat0→bigframe_1, seat1→bigframe_2
+    -- 缓存最新值：大框若尚未生成，Ensure 生成后会用该缓存补灌一次
+    self._bigFrameData = self._bigFrameData or {}
+    self._bigFrameData[boardIndex] = { holdType, nextType, backlight }
+    pcall(function()
+        TetrisScene3DUIServer.SetBigFrameHoldNext(self, boardIndex, holdType, nextType, backlight)
+    end)
 end
 
 -- ===== P8：服务端权威账本（客户端本地即时操作，随机源/每块落点由客户端上报，服务端重放得权威分数）=====
@@ -433,18 +484,25 @@ function ClassicGameState:P5_RequestLeaderboard()
 end
 
 -- ===== P5-5b：单人请求启动 AI =====
-function ClassicGameState:P5_RequestAI()
+function ClassicGameState:P5_RequestAI(quality)
     local playerCount = 0
     pcall(function()
         local ps = Game:GetAllPlayerStates()
         if ps and ps.Num then playerCount = ps:Num() end
     end)
+    -- [BGS] 背景图键：单人按 AI quality 映射，双人固定 Human
+    local q = tonumber(quality) or 0.8
+    self._bgImageKey = (q <= 0.6 and "Easy") or (q <= 0.9 and "Normal") or "Hard"
     if playerCount >= 2 then
+        self._bgImageKey = "Human"
         print("[P5][Server/GS] P5_RequestAI 忽略：当前是双人模式(" .. tostring(playerCount) .. "人)")
-        return
+    else
+        print("[P5][Server/GS] P5_RequestAI 单人模式，启动 AI quality=" .. tostring(q) .. " bgKey=" .. tostring(self._bgImageKey))
+        self._aiQuality = q
+        self:StartAI()
     end
-    print("[P5][Server/GS] P5_RequestAI 单人模式，启动 AI")
-    self:StartAI()
+    -- 难度键就绪后刷新背景灌图（几何可能早于本请求就绪，Ensure 内部幂等）
+    self:_ensureBackgroundWidgets(0)
 end
 
 -- ===== P5-5b：双人快照中转（广播给所有客户端；客户端按 senderKey 过滤自己）=====
