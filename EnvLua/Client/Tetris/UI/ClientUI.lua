@@ -84,6 +84,10 @@ function ClientUI:new(host, ps, deps)
     o._hintHidden = false
     o._visible = {}       -- 控件显隐权威缓存：id -> bool（避免重复写）
     o._languageSelfKeys = {}  -- ps/key 双写（清单 §11 坑 9）
+    -- 【诊断】登记准备界面控件，追踪每次显隐写入（确认"开始显示→后来隐藏"由哪处触发）
+    local H = Config.HelpUI or {}
+    if H.Panel then TRACE_IDS[H.Panel] = "HelpUI.Panel" end
+    if H.BtnClose then TRACE_IDS[H.BtnClose] = "HelpUI.BtnClose" end
     return o
 end
 
@@ -148,6 +152,18 @@ function ClientUI:Opacity(id, v)
     if not id then return end
     writeWidget(id, function(target)
         CustomUIAPI.SetWidgetImageOpacity(self.ps, target, v)
+    end)
+end
+
+-- 控件整体透明度（SetWidgetOpacity，区别于 SetWidgetImageOpacity 只作用于图片内容）。
+-- Button 这类复合控件（底色图 + 文本）必须用本接口：编辑器把按钮默认透明度设为 0 后，
+-- panel 显示带出按钮时它仍透明不闪；代码要显示按钮时用本方法把整体透明度改为 1。
+function ClientUI:WidgetOpacity(id, v)
+    if not id then return end
+    print("[ClientUI][TRACE] WidgetOpacity id=" .. tostring(id) ..
+        "(" .. tostring(traceName(id)) .. ") v=" .. tostring(v))
+    writeWidget(id, function(target)
+        CustomUIAPI.SetWidgetOpacity(self.ps, target, v)
     end)
 end
 
@@ -383,9 +399,12 @@ end
 -- ===== 开始界面（关闭 HelpUI 准备界面后进入；HelpUI 由编辑器默认显示，此处只负责隐藏） =====
 function ClientUI:ShowStart()
     local H = Config.HelpUI or {}
-    -- 关闭准备界面：用 HideForce 每次强制下发，避免重开时幂等缓存命中跳过、被编辑器默认态带回。
+    print("[DIAG][HelpUI] ShowStart 调用 screen=" .. tostring(self.screen) ..
+        " Panel=" .. tostring(H.Panel) .. " BtnClose=" .. tostring(H.BtnClose))
+    -- 关闭准备界面：面板用 HideForce+图片透明度；按钮 ONLY 用控件整体透明度（不碰 visible，便于验证透明度是否生效）。
     self:HideForce(H.Panel)
-    self:HideForce(H.BtnClose)
+    self:Opacity(H.Panel, 0.0)
+    self:WidgetOpacity(H.BtnClose, 0.0)
     self:_goto("start", function()
         local S = Config.SkillSelect or {}
         self:Show(S.StartPanel, true)   -- 开始界面稳定显示
@@ -397,6 +416,9 @@ function ClientUI:ShowStart()
             self:ShowForce(S.StartPanel)
             self:ShowForce(S.StartBtn)
             self:_showStartEntrancesForce()
+            -- 引擎异步带出子控件时可能把 opacity 恢复，再压一次准备界面透明度防重复出现。
+            self:Opacity(H.Panel, 0.0)
+            self:WidgetOpacity(H.BtnClose, 0.0)
         end)
     end)
 end

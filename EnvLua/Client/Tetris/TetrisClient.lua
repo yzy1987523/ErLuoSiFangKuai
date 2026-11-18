@@ -13,6 +13,11 @@ local TetrisClient = {}
 TetrisClient.__index = TetrisClient
 
 local EV_CLICK = 120000
+-- PlayerBorn(10000)：玩家角色在出生点生成时触发。日志证实该事件比 OnRoundStart 晚约 5s，
+-- 而引擎在玩家出生时会把 CustomUI 控件重置回编辑器默认态（关闭按钮默认隐藏），
+-- 导致 OnRoundStart 里提前 ShowForce 的按钮被覆盖回隐藏。故需出生后补发显示。
+pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
+local EV_PLAYER_BORN = (type(RcEventIdDefine) == "table" and RcEventIdDefine.PlayerBorn) or 10000
 local LOADING_SEC = 3
 
 ---@param host WoWGameMain 提供 AddVPEvent/AddTimerOnce/AddTimer 的宿主
@@ -69,6 +74,39 @@ function TetrisClient:Init()
 
     -- 流程按钮注册
     self:_registerFlowButtons()
+    -- 关闭按钮默认隐藏（编辑器端也把它设为默认隐藏，这里代码兜底）：
+    -- 等 OnRoundStart 再显示，避开回合启动前后引擎恢复默认可见导致准备界面重复出现。
+    local H = Config.HelpUI or {}
+    print("[DIAG][HelpUI] Init 阶段 phase=" .. tostring(self.phase) ..
+        " BtnClose=" .. tostring(H.BtnClose) .. " → WidgetOpacity(0) ONLY")
+    -- 按钮显隐 ONLY 用整体透明度，不碰 SetWidgetVisible；便于验证 SetWidgetOpacity 是否生效。
+    if self.ui then self.ui:WidgetOpacity(H.BtnClose, 0.0) end
+
+    -- 玩家出生后补发显示：引擎在出生时把 CustomUI 重置回编辑器默认态（隐藏），
+    -- 会覆盖 OnRoundStart 提前下发的 ShowForce。监听 PlayerBorn 在出生后重新显示。
+    -- @listen 前两参 PlayerState/TeamID 传 nil 表示不过滤；@output 首个为 PlayerState。
+    local selfRef = self
+    pcall(function()
+        self.host:AddVPEvent(EV_PLAYER_BORN, function()
+            print("[DIAG][HelpUI] PlayerBorn 触发 → 补发关闭按钮")
+            selfRef:_showPrepareCloseBtn("PlayerBorn")
+        end, self, nil, nil)
+    end)
+end
+
+-- 显示准备界面关闭按钮（带 screen 守卫：玩家已点关闭进入后续界面后不再补发，避免游戏中误显示）。
+function TetrisClient:_showPrepareCloseBtn(tag)
+    if not self.ui then return end
+    -- 仅在仍停留准备界面（screen 为 none/prepare）时补发；开始界面及之后一律跳过。
+    local sc = self.ui.screen
+    if sc ~= "none" and sc ~= "prepare" then
+        print("[DIAG][HelpUI] _showPrepareCloseBtn(" .. tostring(tag) .. ") 跳过 screen=" .. tostring(sc))
+        return
+    end
+    local H = Config.HelpUI or {}
+    print("[DIAG][HelpUI] _showPrepareCloseBtn(" .. tostring(tag) .. ") → WidgetOpacity(1) ONLY screen=" .. tostring(sc))
+    -- 按钮显隐 ONLY 用整体透明度：0→1 点亮，不碰 SetWidgetVisible。
+    self.ui:WidgetOpacity(H.BtnClose, 1.0)
 end
 
 -- 流程按钮（准备/开始/难度/技能/帮助/语言/声音/排行榜/结算）
@@ -213,10 +251,20 @@ end
 
 -- ===== 生命周期（ClientGameMain 转发） =====
 function TetrisClient:OnRoundStart()
+    local H = Config.HelpUI or {}
+    print("[DIAG][HelpUI] OnRoundStart phase=" .. tostring(self.phase) ..
+        " BtnClose=" .. tostring(H.BtnClose))
     if self.phase == "init" then
         self.ui:InitializeAll()   -- 控件已在场：补齐初始显隐/标志/排行榜文本/声音交互
-        -- HelpUI（准备界面）由编辑器默认显示：开局代码不显示也不隐藏它。
-        -- 玩家点关闭按钮 → OnPrepareClosed → ShowStart 才隐藏 HelpUI 并显示开始界面。
+        -- 回合开始先显示一次（出生前的即时表现）；玩家出生后由 PlayerBorn 补发覆盖引擎重置。
+        self:_showPrepareCloseBtn("OnRoundStart")
+        -- 兜底：客户端若收不到 PlayerBorn VP 事件，用延迟重试在出生窗口内再补发几次。
+        -- screen 守卫确保玩家一旦点关闭进入后续界面就停止补发，不会在游戏中误显示。
+        local delays = { 1.0, 2.5, 4.0, 6.0, 8.0 }
+        for _, d in ipairs(delays) do
+            self.host:AddTimerOnce(d, function() self:_showPrepareCloseBtn("retry@" .. tostring(d)) end)
+        end
+        -- 玩家点关闭按钮 → OnPrepareClosed → ShowStart 隐藏 HelpUI 并显示开始界面。
         self.phase = "prepare"
     end
 end
