@@ -20,6 +20,17 @@ function ClassicGameState:P5_OpponentSnapshot(snap)
     pcall(Battle.Current.OnOpponentSnapshot, Battle.Current, snap)
 end
 
+-- ===== P7：双方就绪广播（服务端仲裁双方/AI都准备好后下发，两端一起进 loading）=====
+function ClassicGameState:P7_AllReady(gen)
+    print("[P7][Ready][Client/GS] AllReady 收到 gen=" .. tostring(gen))
+    local okC, Client = pcall(require, "EnvLua.Client.Tetris.TetrisClient")
+    if not okC or not Client.Current or not Client.Current.OnAllReady then
+        print("[P7][Ready][Client/GS][WARN] TetrisClient.Current 不可用，AllReady 未转发")
+        return
+    end
+    pcall(Client.Current.OnAllReady, Client.Current, gen)
+end
+
 -- ===== P7：玩家信息（服务端分配的名字+头像序号）=====
 function ClassicGameState:P7_PlayerInfo(list)
     print("[P7][Client/GS] 玩家信息收到, 人数=" .. tostring(type(list) == "table" and #list or 0))

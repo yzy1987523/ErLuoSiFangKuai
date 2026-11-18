@@ -11,6 +11,8 @@ local Battle = require("EnvLua.Client.Tetris.TetrisClientBattle")
 
 local TetrisClient = {}
 TetrisClient.__index = TetrisClient
+-- 模块单例：客户端 GameState 收到服务端广播（双方就绪 AllReady）后据此回调当前实例
+TetrisClient.Current = nil
 
 local EV_CLICK = 120000
 -- PlayerBorn(10000)：玩家角色在出生点生成时触发。日志证实该事件比 OnRoundStart 晚约 5s，
@@ -19,6 +21,9 @@ local EV_CLICK = 120000
 pcall(require, "EnvLua.Core.Define.RcEventIdDefine")
 local EV_PLAYER_BORN = (type(RcEventIdDefine) == "table" and RcEventIdDefine.PlayerBorn) or 10000
 local LOADING_SEC = 3
+-- [BigFrame3D] Battle 构建后会立即上报 hold/next 给服务端灌 3D 大框，RPC 往返+灌图约 1~2s。
+-- 若此时立刻隐藏 loading，玩家会看到一瞬默认图；故先保持 loading，缓冲后再隐藏。
+local BIGFRAME_WARMUP_SEC = 1.8
 
 ---@param host WoWGameMain 提供 AddVPEvent/AddTimerOnce/AddTimer 的宿主
 function TetrisClient:new(host)
@@ -36,6 +41,9 @@ function TetrisClient:new(host)
     o.opponentBoard = nil  -- 对手盘镜像（收到快照后渲染，P6）
     o._tickTimer = nil
     o._flowButtons = {}
+    o._readyGen = 0             -- 双方就绪代号（与服务端握手，跨局递增）
+    o._allReadyHandled = false  -- 本局是否已处理 AllReady（幂等，防补发重复进 loading）
+    TetrisClient.Current = o
     return o
 end
 
@@ -161,6 +169,7 @@ end
 
 -- ===== 流程状态转换 =====
 function TetrisClient:_onStartGame()
+    self._allReadyHandled = false   -- 新一局：允许再次处理全员就绪广播
     self.ui:OnStartClicked()
     if Config.AI and Config.AI.Enabled then
         self.ui:ShowAIDifficulty()
@@ -185,8 +194,44 @@ function TetrisClient:_onSkillSlot(index)
         local gs = Game:GetGameState()
         if gs then gs:CallServerFunction("P7_HideMasks") end
     end)
-    self.ui:ShowLoading()
-    self.host:AddTimerOnce(LOADING_SEC, function() self:_startBattle() end)
+    -- [P7 双方就绪] 选完技能仅上报"本方已就绪"，不再自己进 loading：
+    -- 自己选完后 UI 显示 WaitHint（等待对方选择技能），等服务端确认双方（单人为 AI）都就绪后
+    -- 广播 P7_AllReady，两端一起进 loading。单人 AI 视为恒就绪，仍走同一条双方就绪流程。
+    self.phase = "ready"
+    self:_reportPlayerReady()
+end
+
+-- [P7 双方就绪] 上报本玩家就绪给服务端仲裁。gen 代号防跨局/漏收串扰。
+function TetrisClient:_reportPlayerReady()
+    self._readyGen = self._readyGen or 0
+    local ok, err = pcall(function()
+        local gs = Game:GetGameState()
+        if gs then gs:CallServerFunction("P7_PlayerReady", self.selfKey or 0, self._readyGen) end
+    end)
+    print("[P7][Ready][Client] 上报 ready selfKey=" .. tostring(self.selfKey) ..
+        " gen=" .. tostring(self._readyGen) .. " ok=" .. tostring(ok) .. (ok and "" or (" err=" .. tostring(err))))
+    -- 兜底重发：广播万一漏收（晚进入者），只要仍停在 ready 阶段就每 1.5s 重发一次；
+    -- 服务端按 playerKey 去重 + gen 落后补发，OnAllReady 幂等，重发安全。
+    self.host:AddTimerOnce(1.5, function()
+        if self.phase == "ready" and not self._allReadyHandled then self:_reportPlayerReady() end
+    end)
+end
+
+-- [P7 双方就绪] 服务端广播全员就绪：隐藏等待提示/技能面板 → 进 loading → LOADING_SEC 秒后一起开局。
+-- 幂等：服务端为补发漏收者可能多次广播，本方只处理一次。
+function TetrisClient:OnAllReady(gen)
+    if self._allReadyHandled then
+        print("[P7][Ready][Client] AllReady 重复广播，幂等跳过 gen=" .. tostring(gen))
+        return
+    end
+    self._allReadyHandled = true
+    self._readyGen = (tonumber(gen) or 0) + 1   -- 推进代号，供下一局握手
+    self.phase = "loading"
+    print("[P7][Ready][Client] AllReady 收到 gen=" .. tostring(gen) ..
+        " → 新代号=" .. tostring(self._readyGen))
+    self.ui:OnAllReady()                              -- ① 隐藏等待提示 + 技能选择面板
+    self.ui:ShowLoading()                             -- ② 遮罩/进度条/HUD 显示 + 临时提示隐藏（含延迟补写）
+    self.host:AddTimerOnce(LOADING_SEC, function() self:_startBattle() end)  -- ③ 双方就绪后 loading 展示 → 开局
 end
 
 function TetrisClient:_startBattle()
@@ -194,8 +239,9 @@ function TetrisClient:_startBattle()
     -- 这里只负责 UI 流程切换 + 通过回调把 HUD/结算/排行榜接回 TetrisClient。
     local selfRef = self
     self.ui:HideSkillHintUI()
-    self.ui:EnterBattle()
     self.phase = "battle"
+    -- [BigFrame3D] 不再立即 EnterBattle 隐藏 loading：先构建 Battle（内部立即上报 hold/next），
+    -- 等 RPC 往返把 3D 大框灌好后，再隐藏 loading + 启动重力，避免玩家看到一瞬默认图。
 
     local ok, err = pcall(function()
         self.battle = Battle:new(self.host)
@@ -219,8 +265,16 @@ function TetrisClient:_startBattle()
         self.battle.quality = self.aiQuality or 0.8
         self.battle.aiName = self.aiName or "AI"
         self.battle:Start()
-        -- [P7] 通知 Battle：loading 遮罩已隐藏（EnterBattle 在前），满足下落门控条件之一
-        self.battle:SetLoadingHidden()
+        -- [P7/BigFrame3D] 缓冲后再隐藏 loading + 启动重力：
+        -- Start() 已立即上报 hold/next，等 BIGFRAME_WARMUP_SEC 让 RPC 往返把服务端 3D 大框灌好，
+        -- 玩家看到对局的瞬间大框图已就绪；同时避免玩家在 loading 期间看到方块提前下落。
+        self.host:AddTimerOnce(BIGFRAME_WARMUP_SEC, function()
+            if not selfRef.battle then return end
+            selfRef.ui:EnterBattle()             -- 隐藏 loading 遮罩
+            selfRef.battle:SetLoadingHidden()    -- 满足下落门控，开始重力
+            print("[P7/BigFrame3D] 灌图缓冲 " .. tostring(BIGFRAME_WARMUP_SEC) ..
+                "s 结束 → 隐藏 loading + 启动重力")
+        end)
     end)
     if not ok then
         print("[TetrisClient] _startBattle 失败: " .. tostring(err))

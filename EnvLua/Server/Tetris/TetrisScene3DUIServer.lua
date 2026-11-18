@@ -179,7 +179,19 @@ function TetrisScene3DUIServer.SetBigFrameHoldNext(host, boardIndex, holdType, n
     if not (cfg and cfg.Enabled) then return end
     host._scene3d = host._scene3d or {}
     local actor = host._scene3d["bigframe_" .. tostring(boardIndex)]
-    if not actor then return end  -- 大框尚未生成（下次上报再灌）
+    if not actor then
+        -- 限频打印：大框 actor 尚未生成时提示（几何就绪 Ensure 会生成，之后上报再灌）
+        host._bfNoActorWarn = host._bfNoActorWarn or {}
+        if not host._bfNoActorWarn[boardIndex] then
+            host._bfNoActorWarn[boardIndex] = true
+            print("[BigFrame3D][Server] 灌图跳过：bigframe_" .. tostring(boardIndex) ..
+                " actor 未生成 hold=" .. tostring(holdType) .. " next=" .. tostring(nextType))
+        end
+        return
+    end
+    print("[BigFrame3D][Server] 灌图 bigframe_" .. tostring(boardIndex) ..
+        " hold=" .. tostring(holdType) .. " next=" .. tostring(nextType) ..
+        " backlight=" .. tostring(backlight))
 
     local imgs, tints = Config.PieceImages, Config.PieceTint
     local function resolveImg(t)
@@ -192,7 +204,12 @@ function TetrisScene3DUIServer.SetBigFrameHoldNext(host, boardIndex, holdType, n
     end
     local function setImg(childNames, t, lastByIndex)
         local items = findFrontWidgetImageChild(host, actor, childNames)
-        if not items then return end
+        if not items or #items == 0 then
+            -- 控件还没加载好（3D 挂件 UMG 异步加载，参考背景挂件需十几次重试）：返回 false 触发上层重试
+            print("[BigFrame3D][Server] 控件未就绪 bigframe_" .. tostring(boardIndex) ..
+                " child=" .. tostring(type(childNames) == "table" and childNames[1] or childNames))
+            return false
+        end
         local imgID = resolveImg(t)
         local visible = (imgID ~= nil)
         local colorVec = nil
@@ -215,14 +232,26 @@ function TetrisScene3DUIServer.SetBigFrameHoldNext(host, boardIndex, holdType, n
                 if colorVec then pcall(function() widget:SetImageColor(colorVec) end) end
             end
         end
+        return true
     end
 
     host._bfHoldLast = host._bfHoldLast or {}
     host._bfNextLast = host._bfNextLast or {}
     host._bfHoldLast[boardIndex] = host._bfHoldLast[boardIndex] or {}
     host._bfNextLast[boardIndex] = host._bfNextLast[boardIndex] or {}
-    setImg(cfg.HoldImageChildName or { "hold" }, holdType, host._bfHoldLast[boardIndex])
-    setImg(cfg.NextImageChildName or { "next" }, nextType, host._bfNextLast[boardIndex])
+    local okHold = setImg(cfg.HoldImageChildName or { "hold" }, holdType, host._bfHoldLast[boardIndex])
+    local okNext = setImg(cfg.NextImageChildName or { "next" }, nextType, host._bfNextLast[boardIndex])
+
+    -- 控件未就绪（UMG 异步加载）时安排重试：记住本盘最新值，0.3s×12 重灌；
+    -- 每次客户端新上报会覆盖为更新值，重试用「上报值快照」避免灌旧图。
+    if not (okHold and okNext) then
+        host._bfRetry = host._bfRetry or {}
+        local prev = host._bfRetry[boardIndex]
+        host._bfRetry[boardIndex] = { holdType, nextType, backlight, tries = prev and prev.tries or 0 }
+        TetrisScene3DUIServer._scheduleRetry(host, boardIndex)
+    elseif host._bfRetry then
+        host._bfRetry[boardIndex] = nil   -- 灌图成功，清掉重试项（下次变化重新计时）
+    end
 
     -- backlight 显隐（攻势高亮，ui 下与 front 同级）
     local blItems = findFrontWidgetImageChild(host, actor, cfg.BacklightChildName or { "backlight" })
@@ -238,6 +267,23 @@ function TetrisScene3DUIServer.SetBigFrameHoldNext(host, boardIndex, holdType, n
             end
         end
     end
+end
+
+-- [BigFrame3D] 控件未就绪时的延迟重试：读 _bfRetry[boardIndex] 最新值重灌，最多 12 次（3.6s）。
+-- 控件一旦就绪，SetBigFrameHoldNext 里 okHold/okNext 都为 true，不再安排下一次重试，自然收敛。
+function TetrisScene3DUIServer._scheduleRetry(host, boardIndex)
+    local bucket = host._bfRetry and host._bfRetry[boardIndex]
+    if not bucket then return end
+    if (bucket.tries or 0) >= 12 then
+        print("[BigFrame3D][Server] 重试耗尽 bigframe_" .. tostring(boardIndex) .. "（控件始终未就绪）")
+        return
+    end
+    bucket.tries = (bucket.tries or 0) + 1
+    host:AddTimerOnce(0.3, function()
+        local cur = host._bfRetry and host._bfRetry[boardIndex]
+        if not cur then return end
+        TetrisScene3DUIServer.SetBigFrameHoldNext(host, boardIndex, cur[1], cur[2], cur[3])
+    end)
 end
 
 -- 幂等入口：host 传 _boardGeom（o0/r0/o1/r1）。每个座位各生成一套。

@@ -572,12 +572,33 @@ function ClientUI:OnSkillChosen(slotIndex)
     local S = Config.SkillSelect or {}
     local key = self.selectedSkills[slotIndex]
     if not key then return nil end
-    self:Show(S.PanelKey, false)
+    -- [P7 双方就绪] 选完技能只隐藏 2 个槽位（表示已选），【保留技能面板 PanelKey】——
+    -- WaitHint 是技能面板的子控件，"等待对方选择技能"提示需面板在场才可见；
+    -- 待双方就绪（OnAllReady）时再统一隐藏 WaitHint + PanelKey 进入 loading。
     for _, id in ipairs(S.SlotButtons or {}) do self:Show(id, false) end
     for _, id in ipairs(S.SlotIcons or {}) do self:Show(id, false) end
     for _, id in ipairs(S.SlotDescs or {}) do self:Show(id, false) end
-    self:Show(S.WaitHint, false)
+    -- 显示等待提示：ShowForce 绕过 _visible 幂等缓存并恢复 opacity（开局 HideForce 曾压 0）。
+    -- 父面板异步带出子控件可能覆盖，延迟补写一次（仍在技能选择界面时）。
+    self:ShowForce(S.WaitHint)
+    -- 延迟需晚于 ShowSkillSelect 的 0.25s 面板补写（内含 HideForce(WaitHint)），
+    -- 否则快速点击时补写会覆盖刚显示的等待提示；0.4s 保证本补写在最后。
+    self.host:AddTimerOnce(0.4, function()
+        if self.screen == "skillSelect" then self:ShowForce(S.WaitHint) end
+    end)
+    self._waitingHintShown = true
+    print("[P7][Ready][ClientUI] 已选技能 → 显示 WaitHint=" .. tostring(S.WaitHint) ..
+        " 等待对方就绪")
     return key
+end
+
+-- [P7 双方就绪] 全员就绪：隐藏"等待对方"提示与技能选择面板（对齐旧 TetrisMatch：loading 时统一隐藏选择界面）。
+function ClientUI:OnAllReady()
+    local S = Config.SkillSelect or {}
+    self:HideForce(S.WaitHint)
+    self:HideForce(S.PanelKey)
+    self._waitingHintShown = false
+    print("[P7][Ready][ClientUI] 全员就绪 → 已隐藏 WaitHint + PanelKey（双方就绪隐藏清单应用完成）")
 end
 
 -- ===== Loading（对齐历史 TetrisMatch:ShowLoading）=====
@@ -600,6 +621,7 @@ function ClientUI:ShowLoading()
         self:_setHudVisible(true)   -- ① 先显示 GamePanel（对局 HUD 父容器）
         -- ② 再隐藏临时提示图：它们是 GamePanel 子控件，父容器显示会带出，必须在显示之后藏
         self:_hideTransientHints()
+        print("[P7][Ready][ClientUI] Loading 显隐清单已应用：显示 LoadingScreen/进度条/对局HUD；隐藏 技能面板/WaitHint/临时提示图")
         -- ③ 父容器异步带出子控件，延迟补写一次确保干净
         self.host:AddTimerOnce(0.3, function()
             if self._loadingVisible then self:_hideTransientHints() end

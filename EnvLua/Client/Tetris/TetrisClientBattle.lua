@@ -233,6 +233,12 @@ function TetrisClientBattle:Start()
     end)
     print("[P5] 本地玩家 key=" .. tostring(self.selfKey))
 
+    -- [BigFrame3D] board 已在上面构建（reset→fillQueue，nextQueue[1]/holdType 此刻已可读），
+    -- 立即上报一次 hold/next 给服务端灌 3D 大框。原逻辑只在 gravityTick 里上报，而重力循环
+    -- 要等 loading 隐藏 + 盘面基底就绪后才启动，首次上报晚约一个重力周期（~0.8s），
+    -- 导致进对局初秒大框仍是默认图。这里提前上报，不等重力循环。
+    self:_reportBigFrame()
+
     -- [P7] 请求服务端分配玩家名字+头像序号（服务端按 playerKey 排序分配，回传 P7_PlayerInfo）
     pcall(function()
         local gs = Game:GetGameState()
@@ -347,6 +353,8 @@ function TetrisClientBattle:_reportBigFrame()
     local nk = nt == nil and "#" or tostring(nt)
     if self._bfLastHold == hk and self._bfLastNext == nk and self._bfLastBL == bl then return end
     self._bfLastHold, self._bfLastNext, self._bfLastBL = hk, nk, bl
+    print("[BigFrame3D][Client] 上报 hold=" .. tostring(ht) .. " next=" .. tostring(nt) ..
+        " backlight=" .. tostring(bl) .. " selfKey=" .. tostring(self.selfKey))
     pcall(function()
         local gs = Game:GetGameState()
         if gs then gs:CallServerFunction("P7_ReportBigFrame", self.selfKey or 0, ht, nt, bl) end

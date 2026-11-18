@@ -180,6 +180,7 @@ function ClassicGameState:OnReceiveBeginPlay()
         self:RegisterServerFunction("Auth_Piece")            -- [P8] 客户端上报每块(type,rot,x,y)，服务端重放权威分数
         self:RegisterServerFunction("Auth_TopOut")           -- [P8] 客户端显式上报顶出，服务端据此权威判 over
         self:RegisterServerFunction("P7_ReportBigFrame")     -- [BigFrame3D] 客户端上报 hold/next/backlight，服务端灌 3D 大框
+        self:RegisterServerFunction("P7_PlayerReady")        -- [P7] 双方就绪：客户端选完技能上报，服务端仲裁后广播 AllReady
     end)
     print("[P0][Server/GS] RegisterServerFunction = " .. tostring(okReg) .. " " .. tostring(errReg))
 
@@ -403,6 +404,8 @@ function ClassicGameState:BroadcastBoardTransform()
         print("[P7][Server/GS] seat 归属缓存: 我方(真人)=seat" .. tostring(self._humanSeat) ..
             " 对方(AI)=seat" .. tostring(self._oppSeat))
     end
+    -- [BigFrame3D] seat 刚确定：补灌「seat 未定时暂存」的 hold/next，消除大框初秒默认图
+    self:_flushBigFramePending()
 
     local okSend, err = pcall(function()
         self:CallClientFunctionMulticast("P7_BoardTransform",
@@ -433,15 +436,22 @@ end
 -- [BigFrame3D] 客户端上报自己盘的 hold/next/backlight，服务端灌对应盘的 3D 大框。
 -- 参数：selfKey（玩家标识，用于定位 seat）、holdType/nextType（1..7/道具 9..11/nil）、backlight（bool）。
 function ClassicGameState:P7_ReportBigFrame(selfKey, holdType, nextType, backlight)
+    local k = tonumber(selfKey) or 0
     local seat = nil
     if self._seatKeys then
-        local k = tonumber(selfKey)
-        if k and self._seatKeys[0] == k then seat = 0
-        elseif k and self._seatKeys[1] == k then seat = 1 end
+        if self._seatKeys[0] == k then seat = 0
+        elseif self._seatKeys[1] == k then seat = 1 end
     end
     -- 单人兜底：selfKey 为 0/未匹配时，用缓存的真人 seat
     if not seat and self._humanSeat ~= nil then seat = self._humanSeat end
-    if seat == nil then return end
+    if seat == nil then
+        -- seat 尚未确定（盘面基底还没算出）：按 playerKey 暂存，seat 就绪后由 _flushBigFramePending 补灌，
+        -- 避免首帧上报因 seat 未定被直接丢弃导致大框初秒是默认图。
+        self._bigFramePendingByKey = self._bigFramePendingByKey or {}
+        self._bigFramePendingByKey[k] = { holdType, nextType, backlight }
+        print("[BigFrame3D][Server] seat 未定，暂存 playerKey=" .. tostring(k) .. " 的 hold/next，待 seat 就绪补灌")
+        return
+    end
     local boardIndex = seat + 1  -- seat0→bigframe_1, seat1→bigframe_2
     -- 缓存最新值：大框若尚未生成，Ensure 生成后会用该缓存补灌一次
     self._bigFrameData = self._bigFrameData or {}
@@ -449,6 +459,30 @@ function ClassicGameState:P7_ReportBigFrame(selfKey, holdType, nextType, backlig
     pcall(function()
         TetrisScene3DUIServer.SetBigFrameHoldNext(self, boardIndex, holdType, nextType, backlight)
     end)
+end
+
+-- [BigFrame3D] seat 就绪后，把「seat 未定时按 playerKey 暂存」的 hold/next 转成 boardIndex 补灌。
+-- 调用点：BroadcastBoardTransform 算出 _seatKeys/_humanSeat 之后。
+function ClassicGameState:_flushBigFramePending()
+    local pending = self._bigFramePendingByKey
+    if not pending or not self._seatKeys then return end
+    for key, d in pairs(pending) do
+        local seat = nil
+        if self._seatKeys[0] == key then seat = 0
+        elseif self._seatKeys[1] == key then seat = 1 end
+        if seat == nil and self._humanSeat ~= nil then seat = self._humanSeat end
+        if seat ~= nil then
+            local boardIndex = seat + 1
+            self._bigFrameData = self._bigFrameData or {}
+            self._bigFrameData[boardIndex] = d
+            pcall(function()
+                TetrisScene3DUIServer.SetBigFrameHoldNext(self, boardIndex, d[1], d[2], d[3])
+            end)
+            pending[key] = nil
+            print("[BigFrame3D][Server] 补灌暂存 hold/next playerKey=" .. tostring(key) ..
+                " → bigframe_" .. tostring(boardIndex))
+        end
+    end
 end
 
 -- ===== P8：服务端权威账本（客户端本地即时操作，随机源/每块落点由客户端上报，服务端重放得权威分数）=====
@@ -639,6 +673,62 @@ function ClassicGameState:P7_HideMasks()
         end
     end
     print("[P7][Server/GS] P7_HideMasks 已隐藏 Mask 场景对象 " .. tostring(hidden) .. "/" .. tostring(#list))
+end
+
+-- ===== P7：双方就绪握手（真人对战等双方选完技能再一起开局；单人把 AI 视为就绪）=====
+-- 客户端选完技能后 CallServerFunction("P7_PlayerReady", selfKey, gen)；服务端按 playerKey 去重记账，
+-- 全员就绪（need = min(真人数,2)，单人 need=1 即 AI 恒就绪）后广播 P7_AllReady(gen)，两端同时进 loading。
+-- gen 代号防跨局/重发串扰：广播成功后 gen+1 且清空 ready 表，旧 gen 的上报被忽略；
+-- 若客户端 gen 落后（漏收广播，多为晚进入者），补发一次上一次广播的 gen（multicast，客户端侧幂等）。
+function ClassicGameState:P7_PlayerReady(playerKey, gen)
+    self._readyGen = self._readyGen or 0   -- 当前期望代号（本局广播将用这个值）
+    local g = tonumber(gen) or 0
+    local key = tonumber(playerKey) or 0
+
+    if g < self._readyGen then
+        -- 客户端 gen 落后 = 没收到上一次 AllReady（晚进入/广播漏收）→ 补发上一版广播，客户端 OnAllReady 幂等
+        local lastGen = self._readyGen - 1
+        pcall(function() self:CallClientFunctionMulticast("P7_AllReady", lastGen) end)
+        print("[P7][Ready][Server] 客户端 gen 落后(" .. tostring(g) .. "<" .. tostring(self._readyGen) ..
+            ") 补发 AllReady gen=" .. tostring(lastGen) .. " playerKey=" .. tostring(key))
+        return
+    end
+    if g > self._readyGen then
+        print("[P7][Ready][Server][WARN] 客户端 gen 超前(" .. tostring(g) .. ">" .. tostring(self._readyGen) ..
+            ")，忽略 playerKey=" .. tostring(key))
+        return
+    end
+
+    self._readyKeys = self._readyKeys or {}
+    if self._readyKeys[key] then
+        print("[P7][Ready][Server] 重复 ready 忽略 playerKey=" .. tostring(key) .. " gen=" .. tostring(g))
+        return
+    end
+    self._readyKeys[key] = true
+
+    -- 服务端权威统计真人数（LuaArray :Num() 0 基），单人 need=1（AI 视为恒就绪）
+    local playerCount = 0
+    pcall(function()
+        local ps = Game:GetAllPlayerStates()
+        if ps and ps.Num then playerCount = ps:Num() end
+    end)
+    local need = math.max(1, math.min(playerCount, 2))
+    local readyCount = 0
+    for _ in pairs(self._readyKeys) do readyCount = readyCount + 1 end
+    print("[P7][Ready][Server] 收到 ready playerKey=" .. tostring(key) ..
+        " 已就绪=" .. tostring(readyCount) .. "/" .. tostring(need) ..
+        " 真人数=" .. tostring(playerCount) .. " gen=" .. tostring(g))
+
+    if readyCount < need then return end   -- 还有人没就绪：等（WaitHint 由客户端维持显示）
+
+    local sendGen = self._readyGen
+    local ok, err = pcall(function() self:CallClientFunctionMulticast("P7_AllReady", sendGen) end)
+    print("[P7][Ready][Server] 全员就绪 → 广播 P7_AllReady gen=" .. tostring(sendGen) ..
+        " ok=" .. tostring(ok) .. (ok and "" or (" err=" .. tostring(err))))
+    if ok then
+        self._readyGen = sendGen + 1   -- 本局就绪已完成，下一局需重新握手
+        self._readyKeys = {}
+    end
 end
 
 -- ===== P7：玩家名字 + 头像序号（服务端分配，保证每人不同）=====
