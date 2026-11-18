@@ -197,7 +197,7 @@ TetrisConfig.Pieces = {
 --   11 = 充能块：消除含本格的方块时，立即额外获得 1 个 power（技能能量）
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
-    DebugFirstItem = false,            -- 【调试】true = 本局第一个方块强制为 FirstItemType（便于单独测试某一种道具效果）
+    DebugFirstItem = true,            -- 【调试】true = 本局第一个方块强制为 FirstItemType（便于单独测试某一种道具效果）
     FirstItemType = 9,                 -- 【调试】DebugFirstItem 开启时，首块强制的道具类型（与 PieceType.ITEM_* 对应，默认 9=爆破）
     -- 道具概率（基于「落地方块数」，替代旧的概率/大袋方案）：
     ItemWarmup = 10,                  -- 前 N 个普通方块必为普通（道具不出现）
@@ -480,6 +480,41 @@ TetrisConfig.Render = {
         [6] = "50_CreativeAsset_115828003",        -- S 绿色（Green）
         [7] = "50_CreativeAsset_110257472",        -- Z 红色（Red）
         [8] = "50_CreativeAsset_115324270",        -- 垃圾块 灰色（Gray）
+    },
+
+    -- Ghost（落点预览）专用 8 个彩色立方体模型：1-7 对应 I/O/T/J/L/S/Z，8 = 道具预览。
+    -- 未注册（AssetRef 解析 nil）→ 回退 ColorModelIDs，不崩。
+    GhostModelIDs = {
+        [1] = "50_CreativeAsset_112991521",  -- I
+        [2] = "50_CreativeAsset_116681585",  -- O
+        [3] = "50_CreativeAsset_114037719",  -- T
+        [4] = "50_CreativeAsset_118009607",  -- J
+        [5] = "50_CreativeAsset_111556137",  -- L
+        [6] = "50_CreativeAsset_118645579",  -- S
+        [7] = "50_CreativeAsset_112784729",  -- Z
+        [8] = "50_CreativeAsset_112738349",  -- 道具预览
+    },
+
+    -- 道具方块本体专用 4 个模型，依次对应 爆破9/位移10/充能11/落石12。
+    -- 未注册 → 回退 ColorModelIDs[8]（灰色），不崩。
+    ItemModelIDs = {
+        [9]  = "50_CreativeAsset_115615608",  -- 爆破
+        [10] = "50_CreativeAsset_113315328",  -- 位移
+        [11] = "50_CreativeAsset_114693535",  -- 充能
+        [12] = "50_CreativeAsset_113906859",  -- 落石
+    },
+
+    -- ===== 模型旋转修正（度）：模型导入朝向不标准时，绕对应轴旋转；全 0 = 不转 =====
+    -- 结构：{ X = Pitch, Y = Yaw, Z = Roll }，由 FRotator.MakeFromEuler 应用。
+    -- 谁用：GhostModelRotation[1..8] 作用于 ghost 模型（键与 GhostModelIDs 对应）；
+    --       ItemModelRotation[9..12] 作用于道具本体模型（键与 ItemModelIDs 对应）。
+    -- 缺省（未填该项）= 零旋转。你按需填，例如绕 Roll 转 90°：{ X=0, Y=0, Z=90 }。
+    GhostModelRotation = {
+        -- [1] = { X = 0, Y = 0, Z = 90 },  -- 示例：I ghost 绕 Roll 90°
+    },
+    ItemModelRotation = {
+        -- [9]  = { X = 0, Y = 0, Z = 90 },  -- 示例：爆破绕 Roll 90°
+        -- [10] = { X = 0, Y = 180, Z = 0 }, -- 示例：位移绕 Yaw 180°
     },
 
     -- ===================== 落点预览（Ghost / 落地预览） =====================

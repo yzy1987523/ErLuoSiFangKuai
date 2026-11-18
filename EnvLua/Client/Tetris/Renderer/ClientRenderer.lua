@@ -90,9 +90,24 @@ function ClientRenderer:new(origin, right)
     for t = 1, 8 do
         o._colorMesh[t] = resolveRef(R.ColorModelIDs and R.ColorModelIDs[t])
     end
-    o._ghostScale = 0.55
+    -- ghost 8 模型（1-7方块 + 8道具预览）/ 道具 4 模型（9-12）；未注册时回退 _colorMesh。
+    o._ghostMesh = {}
+    for t = 1, 8 do
+        o._ghostMesh[t] = resolveRef(R.GhostModelIDs and R.GhostModelIDs[t])
+    end
+    o._itemMesh = {}
+    for t = 9, 12 do
+        o._itemMesh[t] = resolveRef(R.ItemModelIDs and R.ItemModelIDs[t])
+    end
+    -- 【诊断】一次性汇总 4 个道具模型解析结果（nil=AssetRef 未生效/回退灰色）
+    print("[Tetris][RenderDiag] itemMesh " ..
+        "9=" .. tostring(o._itemMesh[9]) .. " 10=" .. tostring(o._itemMesh[10]) ..
+        " 11=" .. tostring(o._itemMesh[11]) .. " 12=" .. tostring(o._itemMesh[12]) ..
+        " grayRef=" .. tostring(o._colorMesh[8]))
+    -- ghost 不缩放：改用专用模型区分（原 _ghostScale=0.55 已移除）。
     o._refWarned = false
     o._meshWarned = false
+    o._itemFallbackWarned = {}
     o._bgWidget = nil          -- [BG] 远景背景 3D UI 挂件（本 renderer 对应盘面一个）
     o._bgBoardIndex = nil      -- 记录生成时的 boardIndex，供 SetBasis 变化后重定位
     return o
@@ -351,8 +366,8 @@ function ClientRenderer:_acquire()
     end
     pcall(function() slot.actor:SetActorHiddenInGame(false) end)
     slot.locKey = nil
-    slot.color = nil
-    slot.ghost = nil
+    slot.modelRef = nil
+    slot.rotKey = nil  -- 强制首次按当前模型重设旋转，避免池复用残留
     return slot
 end
 
@@ -364,12 +379,12 @@ function ClientRenderer:_release(key)
     self._pool[#self._pool + 1] = slot
 end
 
-function ClientRenderer:_setColor(actor, color)
-    local ref = self._colorMesh[color]
+-- 直接把 Actor 的网格换成指定 AssetRef 句柄（ghost/道具/普通统一走这里，零新增 API）。
+function ClientRenderer:_setModel(actor, ref)
     if not ref then
         if not self._meshWarned then
             self._meshWarned = true
-            print("[Tetris][Renderer][WARN] 彩色模型 AssetRef 未注册，保持预设单色")
+            print("[Tetris][Renderer][WARN] 模型 AssetRef 未注册，保持预设单色")
         end
         return
     end
@@ -377,7 +392,22 @@ function ClientRenderer:_setColor(actor, color)
     if comp then pcall(function() comp:SetStaticMesh(ref) end) end
 end
 
-function ClientRenderer:_place(key, row, col, color, ghost)
+-- 由 {X=Pitch,Y=Yaw,Z=Roll}（度）构造 FRotator；nil/全 0 返回 nil（表示零旋转）。
+local function makeRot(rot)
+    if type(rot) ~= "table" then return nil, "0_0_0" end
+    local x, y, z = rot.X or 0, rot.Y or 0, rot.Z or 0
+    local key = x .. "_" .. y .. "_" .. z
+    if x == 0 and y == 0 and z == 0 then return nil, key end
+    local obj = nil
+    pcall(function()
+        if type(FRotator) == "table" and FRotator.MakeFromEuler then
+            obj = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = x, Y = y, Z = z }))
+        end
+    end)
+    return obj, key
+end
+
+function ClientRenderer:_place(key, row, col, modelRef, rot)
     local slot = self._slots[key]
     if not slot then
         slot = self:_acquire()
@@ -397,31 +427,73 @@ function ClientRenderer:_place(key, row, col, color, ghost)
         slot.locKey = locKey
     end
 
-    if slot.color ~= color then
-        self:_setColor(slot.actor, color)
-        slot.color = color
+    if slot.modelRef ~= modelRef then
+        self:_setModel(slot.actor, modelRef)
+        slot.modelRef = modelRef
     end
-    if slot.ghost ~= ghost then
-        local s = ghost and self._ghostScale or 1.0
-        pcall(function()
-            slot.actor:SetActorScale3D(Game:ConstructFVectorByLuaTable({ X = s, Y = s, Z = s }))
-        end)
-        slot.ghost = ghost
+
+    -- 模型导入朝向修正：按 rot 设置旋转；rotKey 差异检查，零旋转与有旋转之间切换也能复位。
+    local rotObj, rotKey = makeRot(rot)
+    if slot.rotKey ~= rotKey then
+        if rotObj then
+            pcall(function() slot.actor:K2_SetActorRotation(rotObj, false) end)
+        else
+            -- 回零：显式设零旋转，避免池复用时残留上一次的旋转（已验证 API）。
+            local zero = nil
+            pcall(function()
+                if type(FRotator) == "table" and FRotator.MakeFromEuler then
+                    zero = FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = 0 }))
+                end
+            end)
+            if zero then pcall(function() slot.actor:K2_SetActorRotation(zero, false) end) end
+        end
+        slot.rotKey = rotKey
     end
+    -- ghost 不缩放：实体与 ghost 统一保持预设缩放 1.0，靠专用模型区分。
 end
 
--- 道具块（item 9..12）本体统一用灰色 8 号模型，颜色与道具解耦。
-local function colorOf(cellOrType)
+-- 解析格子类型号：cell 表优先取 item（道具），否则取 color；数字直接返回。
+local function typeOf(cellOrType)
     local t = cellOrType
     if type(t) == "table" then
-        if t.item ~= nil then return 8 end
-        t = t.color
+        if t.item ~= nil then return t.item end
+        return t.color
     end
-    if type(t) == "number" and Config.IsItemType and Config.IsItemType(t) then return 8 end
-    return t or 1
+    return t
 end
 
---- 按 RenderState 刷新全部方块（差异更新：位置/颜色/缩放未变则不改）。
+local function isItem(t)
+    return type(t) == "number" and Config.IsItemType and Config.IsItemType(t)
+end
+
+-- 按「是否 ghost + 类型」解析出模型 AssetRef 句柄 + 旋转配置。
+-- 返回 modelRef, rot（rot 为 {X=Pitch,Y=Yaw,Z=Roll} 度或 nil=不转）。
+-- ghost → _ghostMesh + GhostModelRotation；道具 → _itemMesh + ItemModelRotation；普通 → _colorMesh。
+function ClientRenderer:_modelFor(cellOrType, ghost)
+    local t = typeOf(cellOrType) or 1
+    local R = Config.Render or {}
+    if ghost then
+        local idx = isItem(t) and 8 or t
+        local ref = self._ghostMesh[idx] or self._colorMesh[idx] or self._colorMesh[1]
+        local rot = (R.GhostModelRotation and R.GhostModelRotation[idx]) or nil
+        return ref, rot
+    end
+    if isItem(t) then
+        local itemRef = self._itemMesh[t]
+        local ref = itemRef or self._colorMesh[8] or self._colorMesh[1]
+        -- 【诊断】道具回退灰色时打印一次（cellOrType 形态也打印，判断是否道具类型没传进来）
+        if not itemRef and not self._itemFallbackWarned[t] then
+            self._itemFallbackWarned[t] = true
+            print("[Tetris][RenderDiag] 道具类型=" .. tostring(t) ..
+                " 回退灰色！_itemMesh[t]=nil cellType=" .. type(cellOrType))
+        end
+        local rot = (R.ItemModelRotation and R.ItemModelRotation[t]) or nil
+        return ref, rot
+    end
+    return self._colorMesh[t] or self._colorMesh[1], nil
+end
+
+--- 按 RenderState 刷新全部方块（差异更新：位置/模型未变则不改）。
 ---@param state table @Interfaces.RenderState
 function ClientRenderer:Update(state)
     if type(state) ~= "table" then return end
@@ -430,9 +502,8 @@ function ClientRenderer:Update(state)
     for row, line in pairs(state.grid or {}) do
         for col, cell in pairs(line) do
             if cell then
-                wanted["g_" .. row .. "_" .. col] = {
-                    row = row, col = col, color = colorOf(cell), ghost = false,
-                }
+                local ref, rot = self:_modelFor(cell, false)
+                wanted["g_" .. row .. "_" .. col] = { row = row, col = col, modelRef = ref, rot = rot }
             end
         end
     end
@@ -440,19 +511,21 @@ function ClientRenderer:Update(state)
     local active = state.active
     if active and type(active.cells) == "table" then
         for i, c in ipairs(active.cells) do
-            wanted["a_" .. i] = { row = c.row, col = c.col, color = colorOf(c.colorType), ghost = false }
+            local ref, rot = self:_modelFor(c.colorType, false)
+            wanted["a_" .. i] = { row = c.row, col = c.col, modelRef = ref, rot = rot }
         end
     end
 
     for i, c in ipairs(state.ghost or {}) do
-        wanted["h_" .. i] = { row = c.row, col = c.col, color = colorOf(c.colorType), ghost = true }
+        local ref, rot = self:_modelFor(c.colorType, true)
+        wanted["h_" .. i] = { row = c.row, col = c.col, modelRef = ref, rot = rot }
     end
 
     for key in pairs(self._slots) do
         if not wanted[key] then self:_release(key) end
     end
     for key, w in pairs(wanted) do
-        self:_place(key, w.row, w.col, w.color, w.ghost)
+        self:_place(key, w.row, w.col, w.modelRef, w.rot)
     end
 end
 
