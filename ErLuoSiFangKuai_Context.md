@@ -163,3 +163,30 @@ EnvLua/Server/ErLuoSiFangKuai/   # 玩法代码放这里（可写区）
 * 是否需要 AI 对手 / 填充
 * 计分 / 段位 / 排行榜本期是否做
 * 美术与音效资源是否已有预制
+
+## 远景背景 3D UI 挂件：完整生成过程（正确版，基准 = startcubeactor 工作区 2026-11-18）
+
+> 用户确认这版过程最正确。已在 nearbest 分支按此过程复现（2026-11-18）。移植到其它分支须逐项对齐以下环节。
+
+### 1. 配置（`TetrisConfig.BackgroundWidget`）
+- `Enabled = true`；`PresetKey = "46_ActorPreset_830160950"`（带 WidgetComponent 的远景 Actor 预设，须在编辑器注册 + update preset，用 `AssetRef[key]` 取句柄）。
+- `DistanceBehindM = -1`；`Scale = {X=13,Y=13,Z=13}`（正确值，nearbest 原 43/153 均为错误放大）；`SideOffsetM = -30`；`HeightOffsetM = 0`。
+- `RotationBiasByIndex = {[1]=180, [2]=-180}`；`ImageChildName = "正方形 29"`；`OpponentImages = {Human/Easy/Normal/Hard → 23_ImagePreset_*}`。
+- **纯服务端生成**：Common 配置 `SpawnMode = "Server"`（近版原为 "Client"，错误）；客户端 `ClientRenderer.ENABLE_CLIENT_BG_SPAWN = false`。
+
+### 2. 生成模块
+- 正确版：`EnvLua/Server/Tetris/TetrisBackgroundWidget.lua`（基于出生点装置 `CreativeInstance` + `InstanceAPI`，ServerOnly）。`ComputeTransform` 算 pos(米)/rot → `Spawn()` 用 `CreativeGameAPI.CreateActor(ref, pos, rot, scale, nil)` → `SetActorHiddenInGame(false)`。
+- nearbest 版：`EnvLua/Server/Tetris/TetrisBackgroundServer.lua`（基于 GameState 下发的盘面基底 o0/r0/o1/r1，与正确版数学等价）。`bgTransform` → `spawnActor` → `paintActor`。`Ensure()` 幂等，每 seat 一个。
+- 灌图：`GetComponentByName/Class("WidgetComponent") → GetUserWidgetObject(pawn) → GetWidgetFromName(cfg.ImageChildName) → SetImageContent(imgID)`；图片控件名**优先配置名**（正确版 SetChildImage，nearbest 已对齐）。
+
+### 3. 调用链（nearbest 已完整移植正确版四环节，2026-11-18）
+- 正确版：`TetrisMatch:Init()` 生成 + `_retryBackgroundWidgets()` 0.2s×150 重试 + `BuildGames` 兜底 + `RefreshBackgroundOpponentImages()`（AI 难度选定后再刷）。
+- nearbest（客户端权威架构，TetrisMatch 不启动）：四环节搬进 `EnvLua/Server/Actor/ClassicGameState.lua`，全部改用正确版 `TetrisBackgroundWidget`（不再用 `TetrisBackgroundServer`）：
+  - `_initBackgroundWidgets()`：`OnReceiveBeginPlay` 加载期调，按 `SceneObjects.SpawnPointKey/Key2` 各 Spawn 一个 → `_bgWidgets[1/2]`；失败进 `_bgRetry.pending`。
+  - `_retryBackgroundWidgets()`：0.2s×150 重试（与正确版一致）。near best 无分阶段构建接管，故兜底不设 `_bgBuildStarted`，持续重试到成功/超时。
+  - `_ensureBackgroundWidgetsFallback()`：`BroadcastBoardTransform`（几何就绪）与 `P5_RequestAI`（难度键注入）时兜底补生成 + 刷图（对应 `BuildGames` 兜底）。
+  - `RefreshBackgroundOpponentImages()` / `_applyBgOpponentImages()`：按 `_bgImageKey`（Human/Easy/Normal/Hard）取 `OpponentImages` → `AssetRef` → `TetrisBackgroundWidget.SetChildImage`，失败 0.3s×10 重试。
+- near best 的定位配置（`BoardForwardDistM=32`、`BoardHeightOffsetM=-8.5`、`BoardFlipAxis180=true` 等）与正确版一致，`TetrisBackgroundWidget` 内部 require `EnvLua.Server.Tetris.TetrisConfig` 已满足。
+
+### 4. 关键纪律
+- 纯服务端生成 + 灌图，不依赖客户端 3D UI（官方 bug）；坐标单位 CreateActor 用米；资源用 `AssetRef[key]`，禁止裸 ID。双盘各 1 个 Actor。

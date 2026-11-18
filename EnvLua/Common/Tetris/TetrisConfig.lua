@@ -659,11 +659,11 @@ TetrisConfig.BoardBackdrop3D_small = {
 TetrisConfig.BackgroundWidget = {
     Enabled = true,                                   -- 是否生成远景背景 3D UI 挂件（双盘 → 2 个 Actor）
     -- 【3D UI 生成端开关】"Server"=服务端生成+灌图；"Client"=客户端生成。
-    -- 【临时测试】官方建议客户端用 wc:GetWidget() 取 WoWClientUserWidget，正在验证，暂改 Client。
-    SpawnMode = "Client",
+    -- 对齐正确版（startcubeactor）过程：纯服务端生成 + 灌图（客户端 3D UI 灌图有官方 bug）。
+    SpawnMode = "Server",
     PresetKey = "46_ActorPreset_830160950",           -- 带 WidgetComponent 的远景背景 Actor 预设键（AssetRef）
     DistanceBehindM = -1,                              -- 盘心沿视线方向再向后推的距离（远景，比 BehindBoardWidget 更远）
-    Scale = { X = 153, Y = 153, Z = 153 },               -- 整体缩放（影响 WidgetComponent 的世界尺寸）
+    Scale = { X = 13, Y = 13, Z = 13 },               -- 整体缩放（对齐正确版 13；原 153 为错误放大）
     SideOffsetM = -30,                                  -- 沿盘面右向量 right 的左右偏移（正=玩家右手侧）
     HeightOffsetM = 0,                                -- 沿世界 +Z 的额外抬高（与盘心高度叠加）
     -- 每个棋盘的额外偏置旋转（绕竖直/Yaw 轴，单位°）：按棋盘 index 区分，让远景呈对称倾斜。

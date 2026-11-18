@@ -3,7 +3,8 @@
 local ClassicGameState = {}
 
 local WoWClassicGameState = require("EnvLua.Core.WoWClassicGameState")
-local TetrisBackgroundServer = require("EnvLua.Server.Tetris.TetrisBackgroundServer")
+local TetrisConfig = require("EnvLua.Common.Tetris.TetrisConfig")
+local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")  -- 正确版：基于出生点装置生成远景背景挂件
 local TetrisScene3DUIServer = require("EnvLua.Server.Tetris.TetrisScene3DUIServer")
 
 -- 排行榜类型：CustomRank[RankType]，未注入时回退数字（与 TetrisMatch:LeaderboardRankType 一致）
@@ -182,7 +183,10 @@ function ClassicGameState:OnReceiveBeginPlay()
     end)
     print("[P0][Server/GS] RegisterServerFunction = " .. tostring(okReg) .. " " .. tostring(errReg))
 
-    -- 2) 延迟下发盘面基底（客户端据此建双盘；装置晚注入时内部重试）。
+    -- 2) 正确版远景背景挂件：加载期（BeginPlay）即基于出生点装置生成（与 TetrisMatch:Init 同流程）。
+    self:_initBackgroundWidgets()
+
+    -- 3) 延迟下发盘面基底（客户端据此建双盘；装置晚注入时内部重试）。
     -- 【时序修正】此处不再自动 StartAI：旧版开局 2s 就无条件拉起 AI，玩家还在开始界面未进战斗，
     -- AI 独自跑完整局并触发消行特效/快照刷屏。AI 现在只由客户端真正进入 Battle 后
     -- 经 P5_RequestAI 触发（单人分支，见 TetrisClientBattle:Start），未进战斗则 AI 不启动。
@@ -190,6 +194,110 @@ function ClassicGameState:OnReceiveBeginPlay()
     self:AddTimerOnce(2.0, function()
         self:BroadcastBoardTransform()
     end)
+end
+
+-- ===== 远景背景 3D UI 挂件：完全复刻正确版 TetrisMatch 的调用链 =====
+-- 正确版基于「出生点装置(CreativeInstance + InstanceAPI)」用 TetrisBackgroundWidget.Spawn 生成，
+-- 不依赖盘面基底；near best 无 TetrisMatch（客户端权威架构），故把其 Init/重试/兜底/刷图四环节搬到这里。
+local function bgSpawnKeys()
+    local so = TetrisConfig.SceneObjects or {}
+    local keys = {}
+    if so.SpawnPointKey then keys[#keys + 1] = { key = so.SpawnPointKey, index = 1 } end
+    if so.SpawnPointKey2 then keys[#keys + 1] = { key = so.SpawnPointKey2, index = 2 } end
+    return keys
+end
+
+-- 对应正确版 TetrisMatch:Init 内的远景挂件生成段。
+function ClassicGameState:_initBackgroundWidgets()
+    local cfg = TetrisConfig.BackgroundWidget
+    if not (cfg and cfg.Enabled) then return end
+    self._bgWidgets = {}
+    for _, sk in ipairs(bgSpawnKeys()) do
+        self._bgWidgets[sk.index] = TetrisBackgroundWidget.Spawn(sk.key, sk.index)
+    end
+    -- 准备阶段重试：等待出生点装置与 ActorPreset 注入就绪（0.2s×150）。
+    self._bgRetry = { pending = {}, tries = 0, max = 150 }
+    for i, actor in pairs(self._bgWidgets) do
+        if not actor then self._bgRetry.pending[i] = true end
+    end
+    if next(self._bgRetry.pending) then
+        self:_retryBackgroundWidgets()
+    end
+end
+
+-- 对应正确版 TetrisMatch:_retryBackgroundWidgets。
+function ClassicGameState:_retryBackgroundWidgets()
+    if not self._bgRetry or not next(self._bgRetry.pending) then return end
+    self._bgRetry.tries = (self._bgRetry.tries or 0) + 1
+    if self._bgRetry.tries > (self._bgRetry.max or 150) then
+        print(string.format("[BGWidget][GS][WARN] 准备阶段重试超时(%d次)，交由开局兜底", self._bgRetry.tries))
+        self._bgRetry.pending = {}
+        return
+    end
+    local keys = bgSpawnKeys()
+    for i in pairs(self._bgRetry.pending) do
+        for _, sk in ipairs(keys) do
+            if sk.index == i then
+                local actor = TetrisBackgroundWidget.Spawn(sk.key, sk.index)
+                if actor then
+                    self._bgWidgets[i] = actor
+                    self._bgRetry.pending[i] = nil
+                    print(string.format("[BGWidget][GS] 准备阶段重试成功 index=%s (第%d次)", tostring(i), self._bgRetry.tries))
+                end
+                break
+            end
+        end
+    end
+    if next(self._bgRetry.pending) then
+        self:AddTimerOnce(0.2, function() self:_retryBackgroundWidgets() end)
+    end
+end
+
+-- 对应正确版 TetrisMatch:BuildGames 里的兜底补生成（盘面基底就绪/难度键注入时再补一次）。
+-- near best 无分阶段构建接管，故兜底不设 _bgBuildStarted 终止重试，而是继续补生成 + 刷图。
+function ClassicGameState:_ensureBackgroundWidgetsFallback()
+    local cfg = TetrisConfig.BackgroundWidget
+    if not (cfg and cfg.Enabled) then return end
+    self._bgWidgets = self._bgWidgets or {}
+    for _, sk in ipairs(bgSpawnKeys()) do
+        if not self._bgWidgets[sk.index] then
+            self._bgWidgets[sk.index] = TetrisBackgroundWidget.Spawn(sk.key, sk.index)
+            -- 兜底生成成功则清掉对应重试 pending（若重试仍在跑）
+            if self._bgWidgets[sk.index] and self._bgRetry then
+                self._bgRetry.pending[sk.index] = nil
+            end
+        end
+    end
+    self:RefreshBackgroundOpponentImages()
+end
+
+-- 对应正确版 TetrisMatch:RefreshBackgroundOpponentImages + _applyBgOpponentImages。
+function ClassicGameState:RefreshBackgroundOpponentImages()
+    local cfg = TetrisConfig.BackgroundWidget
+    if not (cfg and cfg.Enabled and cfg.ImageChildName and cfg.OpponentImages) then return end
+    if not self._bgWidgets then return end
+    local kind = self._bgImageKey or "Human"
+    local key = cfg.OpponentImages[kind] or cfg.OpponentImages.Human
+    if not key then return end
+    local imgID = (type(AssetRef) == "table" and AssetRef[key]) or key
+    local pending = {}
+    for i, actor in pairs(self._bgWidgets) do
+        if actor then pending[#pending + 1] = { actor = actor, name = cfg.ImageChildName, imgID = imgID } end
+    end
+    if #pending > 0 then self:_applyBgOpponentImages(pending, 0) end
+end
+
+function ClassicGameState:_applyBgOpponentImages(pending, tries)
+    if not pending or #pending == 0 then return end
+    local remain = {}
+    for _, p in ipairs(pending) do
+        local ok = false
+        pcall(function() ok = TetrisBackgroundWidget.SetChildImage(p.actor, p.name, p.imgID) end)
+        if not ok then remain[#remain + 1] = p end
+    end
+    if #remain > 0 and tries < 10 then
+        self:AddTimerOnce(0.3, function() self:_applyBgOpponentImages(remain, tries + 1) end)
+    end
 end
 
 -- [P5-5b] 启动服务端 AI（幂等；单人模式由客户端 P5_RequestAI 触发）
@@ -310,17 +418,11 @@ function ClassicGameState:BroadcastBoardTransform()
         (okSend and "" or (" err=" .. tostring(err))))
 end
 
--- [BGS] 远景背景挂件：服务端生成 + 灌图（几何就绪后调用；UMG 异步加载失败时延迟重试）。
--- 难度图键 _bgImageKey 由单人 P5_RequestAI(quality) 注入，双人时在下方按人数改为 Human。
+-- [BGS] 远景背景挂件：改为正确版调用链（出生点装置 + TetrisBackgroundWidget）。
+-- 保留此函数名作为兼容转发：几何就绪 / 难度键注入时都走「兜底生成 + 按难度刷图」。
+-- 难度图键 _bgImageKey 由单人 P5_RequestAI(quality) 注入，双人时固定 Human。
 function ClassicGameState:_ensureBackgroundWidgets(tries)
-    if not self._boardGeom then return end
-    local pending = 0
-    pcall(function()
-        pending = TetrisBackgroundServer.Ensure(self, self._boardGeom, self._bgImageKey or "Human") or 0
-    end)
-    if pending > 0 and tries < 12 then
-        self:AddTimerOnce(0.4, function() self:_ensureBackgroundWidgets(tries + 1) end)
-    end
+    self:_ensureBackgroundWidgetsFallback()
 end
 
 -- [P7] 客户端兜底请求（开局广播丢包/晚到时重发缓存）

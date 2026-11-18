@@ -124,8 +124,8 @@ local function paintActor(actor, boardIndex, imgKey)
         end
     end
     if not uw then return actor end
-    -- 图片控件多候选定位：真实名（客户端诊断）→ 配置名 → 遍历
-    local names = { "Creative_CustomImage_C_5400", cfg.ImageChildName, "Image", "image", "Background" }
+    -- 图片控件多候选定位：对齐正确版 SetChildImage，优先配置名（"正方形 29"），其余仅作兼容回退
+    local names = { cfg.ImageChildName, "Creative_CustomImage_C_5400", "Image", "image", "Background" }
     local img = nil
     local how = "?"
     if type(uw.GetWidgetFromName) == "function" then
