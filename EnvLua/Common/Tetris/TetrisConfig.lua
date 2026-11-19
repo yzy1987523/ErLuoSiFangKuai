@@ -498,10 +498,10 @@ TetrisConfig.Render = {
     -- 道具方块本体专用 4 个模型，依次对应 爆破9/位移10/充能11/落石12。
     -- 未注册 → 回退 ColorModelIDs[8]（灰色），不崩。
     ItemModelIDs = {
-        [9]  = "50_CreativeAsset_115615608",  -- 爆破
-        [10] = "50_CreativeAsset_113315328",  -- 位移
-        [11] = "50_CreativeAsset_114693535",  -- 充能
-        [12] = "50_CreativeAsset_113906859",  -- 落石
+        [9]  = "50_CreativeAsset_112888628",  -- 爆破
+        [10] = "50_CreativeAsset_118017548",  -- 位移
+        [11] = "50_CreativeAsset_113028196",  -- 充能
+        [12] = "50_CreativeAsset_113126150",  -- 落石
     },
 
     -- ===== 模型旋转修正（度）：模型导入朝向不标准时，绕对应轴旋转；全 0 = 不转 =====
@@ -1571,6 +1571,22 @@ TetrisConfig.BoardFlipAxis180 = true
 
 -- 盘面整体离地高度（米）：棋盘底行距“出生点装置所在水平面”的间隙，越大盘面越悬空越高。
 TetrisConfig.BoardHeightOffsetM = -8.5
+
+-- ===================== [位置隔离] 对方盘虚拟位置（客户端本地推算） =====================
+-- 新架构：每个客户端只拿服务端下发的「我方盘 basis」（生成点正前方 X 米），
+-- 对方盘 basis 由客户端按此偏移在本地算出，不依赖另一个出生点装置 → 双方盘组各自隔离在各自出生点附近。
+-- 偏移在「我方盘局部坐标系」里表示：
+--   forward = 从我方盘面朝玩家的方向（= -盘面显示法线；对方盘放斜前方即 forward 分量 > 0）
+--   right   = 我方盘面横向单位向量（服务端下发的 right）
+--   Z       = 世界竖直方向（米）
+-- 对方盘 origin = 我方盘 origin + forward*ForwardM + right*RightM + (0,0,ZM)
+-- 对方盘 right  = 我方盘 right（两盘平行，不旋转）
+-- 【待填】以下 3 个值由用户提供具体米数后写死；当前为占位默认，实跑后可微调。
+TetrisConfig.OpponentBoardOffset = {
+    ForwardM = 8,    -- 沿盘面 forward（朝玩家方向）偏移米数（占位默认，待用户提供）
+    RightM   = 10,   -- 沿盘面 right（右手侧）偏移米数（占位默认，待用户提供）
+    ZM       = 0,    -- 世界竖直方向偏移米数（占位默认）
+}
 
 -- 固定相机（玩家自身第三人称相机）参数：
 TetrisConfig.Camera = {
