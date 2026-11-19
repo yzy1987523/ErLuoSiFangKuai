@@ -73,7 +73,7 @@ TetrisConfig.GarbageEffect = {
     SpawnSide = "Client",
     UseActorEffect = false,                        -- 客户端模式：服务端不再播，彻底避免双份叠加
     ActorPresetKey = "46_ActorPreset_778521937",  -- EffectActor_Throw（已注册 AssetRef）
-    ActorScale = { X = 3, Y = 3, Z = 3 },          -- CreateActor 生成缩放（1.0=预设原始大小，拖尾尺寸在编辑器调组件）
+    ActorScale = { X = 2, Y = 2, Z = 2 },          -- CreateActor 生成缩放（1.0=预设原始大小，拖尾尺寸在编辑器调组件）
     ActorRotationBiasDeg = 0,                      -- 在"朝向飞行方向 yaw"基础上叠加的偏移，微调拖尾朝向
     AttachToActor = true,                             -- true = 特效附着隐形载体，由载体传送实现真位移
     CarrierActorPresetKey = "46_ActorPreset_1585104836",  -- 隐形根 EmptyActor（已注册，无可见几何）
@@ -82,7 +82,8 @@ TetrisConfig.GarbageEffect = {
     TravelDuration = 1.2,                              -- 起点 → 终点的飞行时长（秒）：0.6→1.2 放慢，约 13m/s
     TravelStep = 0.03,                                 -- 补间间隔（秒），越小轨迹越平滑
     Scale = { X = 3, Y = 3, Z = 3 },                  -- SetSceneEffectScale 绝对倍数（1.0 = 原始大小）
-    SideOffsetM = 0,                                   -- 起点：最左列中心再沿 -right 外移 N 米
+    SideOffsetM = -3.0,                                 -- 起点：沿"该盘外侧"外移 N 米（自动按盘面位置定向，避开 3D 大框侧面）
+    TargetSideOffsetM = -3.0,                           -- 终点：沿"该盘外侧"外移 N 米（与起点同理，避开 3D 大框侧面）
     DistanceFrontM = -0.5,                              -- 起点：沿 boardForward 的前置距离（米）
     HeightOffsetM = 0,                                 -- 起点：世界 +Z 微调（米）
     TargetHeightOffsetM = 0,                           -- 终点：对手盘底行再沿世界 +Z 微调（米）

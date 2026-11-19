@@ -48,14 +48,36 @@ local function rotYaw(yawDeg)
     return nil
 end
 
--- 目标盘落点（米）：默认最下一行(Board.Rows)的边缘列(TargetCol)，用 renderer.cellLocM 按真实基底算。
+-- 该盘"外侧"沿 right 的符号：本地盘(origin.X<0)外侧=-right，对手盘(origin.X>0)外侧=+right。
+-- 两盘 right 都朝 +X、分居 X 轴两侧，故用 origin.X 符号即可自动定向，谁扔都正确。
+local function outwardSign(renderer)
+    local o = renderer and renderer.originM
+    if o and type(o.X) == "number" and o.X < 0 then return -1 end
+    return 1
+end
+
+-- 把米坐标沿某盘外侧推开 dist 米（改 X/Y，不动 Z）。
+local function pushOutward(loc, renderer, dist)
+    if not loc or not dist or dist == 0 then return loc end
+    local r = (renderer and renderer.rightM) or { X = 1, Y = 0, Z = 0 }
+    local k = outwardSign(renderer) * dist
+    return {
+        X = loc.X + (r.X or 0) * k,
+        Y = loc.Y + (r.Y or 0) * k,
+        Z = loc.Z,
+    }
+end
+
+-- 目标盘落点（米）：默认最下一行(Board.Rows)的边缘列(TargetCol)，用 renderer.cellLocM 按真实基底算，
+-- 再沿目标盘外侧推开 TargetSideOffsetM（避开 3D 大框侧面）。
 local function boardTarget(renderer)
     if not renderer or type(renderer.cellLocM) ~= "function" then return nil end
     local rowsN = (Config.Board or {}).Rows or 20
     local colsN = (Config.Board or {}).Cols or 10
     local row = (type(gc.TargetRow) == "number") and gc.TargetRow or rowsN
     local col = (type(gc.TargetCol) == "number") and gc.TargetCol or 1
-    return renderer:cellLocM(row, col)
+    local loc = renderer:cellLocM(row, col)
+    return pushOutward(loc, renderer, gc.TargetSideOffsetM)
 end
 
 -- 投掷起点：fromRenderer 盘最左列(第1列)、竖直取 rows 中行(米)；无 rows 取盘中行。
@@ -68,13 +90,12 @@ local function throwStart(fromRenderer, rows)
     end
     local midRow = minRow and ((minRow + maxRow) / 2) or (((Config.Board or {}).Rows or 20) / 2)
     local loc = fromRenderer:cellLocM(midRow, 1)
-    -- SideOffsetM/DistanceFrontM/HeightOffsetM：沿 right 外移 + Z 微调（与服务端视觉近似对齐）
-    local r = fromRenderer.rightM or { X = 1, Y = 0, Z = 0 }
-    local side = -(type(gc.SideOffsetM) == "number" and gc.SideOffsetM or 0)
+    -- 沿起点盘外侧推开 SideOffsetM（自动定向，避开 3D 大框侧面）+ Z 微调
+    local pushed = pushOutward(loc, fromRenderer, gc.SideOffsetM)
     return {
-        X = loc.X + (r.X or 0) * side,
-        Y = loc.Y + (r.Y or 0) * side,
-        Z = loc.Z + (type(gc.HeightOffsetM) == "number" and gc.HeightOffsetM or 0),
+        X = pushed.X,
+        Y = pushed.Y,
+        Z = pushed.Z + (type(gc.HeightOffsetM) == "number" and gc.HeightOffsetM or 0),
     }
 end
 

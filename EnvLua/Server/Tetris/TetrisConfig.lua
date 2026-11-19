@@ -78,7 +78,8 @@ TetrisConfig.GarbageEffect = {
     TravelDuration = 1.2,                              -- 起点 → 终点的飞行时长（秒）：0.6→1.2 放慢，约 13m/s
     TravelStep = 0.03,                                 -- 补间间隔（秒），越小轨迹越平滑
     Scale = { X = 3, Y = 3, Z = 3 },                  -- SetSceneEffectScale 绝对倍数（1.0 = 原始大小）
-    SideOffsetM = 0,                                   -- 起点：最左列中心再沿 -right 外移 N 米
+    SideOffsetM = 1.0,                                 -- 起点：沿"该盘外侧"外移 N 米（自动按盘面位置定向，避开 3D 大框侧面）
+    TargetSideOffsetM = 1.0,                           -- 终点：沿"该盘外侧"外移 N 米（与起点同理，避开 3D 大框侧面）
     DistanceFrontM = -0.5,                              -- 起点：沿 boardForward 的前置距离（米）
     HeightOffsetM = 0,                                 -- 起点：世界 +Z 微调（米）
     TargetHeightOffsetM = 0,                           -- 终点：对手盘底行再沿世界 +Z 微调（米）
