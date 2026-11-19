@@ -8,6 +8,14 @@ function ClassicGameState:P0_OnServerPing(msg)
     print("[P0][Client/GS] P0_OnServerPing 收到服务端广播: " .. tostring(msg))
 end
 
+-- ===== P9：设置读档回传（语言/音量）。服务端 multicast，按 playerKey 过滤只应用自己的 =====
+function ClassicGameState:P9_SettingsData(key, lang, bgm, sfx, hasSave)
+    local okC, Client = pcall(require, "EnvLua.Client.Tetris.TetrisClient")
+    if not okC or not Client.Current then return end
+    if key ~= nil and Client.Current.selfKey ~= nil and key ~= Client.Current.selfKey then return end
+    pcall(Client.Current.OnSettingsLoaded, Client.Current, lang, bgm, sfx, hasSave)
+end
+
 -- ===== P5-5b：双人对手快照（服务端中转广播；过滤自己）=====
 function ClassicGameState:P5_OpponentSnapshot(snap)
     local okBT, Battle = pcall(require, "EnvLua.Client.Tetris.TetrisClientBattle")

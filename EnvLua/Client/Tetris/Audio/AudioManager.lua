@@ -96,14 +96,26 @@ end
 -- ===== 音量（±Step，clamp 0~1；BGM 改音量停旧重播） =====
 local function clamp(v) if v < 0 then return 0 elseif v > 1 then return 1 end return v end
 
+-- 绝对值设置音量（读档后按存档数值应用；BGM 改值才停旧重播，避免无谓重启）
+function AudioManager:SetVolume(kind, value)
+    if type(value) ~= "number" then return end
+    local v = clamp(value)
+    if kind == "bgm" then
+        local changed = math.abs((self.bgmVolume or 0) - v) > 0.001
+        self.bgmVolume = v
+        if changed and self.bgmUUID then self:StartBGM(self.bgmKey) end
+    elseif kind == "sfx" then
+        self.sfxVolume = v
+    end
+end
+
 function AudioManager:AdjustBGM(delta)
-    self.bgmVolume = clamp(self.bgmVolume + (delta or 0) * self.step)
-    if self.bgmUUID then self:StartBGM(self.bgmKey) end  -- 停旧重播套用新音量
+    self:SetVolume("bgm", self.bgmVolume + (delta or 0) * self.step)
     return self.bgmVolume
 end
 
 function AudioManager:AdjustSFX(delta)
-    self.sfxVolume = clamp(self.sfxVolume + (delta or 0) * self.step)
+    self:SetVolume("sfx", self.sfxVolume + (delta or 0) * self.step)
     return self.sfxVolume
 end
 

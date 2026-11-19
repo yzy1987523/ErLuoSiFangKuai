@@ -8,6 +8,11 @@ local TetrisConfig = require("EnvLua.Common.Tetris.TetrisConfig")
 pcall(require, "EnvLua.Core.LuaHint.GameOutcomeAPI")
 pcall(require, "EnvLua.Core.LuaHint.BattleDataAPI")
 pcall(require, "EnvLua.Core.LuaHint.PlayerAPI")
+-- [P9] 设置存档：CustomSaveAPI（ServerOnly），须在服务端脚本 require 触发注入
+pcall(require, "EnvLua.Core.LuaHint.CustomSaveAPI")
+local SAVE_KEY_LANG = "Tetris.Lang"        -- 语言 1=zh / 2=en / 3=ar
+local SAVE_KEY_BGM  = "Tetris.BgmVolume"   -- BGM 音量 0~1
+local SAVE_KEY_SFX  = "Tetris.SfxVolume"   -- 音效音量 0~1
 local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")  -- 正确版：基于出生点装置生成远景背景挂件
 local TetrisScene3DUIServer = require("EnvLua.Server.Tetris.TetrisScene3DUIServer")
 
@@ -186,6 +191,8 @@ function ClassicGameState:OnReceiveBeginPlay()
         self:RegisterServerFunction("P7_ReportBigFrame")     -- [BigFrame3D] 客户端上报 hold/next/backlight，服务端灌 3D 大框
         self:RegisterServerFunction("P7_PlayerReady")        -- [P7] 双方就绪：客户端选完技能上报，服务端仲裁后广播 AllReady
         self:RegisterServerFunction("P5_VersusEvent")        -- [对战] 技能/垃圾/减益跨端事件中转
+        self:RegisterServerFunction("P9_SaveSettings")       -- [P9] 保存语言/音量到存档
+        self:RegisterServerFunction("P9_RequestSettings")    -- [P9] 开局读取语言/音量存档
     end)
     print("[P0][Server/GS] RegisterServerFunction = " .. tostring(okReg) .. " " .. tostring(errReg))
 
@@ -669,6 +676,57 @@ function ClassicGameState:P5_ReportResult(win, playerKey)
             end
         end
     end
+end
+
+-- ===== P9：设置存档（语言/音量）。CustomSaveAPI 仅 ServerOnly，客户端经 RPC 桥接 =====
+-- 回传用 multicast + playerKey 过滤，避免依赖未验证的单播 PC 获取。
+local function findPlayerStateByKey(key)
+    if type(key) ~= "number" then return nil end
+    local ok, arr = pcall(function() return Game:GetAllPlayerStates() end)
+    if not ok or not arr or not arr.Num then return nil end
+    for i = 0, arr:Num() - 1 do
+        local ps = arr:Get(i)
+        if ps and ps.GetPlayerKey then
+            local okKey, k = pcall(function() return ps:GetPlayerKey() end)
+            if okKey and k == key then return ps end
+        end
+    end
+    return nil
+end
+
+-- C→S：保存当前语言/音量到玩家存档
+function ClassicGameState:P9_SaveSettings(key, lang, bgm, sfx)
+    if type(CustomSaveAPI) ~= "table" then return end
+    local ps = findPlayerStateByKey(key)
+    if not ps then return end
+    local L = (type(lang) == "number" and lang >= 1 and lang <= 3) and math.floor(lang) or nil
+    local B = (type(bgm) == "number") and math.max(0, math.min(1, bgm)) or nil
+    local S = (type(sfx) == "number") and math.max(0, math.min(1, sfx)) or nil
+    if L then pcall(function() CustomSaveAPI.SetPlayerCustomSaveData(ps, SAVE_KEY_LANG, L) end) end
+    if B then pcall(function() CustomSaveAPI.SetPlayerCustomSaveData(ps, SAVE_KEY_BGM, B) end) end
+    if S then pcall(function() CustomSaveAPI.SetPlayerCustomSaveData(ps, SAVE_KEY_SFX, S) end) end
+    print("[P9][Server/GS] 存档已写 key=" .. tostring(key) .. " lang=" .. tostring(L) ..
+        " bgm=" .. tostring(B) .. " sfx=" .. tostring(S))
+end
+
+-- C→S：开局读取语言/音量并回传客户端；无存档回退默认 2 / 0.6 / 0.6
+function ClassicGameState:P9_RequestSettings(key)
+    if type(CustomSaveAPI) ~= "table" then return end
+    local ps = findPlayerStateByKey(key)
+    if not ps then return end
+    -- 先留原始返回值：三个键全为 nil 即首次玩（无任何存档），hasSave 回传供客户端识别。
+    local rawLang, rawBgm, rawSfx = nil, nil, nil
+    pcall(function() rawLang = CustomSaveAPI.GetPlayerCustomSaveData(ps, SAVE_KEY_LANG) end)
+    pcall(function() rawBgm = CustomSaveAPI.GetPlayerCustomSaveData(ps, SAVE_KEY_BGM) end)
+    pcall(function() rawSfx = CustomSaveAPI.GetPlayerCustomSaveData(ps, SAVE_KEY_SFX) end)
+    local hasSave = (rawLang ~= nil or rawBgm ~= nil or rawSfx ~= nil)
+    local lang = (type(rawLang) == "number" and rawLang >= 1 and rawLang <= 3) and rawLang or 2
+    local bgm  = (type(rawBgm) == "number") and rawBgm or 0.6
+    local sfx  = (type(rawSfx) == "number") and rawSfx or 0.6
+    lang, bgm, sfx = math.floor(lang), math.max(0, math.min(1, bgm)), math.max(0, math.min(1, sfx))
+    pcall(function() self:CallClientFunctionMulticast("P9_SettingsData", key, lang, bgm, sfx, hasSave) end)
+    print("[P9][Server/GS] 存档已读并回传 key=" .. tostring(key) .. " lang=" .. tostring(lang) ..
+        " bgm=" .. tostring(bgm) .. " sfx=" .. tostring(sfx) .. " hasSave=" .. tostring(hasSave))
 end
 
 -- ===== P5：排行榜读取（GetTopN → S2C 回传）=====

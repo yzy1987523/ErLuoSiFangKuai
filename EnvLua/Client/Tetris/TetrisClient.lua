@@ -43,8 +43,96 @@ function TetrisClient:new(host)
     o._flowButtons = {}
     o._readyGen = 0             -- 双方就绪代号（与服务端握手，跨局递增）
     o._allReadyHandled = false  -- 本局是否已处理 AllReady（幂等，防补发重复进 loading）
+    o._settingsLoaded = false   -- [P9] 存档是否已回传（关闭键等此标志）
+    o._isFirstPlay = false      -- [P9] 是否首次玩（服务端无任何存档）
+    o._langSnapshot = nil       -- [P9] 打开多语言界面时的语言快照
+    o._soundSnapshot = nil      -- [P9] 打开声音界面时的音量快照
     TetrisClient.Current = o
     return o
+end
+
+-- ===== P9：设置存档（语言/音量）C→S 请求与回传应用 =====
+-- GameState 在 OnStart 时刻可能尚未就绪，失败/未就绪时 0.4s 重试。
+function TetrisClient:_requestSettings(tries)
+    local okGs, gs = pcall(function() return Game:GetGameState() end)
+    if not okGs or not gs then
+        if tries > 0 then
+            self.host:AddTimerOnce(0.4, function() self:_requestSettings(tries - 1) end)
+        end
+        return
+    end
+    local ok = pcall(function() gs:CallServerFunction("P9_RequestSettings", self.selfKey) end)
+    if not ok and tries > 0 then
+        self.host:AddTimerOnce(0.4, function() self:_requestSettings(tries - 1) end)
+    else
+        print("[P9][Client] 读档请求已发 key=" .. tostring(self.selfKey))
+    end
+end
+
+-- 语言/音量变更后写存档（服务端 CustomSaveAPI 落盘）
+function TetrisClient:_saveSettings()
+    if not self.audio or not self.ui then return end
+    local okGs, gs = pcall(function() return Game:GetGameState() end)
+    if not okGs or not gs then return end
+    local lang = self.ui.lang or 2
+    local bgm = self.audio.bgmVolume or 0.6
+    local sfx = self.audio.sfxVolume or 0.6
+    pcall(function() gs:CallServerFunction("P9_SaveSettings", self.selfKey, lang, bgm, sfx) end)
+end
+
+-- [P9] 打开设置面板时记录快照
+function TetrisClient:_snapshotLang()
+    self._langSnapshot = self.ui and self.ui.lang or nil
+end
+
+function TetrisClient:_snapshotSound()
+    if not self.audio then
+        self._soundSnapshot = nil
+        return
+    end
+    self._soundSnapshot = { bgm = self.audio.bgmVolume or 0.6, sfx = self.audio.sfxVolume or 0.6 }
+end
+
+-- [P9] 关闭面板时对比快照：有变化才写存档（无变化不产生 RPC）
+function TetrisClient:_flushLangOnClose()
+    local old = self._langSnapshot
+    self._langSnapshot = nil
+    if old == nil or not self.ui then return end
+    local cur = self.ui.lang
+    if cur == old then return end
+    print("[P9][Client] 语言已改变 " .. tostring(old) .. " → " .. tostring(cur) .. "，关闭界面写存档")
+    self:_saveSettings()
+end
+
+function TetrisClient:_flushSoundOnClose()
+    local old = self._soundSnapshot
+    self._soundSnapshot = nil
+    if not old or not self.audio then return end
+    local bgm = self.audio.bgmVolume or 0.6
+    local sfx = self.audio.sfxVolume or 0.6
+    if math.abs(bgm - old.bgm) < 0.001 and math.abs(sfx - old.sfx) < 0.001 then return end
+    print("[P9][Client] 音量已改变 bgm=" .. tostring(old.bgm) .. "→" .. tostring(bgm) ..
+        " sfx=" .. tostring(old.sfx) .. "→" .. tostring(sfx) .. "，关闭界面写存档")
+    self:_saveSettings()
+end
+
+-- 存档回传后应用：换语言 + 按数值设置音量（BGM 音量变化才停旧重播）
+function TetrisClient:OnSettingsLoaded(lang, bgm, sfx, hasSave)
+    self._isFirstPlay = (hasSave ~= true)
+    print("[P9][Client] 设置读档 lang=" .. tostring(lang) .. " bgm=" .. tostring(bgm) ..
+        " sfx=" .. tostring(sfx) .. " hasSave=" .. tostring(hasSave) ..
+        (self._isFirstPlay and "（首次玩，使用默认设置）" or ""))
+    if type(lang) == "number" and lang >= 1 and lang <= 3 and self.ui then
+        self.ui:SetLang(lang)  -- 更新 self.lang 并切换全部多语言内容
+    end
+    if self.audio then
+        if type(bgm) == "number" then self.audio:SetVolume("bgm", bgm) end
+        if type(sfx) == "number" then self.audio:SetVolume("sfx", sfx) end
+    end
+    if self.ui and self.ui.RefreshSoundText then self.ui:RefreshSoundText() end
+    -- [P9] 存档已应用，放行准备界面关闭键（此时语言/音量已是存档值，或首次玩的默认值）
+    self._settingsLoaded = true
+    self:_showPrepareCloseBtn("SettingsLoaded")
 end
 
 -- ===== 初始化（OnStart） =====
@@ -55,6 +143,9 @@ function TetrisClient:Init()
         if ok then ps = p end
     end
     if ps and ps.GetPlayerKey then self.selfKey = ps:GetPlayerKey() or 0 end
+
+    -- [P9] 开局读档：尽早向服务端请求语言/音量设置，回传后由 OnSettingsLoaded 应用（带重试）
+    self:_requestSettings(12)
 
     -- 音效（真人盘才建）
     self.audio = AudioManager:new(ps)
@@ -73,6 +164,7 @@ function TetrisClient:Init()
         adjustVolume = function(kind, delta)
             if not selfRef.audio then return end
             if kind == "bgm" then selfRef.audio:AdjustBGM(delta) else selfRef.audio:AdjustSFX(delta) end
+            -- [P9] 不在此写存档，等关闭声音界面时对比快照决定是否写入
         end,
         getVolumes = function()
             if not selfRef.audio then return { bgm = 0.6, sfx = 0.6 } end
@@ -105,6 +197,11 @@ end
 -- 显示准备界面关闭按钮（带 screen 守卫：玩家已点关闭进入后续界面后不再补发，避免游戏中误显示）。
 function TetrisClient:_showPrepareCloseBtn(tag)
     if not self.ui then return end
+    -- [P9] 等存档回传后才显示：确保玩家点关闭进入开始界面时，语言/音量已按存档应用好。
+    if not self._settingsLoaded then
+        print("[DIAG][HelpUI] _showPrepareCloseBtn(" .. tostring(tag) .. ") 跳过：存档未回传")
+        return
+    end
     -- 仅在仍停留准备界面（screen 为 none/prepare）时补发；开始界面及之后一律跳过。
     local sc = self.ui.screen
     if sc ~= "none" and sc ~= "prepare" then
@@ -143,19 +240,33 @@ function TetrisClient:_registerFlowButtons()
     bind(A.BtnEasy, function() self:_onDifficulty("Easy") end)
     bind(A.BtnNormal, function() self:_onDifficulty("Normal") end)
     bind(A.BtnHard, function() self:_onDifficulty("Hard") end)
-    bind(SD.OpenBtn, function() self.ui:ShowSoundPanel() end)
-    bind(SD.BtnClose, function() self.ui:HideSoundPanel() end)
+    bind(SD.OpenBtn, function()
+        self:_snapshotSound()
+        self.ui:ShowSoundPanel()
+    end)
+    bind(SD.BtnClose, function()
+        self.ui:HideSoundPanel()
+        self:_flushSoundOnClose()
+    end)
     bind(LB.OpenBtn, function() self.ui:OpenLeaderboard() end)
     bind(LB.CloseBtn, function() self.ui:CloseLeaderboard() end)
-    bind(L.OpenBtn, function() self.ui:ShowLangSelect() end)
-    bind(L.BtnClose, function() self.ui:CloseLangSelect() end)
+    bind(L.OpenBtn, function()
+        self:_snapshotLang()
+        self.ui:ShowLangSelect()
+    end)
+    bind(L.BtnClose, function()
+        self.ui:CloseLangSelect()
+        self:_flushLangOnClose()
+    end)
     bind(ST.ExitBtn, function() self:_onSettleExit() end)
     for _, id in ipairs(D.PageBtns or {}) do
         bind(id, function() self.ui:SetHelpPage((self.ui.helpPage % 3) + 1) end)
     end
     for i, id in ipairs(L.BtnLang or {}) do
         local lang = i
-        bind(id, function() self.ui:SetLang(lang) end)
+        bind(id, function()
+            self.ui:SetLang(lang)  -- [P9] 只切界面语言，关闭语言界面时对比快照再决定是否写存档
+        end)
     end
     for i, id in ipairs(S.SlotButtons or {}) do
         local slot = i
@@ -332,6 +443,15 @@ function TetrisClient:OnRoundStart()
         " BtnClose=" .. tostring(H.BtnClose))
     if self.phase == "init" then
         self.ui:InitializeAll()   -- 控件已在场：补齐初始显隐/标志/排行榜文本/声音交互
+        self:_requestSettings(6)  -- [P9] 补发读档请求（Init 时服务端白名单可能尚未注册）
+        -- [P9] 存档回传兜底：6s 内服务端无响应（白名单未注册/请求丢失）则强制放行，避免玩家卡在准备界面。
+        self.host:AddTimerOnce(6.0, function()
+            if not self._settingsLoaded then
+                print("[P9][Client] 存档回传超时，强制放行关闭按钮")
+                self._settingsLoaded = true
+                self:_showPrepareCloseBtn("SettingsTimeout")
+            end
+        end)
         -- 回合开始先显示一次（出生前的即时表现）；玩家出生后由 PlayerBorn 补发覆盖引擎重置。
         self:_showPrepareCloseBtn("OnRoundStart")
         -- 兜底：客户端若收不到 PlayerBorn VP 事件，用延迟重试在出生窗口内再补发几次。
