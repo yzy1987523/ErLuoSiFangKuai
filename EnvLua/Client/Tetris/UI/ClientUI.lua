@@ -814,6 +814,10 @@ function ClientUI:ShowSoundPanel()
     self:_goto("sound", function()
         for _, id in ipairs(self:_soundPanelIDs()) do self:Show(id, true) end
         self:RefreshSoundText()
+        -- 声音面板带出的多语言文本（背景音乐/音效）按当前语言重刷
+        self.host:AddTimerOnce(0.25, function()
+            if self.screen == "sound" then self:_applyLangContents() end
+        end)
     end)
 end
 
@@ -826,6 +830,8 @@ function ClientUI:OpenLeaderboard()
     local L = Config.Leaderboard or {}
     self:FillLeaderboard(nil)   -- 先清空：避免编辑器默认占位文本或上一局残留
     self:Show(L.Panel, true)
+    -- 排行榜面板带出的多语言表头（积分/按最高胜场排名/排名/玩家/胜场）按当前语言重刷
+    self.host:AddTimerOnce(0.25, function() self:_applyLangContents() end)
     if self.deps.requestLeaderboard then self.deps.requestLeaderboard() end
 end
 
@@ -1127,13 +1133,24 @@ function ClientUI:_syncGarbageHints(state)
 end
 
 -- ===== 结算（显示双方分数+胜者；ExitBtn 语义=重置） =====
-function ClientUI:ShowSettle(score1, score2, winnerName)
+-- 结算整句显示：按当前语言取 ScoreFormat/WinnerFormat 模板拼 "名字 分数: 分数" / "胜者: 名字"。
+-- 名字缺失时回退 "?" / "YOU"；分数一律 tostring，避免 %d 传 nil 在沙箱里报错。
+function ClientUI:ShowSettle(score1, score2, winnerName, name1, name2)
     local S = Config.Settle or {}
+    local lang = self.lang or 2
+    local scoreFmt = (S.ScoreFormat and S.ScoreFormat[lang]) or "%s 分数: %s"
+    local winnerFmt = (S.WinnerFormat and S.WinnerFormat[lang]) or "胜者: %s"
+    local n1 = (name1 and tostring(name1) ~= "" and tostring(name1)) or "?"
+    local n2 = (name2 and tostring(name2) ~= "" and tostring(name2)) or "?"
+    local wn = (winnerName and tostring(winnerName) ~= "" and tostring(winnerName)) or "?"
+    local p1txt = string.format(scoreFmt, n1, tostring(score1 or 0))
+    local p2txt = string.format(scoreFmt, n2, tostring(score2 or 0))
+    local wtxt = string.format(winnerFmt, wn)
     self:_goto("settle", function()
         self:Show(S.PanelKey, true)
-        self:Text(S.P1Score, score1)
-        self:Text(S.P2Score, score2)
-        self:Text(S.WinnerLabel, winnerName)
+        self:Text(S.P1Score, p1txt)
+        self:Text(S.P2Score, p2txt)
+        self:Text(S.WinnerLabel, wtxt)
     end)
 end
 

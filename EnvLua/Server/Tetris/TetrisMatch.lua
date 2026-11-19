@@ -1064,11 +1064,13 @@ function TetrisMatch:GameDisplayName(g)
         if type(nm) == "string" and nm ~= "" then return nm end
         return tostring(g.playerKey or "玩家")
     end
-    -- AI 盘：按当前难度取角色名（Easy=小白 / Normal=强敌 / Hard=大师）
+    -- AI 盘：按当前难度取角色名（Name 现为 {zh,en,ar} 三语表，兼容旧字符串）
     local cfg = TetrisConfig.AI or {}
     local lv = ((self.aiDifficulty ~= nil and self.aiDifficulty ~= -1) and self.aiDifficulty) or cfg.DefaultDifficulty or "Normal"
     local lvl = cfg.DifficultyLevels or {}
-    return (lvl[lv] and lvl[lv].Name) or lv
+    local name = lvl[lv] and lvl[lv].Name
+    if type(name) == "table" then return name[1] or name[2] or name[3] or lv end
+    return name or lv
 end
 
 -- 开局随机分配头像：先把 AvatarPresets 去重、洗牌，再对所有棋盘（含 AI 盘）轮转分配。

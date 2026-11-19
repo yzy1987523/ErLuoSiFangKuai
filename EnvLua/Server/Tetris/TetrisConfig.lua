@@ -1344,6 +1344,22 @@ TetrisConfig.LangUI = {
           btn = ci("1_CreativeInstance_23643901829603942"),
           btnNormal = { "23_ImagePreset_181442823934602", "23_ImagePreset_181443015301493", "23_ImagePreset_181441210110636" },
           btnPressed = { nil, nil, nil } },
+
+        -- ===== 文本类多语言（zh / en / ar）=====
+        { txt = ci("1_CreativeInstance_23643901113237865"),
+          texts = { "加载中...", "Loading...", "جارٍ التحميل..." } },
+        { txt = ci("1_CreativeInstance_23643900932765917"), texts = { "积分", "Points", "النقاط" } },
+        { txt = ci("1_CreativeInstance_23643900715792746"), texts = { "积分", "Points", "النقاط" } },
+        { txt = ci("1_CreativeInstance_23643902159186511"),
+          texts = { "按最高胜场排名", "Ranked by Most Wins", "الترتيب حسب عدد الانتصارات" } },
+        { txt = ci("1_CreativeInstance_23643901260048011"), texts = { "排名", "Rank", "الترتيب" } },
+        { txt = ci("1_CreativeInstance_23643898175211101"), texts = { "玩家", "Player", "اللاعب" } },
+        { txt = ci("1_CreativeInstance_23643899342953250"), texts = { "胜场", "Wins", "الانتصارات" } },
+        { txt = ci("1_CreativeInstance_23643901309094119"), texts = { "背景音乐", "Background Music", "موسيقى الخلفية" } },
+        { txt = ci("1_CreativeInstance_23643900821062855"), texts = { "音效", "Sound Effects", "المؤثرات الصوتية" } },
+        { txt = ci("1_CreativeInstance_23643901392096015"), texts = { "等待对方选择", "Opponent Choosing...", "الخصم يختار..." } },
+        { txt = ci("1_CreativeInstance_23643902310960369"), texts = { "技能", "Skill", "مهارة" } },
+        { txt = ci("1_CreativeInstance_23643902199510857"), texts = { "技能", "Skill", "مهارة" } },
     },
 }
 
@@ -1414,10 +1430,11 @@ TetrisConfig.AI = {
     -- 影响 AI 强度，不影响下落速度（速度由重力区间决定）。
     -- Name：该难度 AI 在结算/对局中显示的角色名（玩家盘显示真实玩家名，AI 盘显示此名）。
     DefaultDifficulty = "Normal",
+    -- Name = {zh, en, ar}，取名字按当前语言索引（客户端 TetrisClient:GetAIName 统一解析）。
     DifficultyLevels = {
-        Easy   = { Quality = 0.55, Name = "小白" },
-        Normal = { Quality = 0.80, Name = "强敌" },
-        Hard   = { Quality = 1.00, Name = "大师" },
+        Easy   = { Quality = 0.55, Name = { "小白", "Beginner", "مبتدئ" } },
+        Normal = { Quality = 0.80, Name = { "强敌", "Strong Opponent", "خصم قوي" } },
+        Hard   = { Quality = 1.00, Name = { "大师", "Master", "خبير" } },
     },
 }
 
@@ -1430,6 +1447,9 @@ TetrisConfig.Settle = {
     P1Score = ci("1_CreativeInstance_23643899546295419"),  -- 玩家1 分数文本控件
     P2Score = ci("1_CreativeInstance_23643901135143270"),  -- 玩家2 分数文本控件
     WinnerLabel = ci("1_CreativeInstance_23643900539144808"),  -- 胜者ID 文本控件
+    -- 结算整句格式（zh/en/ar），%s 依次为「名字、分数」/「胜者名」。
+    ScoreFormat  = { "%s 分数: %s", "%s Points: %s", "%s النقاط: %s" },
+    WinnerFormat = { "胜者: %s",    "Winner: %s",    "الفائز: %s" },
     TimeLimitSec = 0,     -- 对局时间上限（秒）；0 = 不限时（仅在「一方失败」时结束）
     -- 结束游戏 API：仅「提前触发结算」时调用（自然结束已走引擎流程，不调用）。
     -- 需填一个 function(match) 函数，内部调用引擎「结束游戏」接口；未填时回退 match:Stop()（触发 OnRoundEnd）。

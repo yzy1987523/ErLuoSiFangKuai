@@ -178,10 +178,25 @@ function TetrisClient:_onStartGame()
     end
 end
 
+-- 按当前语言取 AI 角色名：DifficultyLevels[key].Name = {zh, en, ar}，顺序与 LangKeys 一致。
+-- 兼容旧的字符串 Name（未迁移三语时直接返回）。
+function TetrisClient:GetAIName()
+    local key = self.aiLevelKey
+    if not key then return self.aiName or "AI" end
+    local level = (Config.AI and Config.AI.DifficultyLevels and Config.AI.DifficultyLevels[key]) or {}
+    local name = level.Name
+    if type(name) == "table" then
+        local lang = (self.ui and self.ui.lang) or 2
+        return name[lang] or name[2] or name[1] or "AI"
+    end
+    return name or "AI"
+end
+
 function TetrisClient:_onDifficulty(name)
     local level = (Config.AI and Config.AI.DifficultyLevels and Config.AI.DifficultyLevels[name]) or {}
+    self.aiLevelKey = name              -- 保存难度 key，显示时按当前语言现取角色名
     self.aiQuality = level.Quality or 0.8
-    self.aiName = level.Name or "AI"
+    self.aiName = self:GetAIName()
     self.ui:OnDifficultyChosen()
 end
 
@@ -257,13 +272,15 @@ function TetrisClient:_startBattle()
         self.battle.onLeaderboard = function(list)
             if selfRef.ui then selfRef.ui:FillLeaderboard(list) end
         end
-        -- 回调：玩家名字 + 头像序号 → 写对局 HUD
+        -- 回调：玩家名字 + 头像序号 → 写对局 HUD（并缓存名字供结算拼整句用）
         self.battle.onPlayerInfo = function(myName, oppName, myAvatar, oppAvatar)
+            selfRef.myName = myName
+            selfRef.oppName = oppName
             if selfRef.ui then selfRef.ui:SetPlayerInfo(myName, oppName, myAvatar, oppAvatar) end
         end
         -- 难度传给 AI（单人时 Battle 会用服务端 AI，难度影响 quality）
         self.battle.quality = self.aiQuality or 0.8
-        self.battle.aiName = self.aiName or "AI"
+        self.battle.aiName = self:GetAIName()
         -- [技能修复] 把选中的技能 key 传给 Battle → ClientGame:SetSkills + ClientInput（否则技能全部不可用）
         self.battle.selectedSkill = self.selectedSkill
         -- [音效修复] 把 AudioManager 传给 Battle → ClientGame（消行/Combo/技能/道具音效）
@@ -296,8 +313,8 @@ function TetrisClient:_endBattle(win, score, opponentScore)
         if win then self.audio:PlayWin() else self.audio:PlayLose() end
         self.audio:StopBGM()
     end
-    local winnerName = win and "YOU" or (self.aiName or "AI")
-    self.ui:ShowSettle(score or 0, opponentScore or 0, winnerName)
+    local winnerName = win and (self.myName or "YOU") or self:GetAIName()
+    self.ui:ShowSettle(score or 0, opponentScore or 0, winnerName, self.myName, self.oppName)
 end
 
 function TetrisClient:_onSettleExit()

@@ -34,7 +34,7 @@ param(
     # 显式指定目标 WOW 工程 ID（形如 52267426440_1789354100）。
     # 默认值已锁定为本工程实际活动目录（见 config.json 的 projectID），防止自动选择误判。
     # 如需临时切换目标，用 -WowProjectId 指定。
-    [string]$WowProjectId = '52267426440_1794909974'
+    [string]$WowProjectId = '52267426440_1795064568'
 )
 
 $ErrorActionPreference = 'Stop'
