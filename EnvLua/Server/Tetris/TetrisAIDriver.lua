@@ -252,7 +252,7 @@ function TetrisAIDriver:_step()
     local busy = b.clearing or b.lockPaused
     if not b.isGameOver and not busy then
         if not b:getActive() then
-            pcall(function() b:spawn() end)
+            pcall(function() b:advance("aiIdle") end)   -- 统一门禁：落石轮次在 lock 后消费，此处仅空盘兜底出块
             self._fallElapsed = 0
         elseif self.aiSeq ~= b.spawnSeq then
             -- 新块：规划一次（旋转+平移到位），本步暂不下落

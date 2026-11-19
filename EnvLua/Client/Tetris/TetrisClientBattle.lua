@@ -216,6 +216,10 @@ function TetrisClientBattle:Start()
     -- 客户端纪律不设完整 game（避免其它回调副作用），这里只暴露落石收尾必需的三个方法，
     -- 绑定到 localGame（在其构造后填充）。其余 Board 回调（PlayItemSound 等）保持 nil，pcall 下静默跳过。
     board.game = {
+        OnRockfallStart = function()
+            -- 落石开始/新一轮：立即启动石头下落循环（无需等重力 tick 兜底）
+            if self.localGame then self.localGame:_scheduleRockfall() end
+        end,
         BeginRockfallClearSequence = function(rows)
             if self.localGame then self.localGame:BeginRockfallClearSequence(rows) end
         end,

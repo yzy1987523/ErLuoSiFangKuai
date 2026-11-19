@@ -115,7 +115,7 @@ function TetrisBoard:reset()
     self.lockPaused = false             -- 锁定后、消行前的"落地停顿"期间置 true：挂起出块与重力，停顿结束后由 Game 层调用 doClear()
 
     -- 落石（道具方块 ITEM_STONE）相关状态
-    self.pendingRockfall = 0        -- 待触发的落石垃圾块数量（对手消除落石块后累加；本方下次方块锁定后消费）
+    self.pendingRockfallQueue = {}  -- 待触发落石轮次队列：每轮一个数量（5~9），对手消一次落石块入队一轮；本方下次方块锁定后逐轮消费
     self.fallingStone = false       -- 是否处于落石状态（仅落石垃圾块下落，无普通方块）
     self.stones = nil               -- 落石活动垃圾块列表 { {col=_, row=_}, ... }（已写入 grid 的垃圾格，仅跟踪位置）
 
@@ -294,6 +294,24 @@ function TetrisBoard:spawn(typeOverride)
     self.spawnSeq = (self.spawnSeq or 0) + 1
     self.lastSpawned = { type = t, rot = 1, x = x, y = y, seq = self.spawnSeq }
 
+    -- [顶出宽限/方案A] 落石结束后的出块：若出生位被本轮落石垃圾占住，视为被新方块顶开，
+    -- 只清掉带 __rock 标记的格子（绝不碰玩家已固化的普通方块/普通垃圾），让新块正常出现。
+    -- 普通出块（非落石结束）不触发此逻辑，撞到任何格子仍照常顶出。
+    if self._spawnFromRockfall then
+        local m = rotationStates[t] and rotationStates[t][1]
+        if m then
+            for r = 1, #m do
+                for c = 1, #m do
+                    if m[r][c] == 1 then
+                        local gr, gc = y + r - 1, x + c - 1
+                        local cell = self.grid[gr] and self.grid[gr][gc]
+                        if cell and cell.__rock then self.grid[gr][gc] = nil end
+                    end
+                end
+            end
+        end
+    end
+
     -- 生成即无法放置 => 顶到天，游戏结束
     if not self:canPlace(self.active, x, y, 1) then
         -- [DIAG] 落石结束即 topout 验证：打印盘面顶部占用与来源，确认新块是否被落石石头顶在高位
@@ -319,6 +337,28 @@ function TetrisBoard:spawn(typeOverride)
     end
     self._spawnFromRockfall = false   -- [DIAG] 清除标记，避免影响后续普通 spawn 的来源判断
     return not self.isGameOver
+end
+
+-- ---------------- 统一推进门禁 ----------------
+-- 所有「产生下一活动块 / 进入落石」的入口都必须走这里，保证盘面忙时排队、不插队。
+-- 返回 true=本步推进了状态（出块或进落石）；false=盘面忙，本次让位（等下一次 tick/收尾再试）。
+-- reason 仅用于日志定位。
+function TetrisBoard:advance(reason, fromRockfall)
+    if self.isGameOver then return false end
+    if self.fallingStone then return false end   -- 落石独占：石头下落流程未结束，普通出块不插队
+    if self.clearing then return false end       -- 消行表现中：等 finishClear 收尾
+    if self.lockPaused then return false end     -- 落地停顿中：等 doClear
+    if self.active then return false end         -- 还有块在落/刚 spawn 在半空：排队等待落定
+
+    -- 盘面空闲：优先消费下一轮落石，否则出下一块（落石与出块共用这一决策点，不会交错）
+    local q = self.pendingRockfallQueue
+    if q and #q > 0 then
+        self._spawnFromRockfall = false          -- 继续落石链，清掉上一轮的宽限标记
+        return self:tryEnterRockfall()
+    end
+    if fromRockfall then self._spawnFromRockfall = true end   -- 仅落石真正结束的出块享受顶出宽限
+    self:spawn()
+    return true
 end
 
 -- ---------------- 碰撞检测 ----------------
@@ -556,8 +596,7 @@ function TetrisBoard:lockPiece()
     self.combo = 0
     self.stage = "fall"
     self:applyGarbage()
-    if self:tryEnterRockfall() then return 0 end
-    self:spawn()
+    self:advance("lock")   -- 统一门禁：有块在落/落石中则排队，空闲时优先落石再出块
     return 0
 end
 
@@ -645,13 +684,9 @@ function TetrisBoard:doClear()
         self.clearing = true
         self.stage = "clearing"
     else
-        -- 无消行：垃圾仍照常升起，直接出下一块（无消除特效，无需等待）
+        -- 无消行：垃圾仍照常升起，走统一门禁出下一块（无消除特效，无需等待）
         self:applyGarbage()
-        if self:tryEnterRockfall() then
-            self.stage = "fall"
-            return cleared
-        end
-        self:spawn()
+        self:advance("doClear")
         self.stage = "fall"
     end
     return cleared
@@ -1010,18 +1045,22 @@ function TetrisBoard:applyGarbage()
 end
 
 -- ---------------- 落石（道具方块 ITEM_STONE） ----------------
--- 对手消除落石块后累加待触发数量；本方下次方块锁定后由 tryEnterRockfall 消费并进入落石状态。
+-- 对手每消除一次落石块就入队一轮；本方下次方块锁定后由 advance/tryEnterRockfall 逐轮消费进入落石状态。
 function TetrisBoard:queueRockfall(n)
     if not n or n <= 0 then return end
-    self.pendingRockfall = (self.pendingRockfall or 0) + n
+    -- 一轮一轮排队：每次攻击入队一轮，不在本轮叠加到总数，保证多轮落石依次完整播放
+    self.pendingRockfallQueue = self.pendingRockfallQueue or {}
+    self.pendingRockfallQueue[#self.pendingRockfallQueue + 1] = n
 end
 
--- 进入落石状态：消费 pendingRockfall，在随机不同列生成对应数量垃圾块（写入 grid 顶部空位），
+-- 进入落石状态：从队首消费一轮，在随机不同列生成对应数量垃圾块（写入 grid 顶部空位），
 -- 之后由 Game 层以 FallingStoneInterval 节奏驱动 stepStones 下落。返回 true 表示已进入（替代正常出块）。
 function TetrisBoard:tryEnterRockfall()
-    if self.fallingStone or not self.pendingRockfall or self.pendingRockfall <= 0 then return false end
-    local n = math.min(self.pendingRockfall, self.cols)
-    self.pendingRockfall = nil
+    local q = self.pendingRockfallQueue
+    if self.fallingStone or not q or #q == 0 then return false end
+    local n = table.remove(q, 1) or 0
+    if n <= 0 then return false end
+    n = math.min(n, self.cols)
     self.fallingStone = true
     self.active = nil
     self.stones = {}
@@ -1038,12 +1077,15 @@ function TetrisBoard:tryEnterRockfall()
         local sr = 1
         while sr <= self.rows and self.grid[sr][col] ~= nil do sr = sr + 1 end
         if sr <= self.rows then
-            self.grid[sr][col] = makeCell(COLOR_GARBAGE, nil)
+            local rock = makeCell(COLOR_GARBAGE, nil)
+            rock.__rock = true   -- 标记来源=落石垃圾，顶出宽限只清此类格，不误伤普通垃圾/已固化方块
+            self.grid[sr][col] = rock
             self.stones[#self.stones + 1] = { col = col, row = sr }
         end
     end
     self.stage = "fall"
-    print(string.format("[Tetris][Rockfall] 进入落石状态 board=%s 石头数=%d", tostring(self.index), #self.stones))
+    print(string.format("[Tetris][Rockfall] 进入落石状态 board=%s 本轮石头数=%d 剩余轮次=%d",
+        tostring(self.index), #self.stones, #q))
     if self.game then
         pcall(function() self.game:OnRockfallStart() end)
         if self.game.renderer then pcall(function() self.game.renderer:Update(self, self.game.running) end) end
@@ -1111,8 +1153,8 @@ function TetrisBoard:onRockfallFallingDone()
     self.clearing = false
     self.stage = "fall"
     if self.game then pcall(function() self.game:OnRockfallEnd() end) end
-    self._spawnFromRockfall = true   -- [DIAG] 标记：此次 spawn 由落石结束触发，用于 topout 日志区分来源
-    self:spawn()
+    -- 走统一门禁：若还有下一轮落石则继续落石，否则出块（fromRockfall=true 启用顶出宽限）
+    self:advance("rockfallDone", true)
 end
 
 -- 落石消行结算完毕后的收尾：若还有石头未落定则继续下落，否则结束落石状态、恢复正常方块。
@@ -1126,8 +1168,8 @@ function TetrisBoard:afterRockfallClear()
     self.fallingStone = false
     self.stones = nil
     if self.game then pcall(function() self.game:OnRockfallEnd() end) end
-    self._spawnFromRockfall = true   -- [DIAG] 标记：此次 spawn 由落石结束触发，用于 topout 日志区分来源
-    self:spawn()
+    -- 走统一门禁：若还有下一轮落石则继续落石，否则出块（fromRockfall=true 启用顶出宽限）
+    self:advance("rockfallClear", true)
 end
 
 -- ---------------- 重力 tick ----------------
@@ -1138,7 +1180,7 @@ function TetrisBoard:tick()
     if self.clearing then return false end  -- 消行动画期间暂停重力与出块，等 finishClear()
     if self.lockPaused then return false end  -- 落地停顿期间暂停重力与出块，等 Game 层 doClear()
     if not self.active then
-        self:spawn()
+        self:advance("tick")   -- 无活动块：统一门禁（有落石轮次则开启落石链，否则出块）
         return false
     end
     local p = self.active
@@ -1171,8 +1213,7 @@ function TetrisBoard:finishClear()
     if not self.clearing then return false end
     self.clearing = false
     self.stage = "fall"
-    if self:tryEnterRockfall() then return true end
-    self:spawn()
+    self:advance("finishClear")
     return true
 end
 
