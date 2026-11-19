@@ -203,6 +203,22 @@ function TetrisClientBattle:Start()
     end)
 
     local board = Board:new()
+    -- [落石修复] 注入精简 game 桩：Board:beginRockfallClear 需要 self.game 才走"特效+延迟清除+坍塌"正常路径；
+    -- 客户端纪律不设完整 game（避免其它回调副作用），这里只暴露落石收尾必需的三个方法，
+    -- 绑定到 localGame（在其构造后填充）。其余 Board 回调（PlayItemSound 等）保持 nil，pcall 下静默跳过。
+    board.game = {
+        BeginRockfallClearSequence = function(rows)
+            if self.localGame then self.localGame:BeginRockfallClearSequence(rows) end
+        end,
+        ScheduleRockfallClearResume = function() end,  -- 收尾已并入 BeginRockfallClearSequence 定时器
+        ScheduleStoneFall = function()
+            -- 落石消行后若还有石头，重启 ClientGame 的石头下落循环
+            if self.localGame then self.localGame:_scheduleRockfall() end
+        end,
+        OnRockfallEnd = function()
+            if self.localGame then self.localGame:OnRockfallEnd() end
+        end,
+    }
     self.localGame = ClientGame:new(board, {
         renderer = self.localRenderer,
         -- [对战] versus.Send 用冒号调用，首参是 versus 表本身；上报到服务端中转广播
@@ -485,19 +501,8 @@ function TetrisClientBattle:OnOpponentSnapshot(snap)
     if not self.running or not self.oppRenderer then return end
     local rs = Snapshot.ToRenderState(snap)
     self.oppRenderer:Update(rs)
-    -- [特效] 对手盘消行 3D 框：快照带一次性 clearedRows，画框并延迟隐藏（粒子特效由服务端播，全员可见）
-    if type(snap) == "table" and type(snap.clearedRows) == "table" and #snap.clearedRows > 0
-        and self.oppRenderer.ShowClearFrame then
-        pcall(function() self.oppRenderer:ShowClearFrame(snap.clearedRows) end)
-        local oppRef = self
-        pcall(function()
-            self.host:AddTimerOnce(0.6, function()
-                if oppRef.oppRenderer and oppRef.oppRenderer.HideClearFrame then
-                    pcall(function() oppRef.oppRenderer:HideClearFrame() end)
-                end
-            end)
-        end)
-    end
+    -- [当前版本] 对手盘消行 3D 框已去掉（用户要求）；对手盘消行表现靠服务端粒子特效（全员可见）。
+    -- snap.clearedRows 不再用于画框，仅渲染层数据刷新。
     if type(snap) == "table" and snap.score then self._lastOppScore = snap.score end
     self._oppCount = (self._oppCount or 0) + 1
     if self._oppCount % 5 == 0 then

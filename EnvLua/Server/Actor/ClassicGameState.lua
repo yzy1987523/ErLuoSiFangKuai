@@ -896,7 +896,8 @@ function ClassicGameState:P5_VersusEvent(kind, n, fromKey, payload)
         pcall(function() drv.board.swapRequested = true; drv.board.pendingSwapNext = true end)
         -- AI 块的 swapLanded 回执：真人需要解 SK08 CD；AI 落地后由 driver 侧发（简化：定时回执）
     elseif kind == "rockfall" then
-        pcall(function() drv.board.pendingRockfall = (drv.board.pendingRockfall or 0) + cnt end)
+        pcall(function() drv.board:queueRockfall(cnt) end)
+        print("[Rockfall][Server/GS] 单人桥接：真人→AI 落石 +" .. tostring(cnt) .. " 列")
     end
 end
 

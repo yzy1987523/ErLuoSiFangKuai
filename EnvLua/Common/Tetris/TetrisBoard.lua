@@ -88,6 +88,7 @@ function TetrisBoard:reset()
     self.lastAppliedGarbage = 0   -- 最近一次被注入的垃圾行数（Game 层弹提示用，取后清零）
     self.outgoingGarbage = 0      -- 本次 lock 应发给对手的垃圾行数（对战用，外层消费）
     self.pendingItemCharge = 0     -- 道具-充能块累计的待消费 power 数（由 TetrisGame 取走）
+    self.pendingStoneAttack = 0    -- 落石块累计的待上报攻击次数（本盘消除 ITEM_STONE 时 +1，由 Game 层消费走 versus 发给对手）
     self.noRotateNext = 0         -- 待生效「禁止转动」减益层数（对手 SK-01 注入，下一块起生效）
     -- SK-08「左右对调」减益状态：swapRequested=有对手申请；pendingSwapRequester=申请方(TetrisGame)；
     -- pendingSwapNext=下一个 spawn 的方块左右互换。对手 board:lockPiece 落地时消费 swapRequested 并解除申请方 CD。
@@ -690,12 +691,13 @@ function TetrisBoard:clearLines(countScore)
                 elseif it == PT.ITEM_STONE then
                     -- 落石：对对手触发落石（其下次方块锁定后生成 5~9 个随机列垃圾块下落）
                     if countScore ~= false then
+                        -- [客户端权威] 累计本盘落石攻击次数，供上层走 versus 发事件（不再依赖 game.opponent 反向引用）。
+                        self.pendingStoneAttack = (self.pendingStoneAttack or 0) + 1
                         local opp = self.game and self.game.opponent
                         if opp and opp.board then
+                            -- 旧服务端直写链路（已停摆，保留兼容；客户端无 game.opponent 不会走这里）
                             opp.board:queueRockfall(math.random(5, 9))
-                            -- 落石能力释放音效（仅真实消行时触发）
                             if self.game then pcall(function() self.game:PlayItemSound(PT.ITEM_STONE) end) end
-                            -- 落石道具消除提示图：显示 StoneImg 1.7s 后自动隐藏（仅真人盘生效）
                             if self.game then pcall(function() self.game:ShowStoneImage() end) end
                         end
                     end
@@ -946,6 +948,13 @@ function TetrisBoard:consumeOutgoingGarbage()
     local g = self.outgoingGarbage or 0
     self.outgoingGarbage = 0
     return g
+end
+
+-- 落石：取走本次消除落石块累计的攻击次数（取后清零，供上层走 versus 发给对手）
+function TetrisBoard:consumeStoneAttack()
+    local n = self.pendingStoneAttack or 0
+    self.pendingStoneAttack = 0
+    return n
 end
 
 -- 垃圾抵消：落地后先判定消行(见 doClear → clearLines 生成 outgoingGarbage)，

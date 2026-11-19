@@ -586,7 +586,7 @@ TetrisConfig.BigFrame3D = {
 -- 
 --        只需替换 PresetKey（在编辑器注册 + update preset 生成 AssetRef 键），其余逻辑无需改动。
 TetrisConfig.ClearRowWidget = {
-    Enabled = true,
+    Enabled = false,   -- 当前版本关闭 3D 消行框（用户要求）
     PresetKey = "46_ActorPreset_2125630218",   
     PoolSize = 4,                               -- 池容量 = 单次最多消行数；双方共用（不是每方 4 个）
     -- 沿 +boardForward（朝玩家可见侧）的前置距离，避免被盘面方块挡住；看不见时调符号/大小

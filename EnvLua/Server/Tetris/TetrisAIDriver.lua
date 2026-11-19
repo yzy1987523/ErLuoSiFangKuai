@@ -24,6 +24,9 @@ function TetrisAIDriver:new(host, opts)
     o._timer = nil
     o._clearPhase = nil   -- 消行分阶段：showRows → showCollapse → 出块
     o._clearWait = 0      -- 当前阶段剩余等待步数
+    -- [节奏对齐] 下落/落石用时间累计控制，与真人盘一致（不随 interval 步长）
+    o._fallElapsed = 0    -- 普通方块重力累计（达 getGravityInterval 下落一格）
+    o._stoneElapsed = 0   -- 落石累计（达 FallingStoneInterval 下落一格）
     return o
 end
 
@@ -146,6 +149,32 @@ function TetrisAIDriver:_step()
     local b = self.board
     if not b then self:_schedule(); return end
 
+    -- [落石] AI 盘被真人扔落石后，fallingStone 期间只驱动石头下落，禁止普通方块 spawn/重力。
+    -- [节奏] 按 FallingStoneInterval（默认0.25s）累计时间才下落一格，与真人盘 ClientGame:_scheduleRockfall 一致，
+    -- 不再每 0.1s 步长走一格（之前落石一闪而过看不到过程）。
+    if b.fallingStone then
+        local stoneInterval = (TetrisConfig.Timing and TetrisConfig.Timing.FallingStoneInterval) or 0.25
+        self._stoneElapsed = (self._stoneElapsed or 0) + self.interval
+        if self._stoneElapsed >= stoneInterval then
+            self._stoneElapsed = self._stoneElapsed - stoneInterval
+            local more = false
+            pcall(function() more = b:stepStones() end)
+            -- 落石成行时 Board:beginRockfallClear 会回调 host.BeginRockfallClearSequence（若定义）；
+            -- AI driver 用简化同步收尾：清除(不计分)→坍塌，下一 tick 继续。
+            if b.clearing then
+                pcall(function()
+                    b:clearLines(false)
+                    b:applyClearCollapse()
+                    b:afterRockfallClear()
+                end)
+            end
+            self:_broadcastSnapshot()   -- 落石每下落一格发快照，客户端能看到逐格下落
+        end
+        self.stepCount = self.stepCount + 1
+        self:_schedule()
+        return
+    end
+
     self:_advanceClear(b)
     -- 消行/锁定挂起期间禁止 spawn 与下落：否则 clearing 等待阶段 active 为 nil 会被误判为"需要出块"，
     -- 提前 spawn 破坏分阶段过程（客户端就看不到满行消失→坍塌的过程）。
@@ -153,15 +182,24 @@ function TetrisAIDriver:_step()
     if not b.isGameOver and not busy then
         if not b:getActive() then
             pcall(function() b:spawn() end)
+            self._fallElapsed = 0
         elseif self.aiSeq ~= b.spawnSeq then
             -- 新块：规划一次（旋转+平移到位），本步暂不下落
             self:_planPiece(b)
+            self._fallElapsed = 0
         else
-            -- 已规划：逐格下落一格；触底则锁定（等价于硬降落点，但中间状态可见）
-            local dropped = false
-            pcall(function() dropped = b:softDrop() end)
-            if not dropped and not b.isGameOver then
-                pcall(function() b:lockPiece() end)
+            -- [节奏对齐真人] 已规划的块：按 Board 重力间隔累计时间，达一格才 softDrop，
+            -- 与真人盘 getGravityInterval()（当前0.8s）一致，不再每 0.1s 落一格。
+            local gInterval = 0.8
+            pcall(function() gInterval = b:getGravityInterval() or 0.8 end)
+            self._fallElapsed = (self._fallElapsed or 0) + self.interval
+            if self._fallElapsed >= gInterval then
+                self._fallElapsed = self._fallElapsed - gInterval
+                local dropped = false
+                pcall(function() dropped = b:softDrop() end)
+                if not dropped and not b.isGameOver then
+                    pcall(function() b:lockPiece() end)
+                end
             end
         end
     end
@@ -184,21 +222,33 @@ end
 -- 走 ApplyVersusEffect("garbage") → addGarbage + Recv 提示。同时播扔垃圾拖尾特效。
 function TetrisAIDriver:_flushOutgoingToHuman(b)
     local outgoing = 0
+    local stoneAttacks = 0
     pcall(function() outgoing = b:consumeOutgoingGarbage() or 0 end)
-    if outgoing <= 0 then return end
+    pcall(function() stoneAttacks = b:consumeStoneAttack() or 0 end)
+    if outgoing <= 0 and stoneAttacks <= 0 then return end
     local gs = Game:GetGameState()
     if not gs then return end
-    pcall(function()
-        -- fromKey=0：客户端过滤规则 `from ~= 0 and from == selfKey` 不会拦 AI 事件
-        gs:CallClientFunctionMulticast("P5_VersusEvent", "garbage", outgoing, 0, nil)
-    end)
-    -- [特效] AI 盘扔垃圾：用 AI seat 播拖尾特效（起点 AI 盘、终点真人盘）。
-    -- _fxRows 在 doClear 阶段已暂存本次消行行号（随后随快照下发会被清空，这里在其之前使用）。
-    if self.host and type(self.host.PlayGarbageFx) == "function" then
-        local aiSeat = self.host._oppSeat or 1
-        pcall(function() self.host:PlayGarbageFx(aiSeat, self._fxRows) end)
+    -- fromKey=0：客户端过滤规则 `from ~= 0 and from == selfKey` 不会拦 AI 事件
+    if outgoing > 0 then
+        pcall(function()
+            gs:CallClientFunctionMulticast("P5_VersusEvent", "garbage", outgoing, 0, nil)
+        end)
+        -- [特效] AI 盘扔垃圾：用 AI seat 播拖尾特效（起点 AI 盘、终点真人盘）。
+        if self.host and type(self.host.PlayGarbageFx) == "function" then
+            local aiSeat = self.host._oppSeat or 1
+            pcall(function() self.host:PlayGarbageFx(aiSeat, self._fxRows) end)
+        end
+        print("[Versus][AI] 扔垃圾给真人 +" .. tostring(outgoing) .. " 行")
     end
-    print("[Versus][AI] 扔垃圾给真人 +" .. tostring(outgoing) .. " 行")
+    -- [落石] AI 消除落石块 → 上报真人（每个落石块一轮 5~9 随机列灰块）
+    for _ = 1, stoneAttacks do
+        pcall(function()
+            gs:CallClientFunctionMulticast("P5_VersusEvent", "rockfall", math.random(5, 9), 0, nil)
+        end)
+    end
+    if stoneAttacks > 0 then
+        print("[Rockfall][AI] 消除落石块 " .. tostring(stoneAttacks) .. " 个 → 上报真人")
+    end
 end
 
 function TetrisAIDriver:_broadcastSnapshot()

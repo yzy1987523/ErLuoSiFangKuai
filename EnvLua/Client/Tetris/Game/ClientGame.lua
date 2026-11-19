@@ -213,20 +213,13 @@ function ClientGame:_startClearSequence(cleared)
 
     -- [修复] 每一步独立 pcall 断点：任何一步抛错只记日志，绝不阻断后续 After 注册与 tick 自驱动。
     -- 旧版这里任一步抛错会连带中断 scheduler:After 注册 + gravityTick 递归调度 → 表现为"消行卡住后一动不动"。
+    -- [当前版本] 3D 消行框/爆破竖列框已去掉（用户要求）；仍消费标记避免数据残留。
+    -- 消行表现靠服务端粒子特效（PlayClearFxForSeat）+ Combo图/分数提示。
     local okFx, errFx = pcall(function()
-        -- 1) 特效：消行框 / 爆破竖列（消费 pending 标记，取后清空避免重复）
-        local rows = self.board:consumeClearedRows()
-        local blasts = self.board:consumeBlastFx()
-        if self.renderer then
-            if rows and #rows > 0 and self.renderer.ShowClearFrame then self.renderer:ShowClearFrame(rows) end
-            if blasts then
-                for _, fx in ipairs(blasts) do
-                    if self.renderer.ShowBlastColumn then self.renderer:ShowBlastColumn(fx.col) end
-                end
-            end
-        end
+        self.board:consumeClearedRows()
+        self.board:consumeBlastFx()
     end)
-    if not okFx then print("[ClearDbg][ERR] 消行特效阶段报错(已隔离): " .. tostring(errFx)) end
+    if not okFx then print("[ClearDbg][ERR] 消行标记清理报错(已隔离): " .. tostring(errFx)) end
 
     pcall(function()
         if self.board.pendingBlastImg then self:_hint("BlastImg", 1.7); self.board.pendingBlastImg = nil end
@@ -289,6 +282,21 @@ function ClientGame:_finishClearSequence(cleared)
         end
         self.lastOutgoing = outgoing
 
+        -- 7b) [落石] 本次消除含落石块 → 上报对手（走 versus，对齐垃圾链路）。
+        -- 每个落石块触发一轮落石（5~9 随机列灰块），由对手盘下次锁定时 tryEnterRockfall 消费。
+        local stoneAttacks = 0
+        pcall(function() stoneAttacks = b:consumeStoneAttack() or 0 end)
+        for _ = 1, stoneAttacks do
+            self:_emitVersus("rockfall", math.random(5, 9))
+        end
+        if stoneAttacks > 0 then
+            self:_hint("StoneImg", 1.7)
+            if self.audio and self.audio.PlayItem then
+                pcall(function() self.audio:PlayItem("stone") end)
+            end
+            print("[Rockfall] 真人消除落石块 " .. tostring(stoneAttacks) .. " 个 → 上报对手")
+        end
+
         if self.s06Charged then
             self.s06Charged = false
             self.cd.SK06 = nil
@@ -310,11 +318,6 @@ function ClientGame:_finishClearSequence(cleared)
         end
     end)
     if not ok then print("[ClearDbg][ERR] _finishClearSequence 内部报错(已隔离): " .. tostring(err)) end
-
-    -- 消行框隐藏（特效阶段用 CreateActor 画的 3D 框，收回避免残留）
-    if self.renderer and self.renderer.HideClearFrame then
-        pcall(function() self.renderer:HideClearFrame() end)
-    end
 
     print("[ClearDbg] _finishClearSequence 完成 clearing=" .. tostring(b.clearing) ..
         " active=" .. tostring(b:getActive() ~= nil) .. " isOver=" .. tostring(b:isOver()))
@@ -348,6 +351,43 @@ function ClientGame:_scheduleRockfall()
         end
     end
     self.scheduler.After(interval, step)
+end
+
+-- [落石] Board:beginRockfallClear 回调：落石堆叠成满行时的消行表现序列。
+-- 落石消行不计分/不触发道具/不送攻击：播消行音 → 延迟清除 → 坍塌 → afterRockfallClear 收尾。
+-- [当前版本] 3D 消行框已去掉（用户要求），保留音效与坍塌；rows 参数仍由 Board 传入但不再用于画框。
+function ClientGame:BeginRockfallClearSequence(rows)
+    if self._rockfallSeqScheduled then return end
+    self._rockfallSeqScheduled = true
+    local cfg = Config.Clear or {}
+    local effectDur = cfg.ResumeDelay or 0.3
+    local clearDelay = cfg.ClearDelay or 0.5
+    -- 播消行音（不画框）
+    if self.audio and self.audio.PlayLineClear then pcall(function() self.audio:PlayLineClear(0, 0) end) end
+    -- 延迟后：清除满行（不计分）+ 坍塌（落石消行不做位移/不升普通垃圾）
+    self.scheduler.After(effectDur, function()
+        if not self.running or not self.board then return end
+        local b = self.board
+        b:clearLines(false)
+        b:applyClearCollapse()
+        if self.renderer then pcall(function() self.renderer:Update(self:BuildRenderState()) end) end
+    end)
+    -- 收尾：afterRockfallClear 决定继续落石还是结束
+    self.scheduler.After(effectDur + clearDelay, function()
+        self._rockfallSeqScheduled = false
+        if not self.running or not self.board then return end
+        self.board:afterRockfallClear()
+    end)
+end
+
+-- [落石] Board 回调：ScheduleRockfallClearResume（兜底路径，BeginRockfallClearSequence 已覆盖，这里只清标记）
+function ClientGame:ScheduleRockfallClearResume()
+    -- 正常路径已由 BeginRockfallClearSequence 的定时器收尾；此回调仅 Board 兜底分支会调。
+end
+
+-- [落石] 落石结束：Board 会据此正常 spawn 下一块（spawn 在 Board:onRockfallFallingDone/afterRockfallClear 内已调）
+function ClientGame:OnRockfallEnd()
+    print("[Rockfall] 落石结束，恢复正常下落")
 end
 
 -- ===================== 主循环 =====================
