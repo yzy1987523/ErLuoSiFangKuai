@@ -448,11 +448,16 @@ function ClassicGameState:_applyBgOpponentImages(pending, tries)
     end
 end
 
--- [P5-5b] 启动服务端 AI（幂等；单人模式由客户端 P5_RequestAI 触发）
+-- [P5-5b] 启动服务端 AI（单人模式由客户端 P5_RequestAI 触发）
+-- 每局都新建 Driver/Board：上一局若真人先顶出，AI 未自停，旧 driver.running 仍为 true，
+-- 若只看 running 做幂等会跳过 new，导致第二局 AI 盘沿用上局残局 → 表现为「AI 盘没初始化」。
 function ClassicGameState:StartAI()
-    if self._p3Driver and self._p3Driver.running then return end
     local okDrv, drvOrErr = pcall(function()
         local Driver = require("EnvLua.Server.Tetris.TetrisAIDriver")
+        if self._p3Driver then
+            pcall(function() self._p3Driver:Stop() end)  -- 停旧定时器/推进
+            self._p3Driver = nil
+        end
         self._p3Driver = Driver:new(self, { quality = self._aiQuality or 0.8, tag = "AI-P3", interval = 0.1, snapshotEvery = 1 })
         self._p3Driver:Start()
         return self._p3Driver
@@ -647,6 +652,17 @@ end
 function ClassicGameState:Auth_Piece(seq, pieceType, rot, x, y)
     local okB, Board = pcall(require, "EnvLua.Common.Tetris.TetrisBoard")
     if not okB or not Board then return end
+    seq = tonumber(seq) or 0
+    -- [重开] 新局客户端 seq 从 1 重新开始：检测到回退即认定新局，重置权威影子盘/顶出标志，
+    -- 避免上局残留导致下局误判胜负、seq 被旧值挡住无法重放。
+    if seq < (self._authSeq or 0) then
+        print("[Auth][Server/GS] 检测到新局(seq=" .. tostring(seq) .. "<" .. tostring(self._authSeq) ..
+            ")，重置权威盘与顶出标志")
+        self._authBoard = nil
+        self._authTopOutReported = false
+        self._authSeq = 0
+    end
+    if seq <= (self._authSeq or 0) then return end   -- 去重/乱序：只接受严格递增 seq
     if not self._authBoard then
         local okNew, b = pcall(function()
             local nb = Board:new()
@@ -661,8 +677,6 @@ function ClassicGameState:Auth_Piece(seq, pieceType, rot, x, y)
         self._authBoard = b
     end
     local b = self._authBoard
-    seq = tonumber(seq) or 0
-    if seq <= (self._authSeq or 0) then return end   -- 去重/乱序：只接受严格递增 seq
     self._authSeq = seq
 
     pcall(function()
@@ -742,6 +756,12 @@ end
 -- 只能在这里调；队伍 ID 取 PlayerAPI.GetPlayerTeamID，取不到回退玩家列表序号。
 function ClassicGameState:P5_ReportResult(win, playerKey)
     print("[P5][Server/GS] ReportResult 自报win=" .. tostring(win) .. " playerKey=" .. tostring(playerKey))
+    -- [结算] 停掉服务端 AI：真人先顶出时 AI 不会自停，否则它继续推进/广播快照；
+    -- 同时确保下局 StartAI 一定 new 出全新棋盘（配合 StartAI 的强制重建）。
+    if self._p3Driver then
+        pcall(function() self._p3Driver:Stop() end)
+        self._p3Driver = nil
+    end
     local okCfg, Config = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
     if not okCfg or not Config then return end
     local players = Game:GetAllPlayerStates()

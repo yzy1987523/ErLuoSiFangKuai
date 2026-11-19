@@ -103,6 +103,8 @@ end
 
 -- [对战] 收到服务端中转的 versus 事件（技能减益/垃圾/落石）：过滤自己 → 转给逻辑层写镜像盘
 function TetrisClientBattle:OnVersusEvent(kind, n, fromKey, payload)
+    -- [结算] 已结算的对局不再接受垃圾/落石等减益，避免结算后仍改动本地盘
+    if not self.running then return end
     local from = tonumber(fromKey) or 0
     -- multicast 会回传发送者本人：自己发的事件不作用于自己
     if from ~= 0 and from == self.selfKey then return end
