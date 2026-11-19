@@ -58,6 +58,7 @@ end
 -- 旧版在同一步跑完 doClear→collapse→finishClear，客户端只看到整行瞬间消失、无过程。
 function TetrisAIDriver:_advanceClear(b)
     if b.lockPaused then
+        local scoreBefore = b.score or 0
         local cleared = 0
         local ok, err = pcall(function() cleared = b:doClear() end)
         if not ok then print("[ClearDbg][AI][ERR] doClear 报错: " .. tostring(err)) end
@@ -66,10 +67,19 @@ function TetrisAIDriver:_advanceClear(b)
         if cleared > 0 then
             local rows = b:consumeClearedRows()
             self._fxRows = (rows and #rows > 0) and rows or nil
-            if self._fxRows and self.host and type(self.host.PlayClearFxForSeat) == "function" then
+            if self._fxRows and self.host then
                 -- [特效] AI 盘用缓存的对手 seat（可能 0 或 1），与我方真人 seat 相反，避免特效左右互换
                 local oppSeat = self.host._oppSeat or 1
-                pcall(function() self.host:PlayClearFxForSeat(oppSeat, self._fxRows) end)
+                if type(self.host.PlayClearFxForSeat) == "function" then
+                    pcall(function() self.host:PlayClearFxForSeat(oppSeat, self._fxRows) end)
+                end
+                -- [飘字] AI 盘也弹 +XX / 连击评价（3D Actor，全员可见）
+                if type(self.host.PlayScorePopupForSeat) == "function" then
+                    local delta = (b.score or 0) - scoreBefore
+                    pcall(function()
+                        self.host:PlayScorePopupForSeat(oppSeat, self._fxRows, delta, b.combo or 0)
+                    end)
+                end
             end
         end
         print("[ClearDbg][AI] lockPaused→doClear cleared=" .. tostring(cleared) ..

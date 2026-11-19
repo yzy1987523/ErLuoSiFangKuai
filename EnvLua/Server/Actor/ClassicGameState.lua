@@ -4,6 +4,9 @@ local ClassicGameState = {}
 
 local WoWClassicGameState = require("EnvLua.Core.WoWClassicGameState")
 local TetrisConfig = require("EnvLua.Common.Tetris.TetrisConfig")
+-- [消行飘字] 3D Actor UI（ServerOnly 灌字）：复用旧 TetrisScorePopup 对象池
+local okPopup, TetrisScorePopup = pcall(require, "EnvLua.Server.Tetris.TetrisScorePopup")
+if not okPopup then TetrisScorePopup = nil end
 -- [结算] 触发引擎胜负/积分/队伍 Domain API 注入（均 ServerOnly，须在服务端脚本 require）
 pcall(require, "EnvLua.Core.LuaHint.GameOutcomeAPI")
 pcall(require, "EnvLua.Core.LuaHint.BattleDataAPI")
@@ -116,6 +119,52 @@ function ClassicGameState:PlayClearFxForSeat(seat, rows)
         " (human=" .. tostring(self._humanSeat) .. "/opp=" .. tostring(self._oppSeat) .. ")" ..
         " 行数=" .. tostring(#rows) .. " 成功=" .. tostring(made) ..
         " pos0=(" .. tostring(cx) .. "," .. tostring(cy) .. "," .. tostring(o.Z) .. ")")
+end
+
+-- [消行飘字] 3D Actor UI（ServerOnly）：复用旧 TetrisScorePopup，按 seat 几何把 +XX / 连击评价
+-- 弹在"被消行右侧"。renderer 表只需 TetrisScorePopup 用到的几个字段（origin/right/forward/center/yaw）。
+-- @param seat number 几何槽位 0/1；@param rows 消行行号；@param delta 本次得分增量；@param combo 连击数
+-- 构造给 TetrisScorePopup 用的兼容 renderer（只含它实际读取的几何字段）
+function ClassicGameState:_popupRendererForSeat(seat)
+    local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
+    if not okCfg or type(C) ~= "table" then return nil end
+    local g = self._boardGeom
+    if not g then return nil end
+    local o = (seat == 1) and g.o1 or g.o0
+    local right = (seat == 1) and g.r1 or g.r0
+    if not o or not right then return nil end
+    local r = C.Render or {}
+    local step = (r.CellSize or 1.0) + (r.CellGap or 0.02)
+    local cols = ((C.Board or {}).Cols or 10)
+    local w = (cols - 1) * step
+    -- right=(fry,-frx) → forward=(-right.Y, right.X)（对齐 resolveBoardTransform 的 posYaw）
+    local forward = { X = -right.Y, Y = right.X, Z = 0 }
+    local center = { X = o.X + right.X * (w / 2), Y = o.Y + right.Y * (w / 2), Z = o.Z }
+    local yaw = math.deg(atan2compat(forward.Y, forward.X)) or 0
+    return {
+        origin = o, boardRight = right, boardForward = forward, boardCenter = center,
+        boardYaw = yaw, boardIndex = (seat == 1) and 2 or 1,
+        rot = nil, hideLoc = { X = o.X, Y = o.Y, Z = o.Z - 50 },
+    }, C
+end
+
+function ClassicGameState:PlayScorePopupForSeat(seat, rows, delta, combo)
+    if not TetrisScorePopup then return end
+    local renderer, C = self:_popupRendererForSeat(seat)
+    if not renderer or not C then return end
+    local sp = C.ScorePopup or {}
+    if sp.Enabled == false then return end
+    local gain = tonumber(delta) or 0
+    if gain <= 0 then return end
+    local ok, res = pcall(function()
+        return TetrisScorePopup.Show(self, renderer, rows, gain, combo)
+    end)
+    if not ok then
+        print("[Popup][Server/GS][WARN] 飘字 Show 报错: " .. tostring(res))
+        return
+    end
+    print("[Popup][Server/GS] 飘字 seat=" .. tostring(seat) .. " +" .. tostring(gain) ..
+        " combo=" .. tostring(combo) .. " 显示=" .. tostring(res))
 end
 
 -- [特效] 扔垃圾拖尾特效（ServerOnly 粒子）：起点=fromSeat 盘最左列/消行中行，终点=对手盘心。
@@ -436,6 +485,13 @@ function ClassicGameState:BroadcastBoardTransform()
         end
         g = { o0 = o0, r0 = r0, o1 = o1, r1 = r1 }
         self._boardGeom = g
+        -- [飘字] 几何就绪即预热消行飘字 3D Actor 池（资源未注册时静默跳过，注册后自动生效）
+        if TetrisScorePopup then
+            pcall(function()
+                local renderer = self:_popupRendererForSeat(0)
+                if renderer then TetrisScorePopup.Prewarm(renderer) end
+            end)
+        end
         -- [BGS] 几何首次就绪即生成远景背景挂件（服务端生成+灌图，实跑验证可显示）
         self:_ensureBackgroundWidgets(0)
         -- [S3D] 几何首次就绪即生成其余场景 3D UI（BigFrame3D/BehindBoardWidget/BoardBackdrop3D）
@@ -622,6 +678,7 @@ function ClassicGameState:Auth_Piece(seq, pieceType, rot, x, y)
         local guard = 0
         while guard < 8 and (b.lockPaused or b.clearing) do
             guard = guard + 1
+            local scoreBefore = b.score or 0
             if b.lockPaused then pcall(function() b:doClear() end) end
             -- [特效] 我方盘消行：doClear 后取被消行号播粒子特效（ServerOnly，服务端播全员可见）。
             local rows = b:consumeClearedRows()
@@ -629,6 +686,11 @@ function ClassicGameState:Auth_Piece(seq, pieceType, rot, x, y)
                 -- [特效] 我方盘用真人实际 seat（可能 0 或 1），不写死，避免与对方盘特效互换
                 local mySeat = self._humanSeat or 0
                 pcall(function() self:PlayClearFxForSeat(mySeat, rows) end)
+                -- [飘字] 3D Actor 弹 +XX / 连击评价（delta=本次消行得分增量）
+                local delta = (b.score or 0) - scoreBefore
+                pcall(function()
+                    self:PlayScorePopupForSeat(mySeat, rows, delta, b.combo or 0)
+                end)
             end
             if b.clearing then
                 pcall(function() b:applyClearCollapse() end)
@@ -1016,6 +1078,8 @@ end
 --- Callback for Actor EndPlay.
 ---@param EndPlayReason EndPlayReason End play reason.
 function ClassicGameState:OnReceiveEndPlay(EndPlayReason)
+    -- [飘字] 回合结束强制回收 3D Actor 池，避免跨局残留旧分数
+    if TetrisScorePopup then pcall(function() TetrisScorePopup.Reset() end) end
 end
 
 local CClassicGameState = WoWClass(WoWClassicGameState, nil, ClassicGameState)

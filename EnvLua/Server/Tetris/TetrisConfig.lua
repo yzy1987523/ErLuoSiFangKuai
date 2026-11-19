@@ -318,7 +318,7 @@ TetrisConfig.ScorePopup = {
     TextReadyTimeout = 0.4,              -- 文本写入全部 UMG 前的隐藏上限（秒）；超时强制显示并继续补写
     -- 位置（米）：盘心 + right*(半宽 + SideOffsetM)；竖直取被消行区域中心。
     SideOffsetM = 2.2,                   -- 超出盘面右边缘的额外距离（沿盘面 right，正=玩家右手侧）
-    DistanceFrontM = -0.51,               -- 沿 boardForward 的前置距离，与 ClearRowWidget 一致，避免被方块挡住
+    DistanceFrontM = 0.51,               -- 沿 boardForward 的前置距离，与 ClearRowWidget 一致，避免被方块挡住
     HeightOffsetM = 0,                   -- 世界 +Z 微调
     -- 弹出数字尺寸：按【本次弹出的分数】线性映射，100 分 → 5，400 分及以上 → 8，中间等比。
     ScaleMin = 5,                         -- 分数 <= ScoreForScaleMin 时的缩放
