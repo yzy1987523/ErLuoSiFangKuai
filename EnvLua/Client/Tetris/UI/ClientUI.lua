@@ -655,16 +655,21 @@ function ClientUI:ShowLoading()
     self.host:AddTimerOnce(CLICK_GUARD, function()
         apply(true)
         self:_setHudVisible(true)   -- ① 先显示 GamePanel（对局 HUD 父容器）
+        -- [局内技能 icon] 技能在选完时已确定，HUD 父容器显示后立刻换图：
+        -- 不再依赖重力 tick 的 UpdateHUD（那条链要等 loading 隐藏 + BIGFRAME 缓冲 1.8s + 一个重力周期，
+        -- 表现为「loading 隐藏后一会儿才换图」）。force=true 保证父面板带出子控件后仍能覆盖写入。
+        self:_syncSkillIcon(true)
         -- ② 再隐藏临时提示图：它们是 GamePanel 子控件，父容器显示会带出，必须在显示之后藏
         self:_hideTransientHints()
         -- ③ GamePanel 带出的多语言图会被引擎恢复成编辑器预置的中文，必须按当前语言重刷一次
         self:_applyLangContents()
         print("[P7][Ready][ClientUI] Loading 显隐清单已应用：显示 LoadingScreen/进度条/对局HUD；隐藏 技能面板/WaitHint/临时提示图")
-        -- ④ 父容器异步带出子控件，延迟补写一次确保干净（隐藏 + 语言图重刷都要补）
+        -- ④ 父容器异步带出子控件，延迟补写一次确保干净（隐藏 + 语言图重刷 + 技能 icon 都要补）
         self.host:AddTimerOnce(0.3, function()
             if self._loadingVisible then
                 self:_hideTransientHints()
                 self:_applyLangContents()
+                self:_syncSkillIcon(true)
             end
         end)
         self:_setLoadingProgress(0)
@@ -906,8 +911,26 @@ function ClientUI:UpdateHUD(state, opponentScore)
     self:_syncEnergyBar(state)
     self:_syncReadyAndPower(state)
     self:_syncCombo(state)
+    self:_syncSkillIcon()
     self:_syncTransientHints(state.hintImages)
     self:_syncGarbageHints(state)
+end
+
+-- [局内技能 icon] 把游戏界面内的 icon 控件换成玩家所选技能的图标。
+-- 旧服务端 TetrisGame:UpdateSkillUI 会做这件事，但那条路径已停用；这里在客户端权威路径补上。
+-- force=true 忽略 _skillIconSet 幂等，供 loading 阶段父面板带出子控件后强制补写。
+function ClientUI:_syncSkillIcon(force)
+    local S = Config.Skill or {}
+    local id = S.IconImage
+    if not id then return end
+    local key = self.deps.getSkillKey and self.deps.getSkillKey()
+    if not key then return end  -- 技能还没选定：等下次 HUD 更新再试
+    if (not force) and self._skillIconSet == key then return end  -- 同一技能只设一次；换技能时更新
+    local def = Config.Skills and Config.Skills[key]
+    if not def or not def.iconKey then return end
+    self:Image(id, def.iconKey)
+    self._skillIconSet = key
+    print("[ClientUI] 局内技能 icon 已设置 key=" .. tostring(key) .. " iconKey=" .. tostring(def.iconKey) .. " force=" .. tostring(force))
 end
 
 -- 能量条：倒置渲染，写值=(1-bars/need)×100；设置 Min/Max/Value，值变化才写（避免刷屏）。

@@ -200,6 +200,8 @@ function TetrisClient:Init()
             if kind == "bgm" then selfRef.audio:AdjustBGM(delta) else selfRef.audio:AdjustSFX(delta) end
             -- [P9] 不在此写存档，等关闭声音界面时对比快照决定是否写入
         end,
+        -- [局内技能 icon] 返回玩家最终所选技能 key（技能选择晚于 UI 创建，故动态取）
+        getSkillKey = function() return selfRef.selectedSkill end,
         getVolumes = function()
             if not selfRef.audio then return { bgm = 0.6, sfx = 0.6 } end
             return { bgm = selfRef.audio.bgmVolume or 0.6, sfx = selfRef.audio.sfxVolume or 0.6 }
