@@ -209,6 +209,13 @@ EnvLua/Server/ErLuoSiFangKuai/   # 玩法代码放这里（可写区）
 
 **补丁1-提示不隐藏（2026-11-19，已部署待实跑）**：根因=调度器冒号/点号签名不匹配（详见上文「冒号/点号签名不匹配」条）。修 `ClientGame` 4 处 `scheduler:After` → `scheduler.After`，默认 scheduler 签名同步；`_hint` 到期回调加 `[Hint] 到期清除` 日志。
 
+**补丁3-垃圾双向不通+特效缺失（2026-11-19，单人AI模式，已部署待实跑）**：用户实测单人打AI「扔的垃圾AI没收到、AI扔垃圾我没提示、扔垃圾无特效」。根因=架构断点：玩法数据层在客户端、AI盘在服务端，versus事件只在客户端间中转，AI无接收口也不会攻击。修法（全在服务端，客户端提示系统补丁2已就绪）：
+- **我→AI**：GameState `P5_VersusEvent` 中转后加单人分支——有 `self._p3Driver` 时把 garbage 直接 `drv.board:addGarbage(n)`（客户端 multicast 被真人自己过滤，AI在服务端必须这里落地）；同时桥接 noRotate/swap/rockfall 到 AI board。
+- **AI→我**：`TetrisAIDriver` 消行收尾原只调 `finishClear()`（漏 `applyGarbage`/坍塌）；在 showCollapse 分支补 `applyClearCollapse`+`applyGarbage`+`_flushOutgoingToHuman(b)`（消费 outgoing → `gs:CallClientFunctionMulticast("P5_VersusEvent","garbage",n,0,nil)`，fromKey=0 客户端不过滤 → AddGarbage + Recv 提示）。
+- **特效**：GameState 新增 `PlayGarbageFx(fromSeat,rows)`（ServerOnly SceneEffectAPI，起点=投掷方盘最左列/消行中行、延迟0.6s在目标盘播到达粒子，两段式近似飞行；资源 Config.GarbageEffect.PresetKey=`13_EffectPreset_1193030723` 需 AssetRef 注册）。真人扔垃圾由 `P5_VersusEvent` 单分支调（humanSeat），AI扔垃圾由 driver `_flushOutgoingToHuman` 调（oppSeat）。
+- 修了新引入 bug：`min/max` → `math.min/math.max`（全局 min/max 不存在，会被 pcall 吞导致特效静默失效）。
+- **待实跑**：日志 `[Versus][Server/GS] 单人桥接：真人→AI 注入垃圾 +N`（我攻击）、`[Versus][AI] 扔垃圾给真人 +N`（AI攻击，我应有Recv提示+垃圾升起）、`[Fx][Server/GS] 扔垃圾拖尾`。若特效不显示，优先查 AssetRef[13_EffectPreset_1193030723] 是否已注册；若AI不攻击，查 `GarbageTable`（1行=1,2=3,3=5,4=7，单消也可能0？不，配置[1]=1）。
+
 **补丁2-垃圾提示不弹（2026-11-19，已部署待实跑）**：根因=第4项把垃圾提示错误实现成一次性 `_hint("GarbageImg",1.7)`（只映射 1 个文本控件、SEND 完全没触发），而旧版是**状态驱动**。修法（对齐 `TetrisGame:UpdateGarbageHints`）：①UIState 加 `garbageRecv`/`garbageSent`；②ClientGame `BuildUIState` 输出 `garbageRecv=board.pendingGarbage`、`garbageSent=self.garbageSent`；③我方发出垃圾时 `_emitVersus("garbage")` 后置 `garbageSent=outgoing` 并用代际令牌 `+ SendDuration(2.2s)` 定时清零（客户端拿不到对手盘 pendingGarbage，SEND 隐藏只能定时降级；旧版靠对手盘垃圾升起归零）；④ClientUI 新增 `_syncGarbageHints`/`_flashGarbage`/`_garbageComp`/`_hideAllGarbage`，按状态翻转显示/隐藏当前语言 GarbageHint 12 组件（Recv：pendingGarbage>0 显示、归零隐藏；Send：garbageSent>0 显示、归零隐藏；数量变化只换数字图 `NumImages[1..8]`）；⑤移除旧的一次性 `GarbageImg` hint 与映射；⑥开局 `_hideTransientHints` 已含 GarbageHint 12 组件初始隐藏（无需改）。实跑看日志 `[Hint] 扔垃圾 Send 提示 +N 行` / `[Hint] 收垃圾 Recv 提示 +N 行` / 各自隐藏日志。若图片不显示，优先查 `ci()` 控件 UUID 是否注入成功 + `self.lang` 是否与实际语言一致。
 
 **未覆盖（改动面大/受引擎限制，需另行决策）**：真粒子特效（SceneEffectAPI ServerOnly，服务端 GameState 只补播了真人盘消行）、消行分数飘字 `+XX` 与评价大字（客户端 3D UI bug）、对手盘粒子、落石跨端触发（Common Board 依赖 `game.opponent`，客户端权威下需改走 versus，会动双端共享 Board）、服务端 AI 自动施法（AI driver 无 power/技能概念）。

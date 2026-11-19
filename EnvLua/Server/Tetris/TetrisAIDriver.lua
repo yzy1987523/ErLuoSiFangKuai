@@ -96,8 +96,14 @@ function TetrisAIDriver:_advanceClear(b)
                 print("[ClearDbg][AI] clearing 展示坍塌 left=" .. tostring(self._clearWait))
                 return
             end
+            -- [垃圾桥接] 对齐客户端 ClientGame:_finishClearSequence 的强时序：
+            -- 坍塌 → 垃圾升起 → 出块 → 消费 outgoing 上报给真人。旧 AI 只调 finishClear，
+            -- 漏了 applyGarbage（消行同时带 incoming 垃圾时不升起）与 outgoing 上报（AI 永不攻击）。
+            pcall(function() b:applyClearCollapse() end)
+            pcall(function() b:applyGarbage() end)
             local ok, err = pcall(function() b:finishClear() end)
             if not ok then print("[ClearDbg][AI][ERR] finishClear 报错: " .. tostring(err)) end
+            self:_flushOutgoingToHuman(b)
             self._clearPhase = nil
             print("[ClearDbg][AI] clearing 出块完成 active=" .. tostring(b:getActive() ~= nil))
             return
@@ -171,6 +177,28 @@ function TetrisAIDriver:_step()
         return
     end
     self:_schedule()
+end
+
+-- [垃圾桥接] AI 消行产生的攻击行同步给真人盘：消费 outgoing → 经 GameState 以 fromKey=0
+-- （AI 无固定 playerKey）广播 garbage 事件；客户端 OnVersusEvent 因 from==0 不过滤，
+-- 走 ApplyVersusEffect("garbage") → addGarbage + Recv 提示。同时播扔垃圾拖尾特效。
+function TetrisAIDriver:_flushOutgoingToHuman(b)
+    local outgoing = 0
+    pcall(function() outgoing = b:consumeOutgoingGarbage() or 0 end)
+    if outgoing <= 0 then return end
+    local gs = Game:GetGameState()
+    if not gs then return end
+    pcall(function()
+        -- fromKey=0：客户端过滤规则 `from ~= 0 and from == selfKey` 不会拦 AI 事件
+        gs:CallClientFunctionMulticast("P5_VersusEvent", "garbage", outgoing, 0, nil)
+    end)
+    -- [特效] AI 盘扔垃圾：用 AI seat 播拖尾特效（起点 AI 盘、终点真人盘）。
+    -- _fxRows 在 doClear 阶段已暂存本次消行行号（随后随快照下发会被清空，这里在其之前使用）。
+    if self.host and type(self.host.PlayGarbageFx) == "function" then
+        local aiSeat = self.host._oppSeat or 1
+        pcall(function() self.host:PlayGarbageFx(aiSeat, self._fxRows) end)
+    end
+    print("[Versus][AI] 扔垃圾给真人 +" .. tostring(outgoing) .. " 行")
 end
 
 function TetrisAIDriver:_broadcastSnapshot()

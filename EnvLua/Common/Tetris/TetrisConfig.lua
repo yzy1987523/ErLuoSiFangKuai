@@ -198,7 +198,7 @@ TetrisConfig.Pieces = {
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
     DebugFirstItem = true,            -- 【调试】true = 本局第一个方块强制为 FirstItemType（便于单独测试某一种道具效果）
-    FirstItemType = 9,                 -- 【调试】DebugFirstItem 开启时，首块强制的道具类型（与 PieceType.ITEM_* 对应，默认 9=爆破）
+    FirstItemType = 12,                 -- 【调试】DebugFirstItem 开启时，首块强制的道具类型（与 PieceType.ITEM_* 对应，默认 9=爆破）
     -- 道具概率（基于「落地方块数」，替代旧的概率/大袋方案）：
     ItemWarmup = 10,                  -- 前 N 个普通方块必为普通（道具不出现）
     ItemStartProb = 0.5,              -- 第 N+1 个起，道具起始概率（0.5 = 50%）

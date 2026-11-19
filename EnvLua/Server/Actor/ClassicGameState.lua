@@ -118,6 +118,92 @@ function ClassicGameState:PlayClearFxForSeat(seat, rows)
         " pos0=(" .. tostring(cx) .. "," .. tostring(cy) .. "," .. tostring(o.Z) .. ")")
 end
 
+-- [特效] 扔垃圾拖尾特效（ServerOnly 粒子）：起点=fromSeat 盘最左列/消行中行，终点=对手盘心。
+-- 受 SceneEffectAPI 无有效位移接口所限（旧版 SetSceneEffectPosition 实跑原地不动），
+-- 这里用「起点粒子 + 延迟在目标盘播到达粒子」两段式近似飞行，避免引入隐形载体 Actor 的复杂度。
+-- @param fromSeat number 投掷方几何槽位 0/1
+-- @param rows table|nil 本次消行行号（决定起点竖直位置，nil 取盘中行）
+function ClassicGameState:PlayGarbageFx(fromSeat, rows)
+    if type(SceneEffectAPI) ~= "table" or not SceneEffectAPI.CreateSceneEffect then return end
+    local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
+    if not okCfg or type(C) ~= "table" then return end
+    local gc = C.GarbageEffect or {}
+    if gc.Enabled == false then return end
+    local g = self._boardGeom
+    if not g then
+        if not self._gfxGeomWarned then
+            self._gfxGeomWarned = true
+            print("[Fx][Server/GS] 垃圾特效跳过：盘面几何未就绪")
+        end
+        return
+    end
+    local key = gc.PresetKey or "13_EffectPreset_1193030723"
+    local ref = (type(AssetRef) == "table" and AssetRef[key]) or nil
+    if not ref then
+        if not self._gfxRefWarned then
+            self._gfxRefWarned = true
+            print("[Fx][Server/GS][WARN] 垃圾特效资源未注册 AssetRef[" .. tostring(key) .. "]")
+        end
+        return
+    end
+
+    local targetSeat = (fromSeat == 1) and 0 or 1
+    local o = (fromSeat == 1) and g.o1 or g.o0
+    local right = (fromSeat == 1) and g.r1 or g.r0
+    local to = (targetSeat == 1) and g.o1 or g.o0
+    local toRight = (targetSeat == 1) and g.r1 or g.r0
+    if not o or not right or not to or not toRight then return end
+
+    local r = C.Render or {}
+    local step = (r.CellSize or 1.0) + (r.CellGap or 0.02)
+    local cols = ((C.Board or {}).Cols or 10)
+    local halfW = (cols - 1) * step / 2
+    local side = -(halfW + (type(gc.SideOffsetM) == "number" and gc.SideOffsetM or 0))
+    local D = (type(gc.DistanceFrontM) == "number") and gc.DistanceFrontM or 0
+    local hgt = (type(gc.HeightOffsetM) == "number") and gc.HeightOffsetM or 0
+
+    local minRow, maxRow
+    for _, row in ipairs(rows or {}) do
+        local n = tonumber(row)
+        if n then minRow = math.min(n, minRow or n); maxRow = math.max(n, maxRow or n) end
+    end
+    local midRow = minRow and ((minRow + maxRow) / 2) or (((C.Board or {}).Rows or 20) / 2)
+    -- 起点：盘心沿 -right 到最左列，再沿 forward 前置 D（近似用 right 方向叠加）
+    local fromPos = {
+        X = o.X + right.X * (side + D),
+        Y = o.Y + right.Y * (side + D),
+        Z = o.Z - (midRow - 1) * step + hgt,
+    }
+    -- 终点：目标盘心
+    local targetPos = {
+        X = to.X + toRight.X * halfW,
+        Y = to.Y + toRight.Y * halfW,
+        Z = to.Z + (type(gc.TargetHeightOffsetM) == "number" and gc.TargetHeightOffsetM or 0),
+    }
+    local scale = gc.Scale or { X = 3, Y = 3, Z = 3 }
+    local travel = (type(gc.TravelDuration) == "number") and gc.TravelDuration or 0.6
+    local dur = (type(gc.Duration) == "number") and gc.Duration or 1.0
+
+    -- 起点粒子
+    local function spawnAt(pos)
+        local ok, id = pcall(function()
+            return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), dur)
+        end)
+        if ok and id and id ~= 0 then
+            pcall(function()
+                SceneEffectAPI.SetSceneEffectScale(id, Game:ConstructFVectorByLuaTable({
+                    X = scale.X or 1, Y = scale.Y or 1, Z = scale.Z or 1,
+                }))
+            end)
+        end
+    end
+    pcall(function() spawnAt(fromPos) end)
+    -- 延迟在目标盘播"到达"粒子，形成投掷方向感
+    self:AddTimerOnce(travel, function() pcall(function() spawnAt(targetPos) end) end)
+    print("[Fx][Server/GS] 扔垃圾拖尾 fromSeat=" .. tostring(fromSeat) ..
+        " → targetSeat=" .. tostring(targetSeat) .. " 行数=" .. tostring(#(rows or {})))
+end
+
 -- [P7] 按出生点装置算盘面基底（origin=左上角、right=横向单位向量，单位米）。
 -- 移植自旧 TetrisRenderer:ResolveOrigin 的 settle（L149-180），只保留客户端 ClientRenderer 需要的 origin/right。
 -- InstanceAPI 为 ServerOnly，必须服务端算；装置未就绪/不可读时返回 nil，由调用方重试。
@@ -781,16 +867,37 @@ end
 -- 这里仅做中转，不额外处理。payload 保留给未来的扩展（如 swapLanded 回执）。
 function ClassicGameState:P5_VersusEvent(kind, n, fromKey, payload)
     if type(kind) ~= "string" then return end
+    local cnt = tonumber(n) or 0
+    local from = tonumber(fromKey) or 0
     local ok, err = pcall(function()
-        self:CallClientFunctionMulticast("P5_VersusEvent", kind, tonumber(n) or 0,
-            tonumber(fromKey) or 0, payload)
+        self:CallClientFunctionMulticast("P5_VersusEvent", kind, cnt, from, payload)
     end)
     if not ok then
         print("[Versus][Server/GS] 中转失败: " .. tostring(err))
         return
     end
-    print("[Versus][Server/GS] 中转 kind=" .. tostring(kind) .. " n=" .. tostring(n) ..
-        " fromKey=" .. tostring(fromKey))
+    print("[Versus][Server/GS] 中转 kind=" .. tostring(kind) .. " n=" .. tostring(cnt) ..
+        " fromKey=" .. tostring(from))
+
+    -- [单人 AI 桥接] 真人扔出的垃圾/减益：客户端 multicast 会被自己过滤，AI 盘在服务端必须这里直接落地。
+    -- 只有单人（有 AI driver）才处理；双人有真人接收方，交由客户端 ApplyVersusEffect。
+    local drv = self._p3Driver
+    if not drv or not drv.running or not drv.board then return end
+    if kind == "garbage" and cnt > 0 then
+        pcall(function() drv.board:addGarbage(cnt) end)
+        -- [特效] 真人盘扔垃圾：用真人 seat 播拖尾特效（起点真人盘、终点 AI 盘）
+        if type(self.PlayGarbageFx) == "function" then
+            pcall(function() self:PlayGarbageFx(self._humanSeat or 0, nil) end)
+        end
+        print("[Versus][Server/GS] 单人桥接：真人→AI 注入垃圾 +" .. tostring(cnt) .. " 行")
+    elseif kind == "noRotate" then
+        pcall(function() drv.board.noRotateNext = (drv.board.noRotateNext or 0) + cnt end)
+    elseif kind == "swap" then
+        pcall(function() drv.board.swapRequested = true; drv.board.pendingSwapNext = true end)
+        -- AI 块的 swapLanded 回执：真人需要解 SK08 CD；AI 落地后由 driver 侧发（简化：定时回执）
+    elseif kind == "rockfall" then
+        pcall(function() drv.board.pendingRockfall = (drv.board.pendingRockfall or 0) + cnt end)
+    end
 end
 
 -- ===== P7：选完技能后隐藏 Mask 场景对象（对齐历史 TetrisSkillSelect:HideSceneObjectsOnce）=====
