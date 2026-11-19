@@ -22,6 +22,12 @@ TetrisConfig.Clear = {
     -- 旧版 ClearRowWidget.PreClearDelay(0.25s，特效空白帧)在客户端化后丢失，导致特效落在大脑感知的坍塌之后。
     -- 设 0.5 = 特效领先坍塌 0.5s（用户要求）。改这里同时影响真人盘(ClientGame)与 AI 盘(driver)。
     PreClearDelay = 0.5,
+    -- 【爆炸消行·特效播完后的额外等待】秒。爆炸(blast)消行的特效不延后起播，
+    -- 等 EffectDuration(1s) 完整播完后，再额外等这么久才坍塌（用户要求 0.4s）。
+    -- 普通消行仍走 ResumeDelay+PreClearDelay，不受影响。
+    -- 真人盘坍塌等待 = ResumeDelay(RPC补偿) + EffectDuration + BlastAfterFxDelay；
+    -- AI 盘 showRows 等待 = (EffectDuration + BlastAfterFxDelay) / 步长。
+    BlastAfterFxDelay = 0.4,
     ClearDelay = 1,    -- 单位：秒（旧字段，保留兼容）。消除→下落→出块 的总窗口。
     LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
     -- 【正常消行】资源 + 尺寸 + 位置（与下方「爆炸消行」是两套独立配置，互不影响）。

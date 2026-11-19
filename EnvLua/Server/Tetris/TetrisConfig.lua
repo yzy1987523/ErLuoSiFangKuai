@@ -16,6 +16,11 @@ TetrisConfig.Clear = {
     EffectDuration = 1,   -- 单位：秒。被消除格上播放的特效持续时间；也是「特效播完→方块下落」的延迟（见 ScheduleClearResume）。
     -- 【特效提前起播】满行亮起(lockPaused)后先播特效，等这么久再 doClear+坍塌 = 特效领先坍塌 0.5s（与 Common 配置保持一致）。
     PreClearDelay = 0.5,
+    -- 【爆炸消行·特效播完后的额外等待】秒。爆炸(blast)消行的特效不延后起播，
+    -- 等 EffectDuration(1s) 完整播完后，再额外等这么久才坍塌（用户要求 0.4s）。
+    -- 普通消行仍走 ResumeDelay+PreClearDelay，不受影响。
+    -- 真人盘 ClientGame 读 Common 配置；服务端特效播放在此份配置保持同值，便于统一调整。
+    BlastAfterFxDelay = 0.4,
     ClearDelay = 1,    -- 单位：秒。消除→下落→出块 的总窗口；必须 ≥ EffectDuration，差值 = 下落后方块展示时间（让"落下"可见）。
     LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
     -- 【正常消行】资源 + 尺寸 + 位置（与下方「爆炸消行」是两套独立配置，互不影响）。

@@ -206,15 +206,27 @@ function ClientGame:_startClearSequence(cleared)
     if self.audio and self.audio.PlayLineClear then
         pcall(function() self.audio:PlayLineClear(cleared, self.board.combo or 0) end)
     end
-    -- [特效提前起播] 坍塌(applyClearCollapse)要等服务端粒子特效先播：特效走影子盘 Auth_Piece RPC，
-    -- 当帧 doClear 时服务端即播，RPC 往返约 0.3s；把坍塌等待 = ResumeDelay + PreClearDelay(0.5s)，
-    -- 让特效领先坍塌约 0.5s。坍塌仍由本序列的 After+tick 自驱动执行（不在定时器里 doClear，保留坍塌过程）。
+    -- [爆炸标记] 先取走爆破标记，判断本次是否爆炸消行（决定是否延长坍塌前的特效展示窗口）
+    local isBlastClear = false
+    local okBlast, blastFx = pcall(function() return self.board:consumeBlastFx() end)
+    if okBlast and blastFx and #blastFx > 0 then isBlastClear = true end
+    -- [特效起播时机不变] 特效走影子盘 Auth_Piece RPC，当帧 doClear 即播（RPC 往返约 0.3s）。
+    -- 普通消行：坍塌等待 = ResumeDelay + PreClearDelay(0.5s)，与既有表现一致。
+    -- 爆炸消行：特效照常立刻播、完整播完(EffectDuration≈1s)后，再额外等 BlastAfterFxDelay(0.4s) 才坍塌。
+    --   真人盘坍塌等待 = resume(RPC补偿) + EffectDuration(特效播完) + BlastAfterFxDelay(播完后再等)。
+    -- 坍塌仍由本序列的 After+tick 自驱动执行（不在定时器里 doClear，保留坍塌过程）。
     local resume = CLEAR_CFG.ResumeDelay or 0.3
     local pre = (type(CLEAR_CFG.PreClearDelay) == "number") and CLEAR_CFG.PreClearDelay or 0.5
-    self._clearTarget = resume + pre
+    local wait = resume + pre
+    if isBlastClear then
+        local effDur = (type(CLEAR_CFG.EffectDuration) == "number") and CLEAR_CFG.EffectDuration or 1.0
+        local afterFx = (type(CLEAR_CFG.BlastAfterFxDelay) == "number") and CLEAR_CFG.BlastAfterFxDelay or 0.4
+        wait = resume + effDur + afterFx
+    end
+    self._clearTarget = wait
     self._clearElapsed = 0
     print("[ClearDbg] _startClearSequence 开始 cleared=" .. tostring(cleared) ..
-        " 定时=" .. tostring(self._clearTarget) .. "s (坍塌=" .. tostring(resume) .. "+" .. tostring(pre) .. ")")
+        " 爆炸=" .. tostring(isBlastClear) .. " 定时=" .. tostring(self._clearTarget) .. "s")
 
     -- [修复] 每一步独立 pcall 断点：任何一步抛错只记日志，绝不阻断后续 After 注册与 tick 自驱动。
     -- 旧版这里任一步抛错会连带中断 scheduler:After 注册 + gravityTick 递归调度 → 表现为"消行卡住后一动不动"。
@@ -226,7 +238,6 @@ function ClientGame:_startClearSequence(cleared)
         if rows and #rows > 0 then
             self._lastClearRows = rows
         end
-        self.board:consumeBlastFx()
     end)
     if not okFx then print("[ClearDbg][ERR] 消行标记清理报错(已隔离): " .. tostring(errFx)) end
 

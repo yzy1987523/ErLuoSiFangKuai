@@ -121,7 +121,17 @@ function TetrisAIDriver:_advanceClear(b)
             " clearing=" .. tostring(b.clearing))
         if cleared > 0 and b.clearing then
             self._clearPhase = "showRows"
-            self._clearWait = 6   -- 6 步 × 0.1s ≈ 0.6s 展示满行消失
+            if blastRows and #blastRows > 0 then
+                -- [爆炸消行] 特效同帧照常起播、完整播完(EffectDuration≈1s)后，再额外等 0.8s 才坍塌。
+                -- 等待 = EffectDuration + BlastAfterFxDelay，按 driver 步长换算为 showRows 步数。
+                local cl = TetrisConfig.Clear or {}
+                local effDur = (type(cl.EffectDuration) == "number") and cl.EffectDuration or 1.0
+                local afterFx = (type(cl.BlastAfterFxDelay) == "number") and cl.BlastAfterFxDelay or 0.4
+                local blastWait = effDur + afterFx
+                self._clearWait = math.max(1, math.floor(blastWait / (self.interval or 0.1) + 0.5))
+            else
+                self._clearWait = 6   -- 普通消行 6 步 × 0.1s ≈ 0.6s 展示满行消失
+            end
         end
         return
     end
