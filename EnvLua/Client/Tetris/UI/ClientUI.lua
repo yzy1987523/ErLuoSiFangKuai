@@ -608,12 +608,9 @@ function ClientUI:OnSkillChosen(slotIndex)
     local S = Config.SkillSelect or {}
     local key = self.selectedSkills[slotIndex]
     if not key then return nil end
-    -- [P7 双方就绪] 选完技能只隐藏 2 个槽位（表示已选），【保留技能面板 PanelKey】——
-    -- WaitHint 是技能面板的子控件，"等待对方选择技能"提示需面板在场才可见；
-    -- 待双方就绪（OnAllReady）时再统一隐藏 WaitHint + PanelKey 进入 loading。
-    for _, id in ipairs(S.SlotButtons or {}) do self:Show(id, false) end
-    for _, id in ipairs(S.SlotIcons or {}) do self:Show(id, false) end
-    for _, id in ipairs(S.SlotDescs or {}) do self:Show(id, false) end
+    -- [P7 双方就绪] 选完技能保留技能面板与槽位（图标/按钮/描述都保持可见），
+    -- 只额外显示 WaitHint（等待对方选择技能）；待双方就绪（OnAllReady）时
+    -- 再统一隐藏 WaitHint + PanelKey 进入 loading。
     -- 显示等待提示：ShowForce 绕过 _visible 幂等缓存并恢复 opacity（开局 HideForce 曾压 0）。
     -- 父面板异步带出子控件可能覆盖，延迟补写一次（仍在技能选择界面时）。
     self:ShowForce(S.WaitHint)
