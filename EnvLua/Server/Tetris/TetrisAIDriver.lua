@@ -77,6 +77,13 @@ end
 function TetrisAIDriver:_advanceClear(b)
     if b.lockPaused then
         local scoreBefore = b.score or 0
+        -- [爆破行预检] doClear 前满行仍在网格里，先查出含爆破块的行号；清行后就查不到了。
+        local blastRows = nil
+        local okPre, rowsPre = pcall(function() return b:getFullRows() end)
+        if okPre and rowsPre and #rowsPre > 0 then
+            local okB, br = pcall(function() return b:getBlastRows(rowsPre) end)
+            if okB and br and #br > 0 then blastRows = br end
+        end
         local cleared = 0
         local ok, err = pcall(function() cleared = b:doClear() end)
         if not ok then print("[ClearDbg][AI][ERR] doClear 报错: " .. tostring(err)) end
@@ -93,7 +100,13 @@ function TetrisAIDriver:_advanceClear(b)
                 -- [特效] AI 盘用缓存的对手 seat（可能 0 或 1），与我方真人 seat 相反，避免特效左右互换
                 local oppSeat = self.host._oppSeat or 1
                 if type(self.host.PlayClearFxForSeat) == "function" then
-                    pcall(function() self.host:PlayClearFxForSeat(oppSeat, self._fxRows) end)
+                    -- 爆炸行传 blastRows：这些行改用与竖版相同的 100032，不播普通 3617487677
+                    pcall(function() self.host:PlayClearFxForSeat(oppSeat, self._fxRows, blastRows) end)
+                end
+                -- [爆破特效] AI 盘爆破消列：服务端播竖版光束（与消行特效同源同 seat）
+                local blastFx = b:consumeBlastFx()
+                if blastFx and #blastFx > 0 and type(self.host.PlayBlastFxForSeat) == "function" then
+                    pcall(function() self.host:PlayBlastFxForSeat(oppSeat, blastFx) end)
                 end
                 -- [飘字] AI 盘也弹 +XX / 连击评价（3D Actor，全员可见）
                 if type(self.host.PlayScorePopupForSeat) == "function" then

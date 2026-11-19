@@ -206,10 +206,15 @@ function ClientGame:_startClearSequence(cleared)
     if self.audio and self.audio.PlayLineClear then
         pcall(function() self.audio:PlayLineClear(cleared, self.board.combo or 0) end)
     end
-    self._clearTarget = CLEAR_CFG.ResumeDelay or 0.3
+    -- [特效提前起播] 坍塌(applyClearCollapse)要等服务端粒子特效先播：特效走影子盘 Auth_Piece RPC，
+    -- 当帧 doClear 时服务端即播，RPC 往返约 0.3s；把坍塌等待 = ResumeDelay + PreClearDelay(0.5s)，
+    -- 让特效领先坍塌约 0.5s。坍塌仍由本序列的 After+tick 自驱动执行（不在定时器里 doClear，保留坍塌过程）。
+    local resume = CLEAR_CFG.ResumeDelay or 0.3
+    local pre = (type(CLEAR_CFG.PreClearDelay) == "number") and CLEAR_CFG.PreClearDelay or 0.5
+    self._clearTarget = resume + pre
     self._clearElapsed = 0
     print("[ClearDbg] _startClearSequence 开始 cleared=" .. tostring(cleared) ..
-        " 定时=" .. tostring(self._clearTarget) .. "s")
+        " 定时=" .. tostring(self._clearTarget) .. "s (坍塌=" .. tostring(resume) .. "+" .. tostring(pre) .. ")")
 
     -- [修复] 每一步独立 pcall 断点：任何一步抛错只记日志，绝不阻断后续 After 注册与 tick 自驱动。
     -- 旧版这里任一步抛错会连带中断 scheduler:After 注册 + gravityTick 递归调度 → 表现为"消行卡住后一动不动"。
@@ -433,7 +438,7 @@ function ClientGame:tick()
         return false
     end
     if b.lockPaused then
-        -- 锁定停顿结束：执行消行 + 开特效时序
+        -- 锁定停顿结束：执行消行 + 开特效时序（坍塌链保持 tick 主循环驱动，不在定时器里 doClear）
         local cleared = b:doClear()
         print("[ClearDbg] tick lockPaused→doClear cleared=" .. tostring(cleared) ..
             " clearing=" .. tostring(b.clearing) .. " clearBusy=" .. tostring(self._clearBusy) ..

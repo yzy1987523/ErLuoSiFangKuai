@@ -59,9 +59,13 @@ end
 -- 本方法用 P7 已缓存的盘面几何 _boardGeom 按 seat 定位，坐标算法对齐 TetrisRenderer:PlayClearEffectAt。
 -- 【重要】seat 语义是纯几何槽位（0=SpawnPointKey 前方盘，1=SpawnPointKey2 前方盘），
 -- 不等于「我方/对方」——真人可能出生在任一 seat。调用方须用 _humanSeat/_oppSeat 传入，不能写死 0/1。
+-- 【爆炸行特殊】含爆破块的满行【不播普通消行特效】，改用 BlastRowEffectPresetKey（与竖版光束
+-- BlastEffectPresetKey 同一个资源 100032，即"横竖一样"），尺寸/位置也走 BlastRow* 那套独立配置；
+-- 其余行才播普通 EffectPresetKey(3617487677)。对齐旧 TetrisRenderer:PrePlayClearEffects/PlayClearEffectAt。
 -- @param seat number 几何槽位 0 或 1（对应 _boardGeom.o0/o1）
 -- @param rows table 被消除的行号列表（1 基，顶行=1）
-function ClassicGameState:PlayClearFxForSeat(seat, rows)
+-- @param blastRows table|nil 本次消行里含爆破块的行号，必须在 doClear() 前用 getFullRows()+getBlastRows() 预检
+function ClassicGameState:PlayClearFxForSeat(seat, rows, blastRows)
     if type(rows) ~= "table" or #rows == 0 then return end
     if type(SceneEffectAPI) ~= "table" or not SceneEffectAPI.CreateSceneEffect then return end
     local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
@@ -80,45 +84,185 @@ function ClassicGameState:PlayClearFxForSeat(seat, rows)
     local step = (r.CellSize or 1.0) + (r.CellGap or 0.02)
     local cols = ((C.Board or {}).Cols or 10)
     local w = (cols - 1) * step
-    local key = cl.EffectPresetKey or "13_EffectPreset_3617487677"
-    local ref = (type(AssetRef) == "table") and AssetRef[key] or nil
-    if not ref then
+    local normalKey = cl.EffectPresetKey or "13_EffectPreset_3617487677"
+    local blastKey = cl.BlastRowEffectPresetKey or cl.BlastEffectPresetKey or normalKey
+    local normalRef = (type(AssetRef) == "table") and AssetRef[normalKey] or nil
+    local blastRef = (type(AssetRef) == "table") and AssetRef[blastKey] or nil
+    if not normalRef and not blastRef then
         if not self._fxRefWarned then
             self._fxRefWarned = true
-            print("[Fx][Server/GS][WARN] 消行特效资源未注册 AssetRef[" .. tostring(key) .. "]")
+            print("[Fx][Server/GS][WARN] 消行特效资源均未注册 AssetRef[" .. tostring(normalKey) .. "]/[" .. tostring(blastKey) .. "]")
         end
         return
     end
-    local side = (type(cl.EffectSideOffsetM) == "number") and cl.EffectSideOffsetM or 0
-    local off = cl.EffectPositionOffset or {}
-    local scale = cl.EffectScale or { X = 1, Y = 1, Z = 1 }
+    -- 爆炸行集合：这些行改用 blastKey（横版）+ BlastRow* 配置，绝不播普通 normalKey
+    local isBlast = {}
+    if type(blastRows) == "table" then
+        for _, br in ipairs(blastRows) do isBlast[br] = true end
+    end
     local dur = cl.EffectDuration or 1.0
     -- 盘面水平中心（含 right 投影），竖直按行取 o.Z-(row-1)*step
     local cx = o.X + right.X * (w / 2)
     local cy = o.Y + right.Y * (w / 2)
-    local made = 0
+    -- 【爆炸行端点锚点】条特效轴心在条的一端，条长已缩放贴合盘宽 w；要铺满整行，
+    -- 必须把端点锚在盘面的一端，而非盘心。实跑确认条朝 +right 铺，故端点锚在 right 负方向端
+    -- = origin = cx - right*(w/2)（盘面最左列），条从此处朝右铺满整行。
+    local axisX = o.X
+    local axisY = o.Y
+    local made, blastMade = 0, 0
     for _, row in ipairs(rows) do
+        local blast = (isBlast[row] == true)
+        local ref = blast and blastRef or normalRef
+        if ref then
+            local off = (blast and (cl.BlastRowEffectPositionOffset or cl.EffectPositionOffset))
+                or cl.EffectPositionOffset or {}
+            local baseX, baseY
+            if blast then
+                -- 爆炸行：以条端点锚点(左端 origin)为基准 + side 微调（side 相对锚点，0=贴左端）
+                baseX, baseY = axisX, axisY
+            else
+                -- 普通行：仍以盘心为基准 + side 微调
+                baseX, baseY = cx, cy
+            end
+            local side = blast and cl.BlastRowEffectSideOffsetM or cl.EffectSideOffsetM
+            local pos
+            if type(side) == "number" then
+                pos = { X = baseX + right.X * side, Y = baseY + right.Y * side,
+                    Z = o.Z - (row - 1) * step + (off.Z or 0) }
+            else
+                -- 旧投影算法：把 Offset 的 X/Y 投影到 right 后平移
+                local along = (off.X or 0) * right.X + (off.Y or 0) * right.Y
+                pos = { X = baseX + right.X * along, Y = baseY + right.Y * along,
+                    Z = o.Z - (row - 1) * step + (off.Z or 0) }
+            end
+            -- [诊断] 打印每行实际落点：爆炸行应落在盘面左端 origin（条朝右铺满整行）
+            print("[Fx][Server/GS] 行特效落点 row=" .. tostring(row) .. " blast=" .. tostring(blast) ..
+                " side=" .. tostring(side) .. " base=(" .. tostring(baseX) .. "," .. tostring(baseY) .. ")" ..
+                " pos=(" .. tostring(pos.X) .. "," .. tostring(pos.Y) .. "," .. tostring(pos.Z) .. ")")
+            local ok, id = pcall(function()
+                return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), dur)
+            end)
+            if ok and id and id ~= 0 then
+                -- 【爆炸条朝向】条长轴是资源本地 Y；必须设 yaw=boardYaw 才对齐盘面 right。
+                -- 旧版横版特效漏设 rotation（yaw=0），而 seat0 盘面 yaw=180° → 条朝反向铺、锚哪端都反出去。
+                if blast then
+                    -- 【条长轴=资源本地 Y】竖版光束用 {X=-90,Z=boardYaw} 实跑正确（本地 Y 被立起成竖直）。
+                    -- 横版不立起时本地 Y 经 Yaw=θ 后沿 (-sinθ, cosθ)；要贴合盘面 right=(rx,ry) 需 θ=atan2(-rx,ry)。
+                    -- 而 boardYaw=atan2(rx,-ry)（forward=(-ry,rx)），二者恰差 180° → 横版必须 Yaw=boardYaw+180，
+                    -- 否则条朝 right 反方向铺：锚左端就往左射出盘外（实跑截图书证）。
+                    local forward = { X = -right.Y, Y = right.X, Z = 0 }
+                    local boardYaw = math.deg(atan2compat(forward.Y, forward.X)) or 0
+                    local flip = cl.BlastRowYawFlip180
+                    if flip == nil then flip = true end
+                    local yaw = boardYaw + (flip and 180 or 0)
+                    print("[Fx][Server/GS] 爆炸条朝向 row=" .. tostring(row) ..
+                        " right=(" .. tostring(right.X) .. "," .. tostring(right.Y) .. ")" ..
+                        " boardYaw=" .. tostring(boardYaw) .. " flip=" .. tostring(flip) ..
+                        " yaw=" .. tostring(yaw))
+                    pcall(function()
+                        if type(FRotator) == "table" and FRotator.MakeFromEuler then
+                            SceneEffectAPI.SetSceneEffectRotation(id, FRotator.MakeFromEuler(
+                                Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = yaw })))
+                        end
+                    end)
+                end
+                local scale = (blast and (cl.BlastRowEffectScale or cl.EffectScale))
+                    or cl.EffectScale or { X = 1, Y = 1, Z = 1 }
+                pcall(function()
+                    SceneEffectAPI.SetSceneEffectScale(id, Game:ConstructFVectorByLuaTable({
+                        X = scale.X or 1, Y = scale.Y or 1, Z = scale.Z or 1,
+                    }))
+                end)
+                made = made + 1
+                if blast then blastMade = blastMade + 1 end
+            end
+        end
+    end
+    print("[Fx][Server/GS] 消行粒子特效 seat=" .. tostring(seat) ..
+        " (human=" .. tostring(self._humanSeat) .. "/opp=" .. tostring(self._oppSeat) .. ")" ..
+        " 行数=" .. tostring(#rows) .. " 爆炸行=" .. tostring(blastMade) .. " 成功=" .. tostring(made) ..
+        " pos0=(" .. tostring(cx) .. "," .. tostring(cy) .. "," .. tostring(o.Z) .. ")")
+end
+
+-- [爆破特效] 服务端播爆破竖版光束（SceneEffectAPI 全类 ServerOnly，客户端不能调）。
+-- 爆破道具消除整列时 Board:clearLines 会写 pendingBlastFx={ {col,bottom,top}, ... }，
+-- 调用方在 doClear() 后 consumeBlastFx() 交给本方法；光束锚在该列盘底、由下往上播放。
+-- 旧 TetrisRenderer:PlayBlastEffectAt 随 P6 停掉 TetrisMatch 后不再运行，这里以服务端粒子复刻。
+-- 坐标：Domain API 米，直接取 _boardGeom 的 o/right，与 PlayClearFxForSeat 同一套几何。
+-- 【重要】seat 是纯几何槽位，调用方必须传 _humanSeat/_oppSeat，不能写死 0/1。
+-- @param seat number 几何槽位 0/1（对应 _boardGeom.o0/o1）
+-- @param blastFx table 爆破列列表 { {col, bottom, top}, ... }
+function ClassicGameState:PlayBlastFxForSeat(seat, blastFx)
+    if type(blastFx) ~= "table" or #blastFx == 0 then return end
+    if type(SceneEffectAPI) ~= "table" or not SceneEffectAPI.CreateSceneEffect then return end
+    local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
+    if not okCfg or type(C) ~= "table" then return end
+    local g = self._boardGeom
+    if not g then
+        if not self._blastFxGeomWarned then
+            self._blastFxGeomWarned = true
+            print("[Fx][Server/GS][WARN] 盘面几何未就绪，跳过爆破特效 seat=" .. tostring(seat))
+        end
+        return
+    end
+    local o = (seat == 1) and g.o1 or g.o0
+    local right = (seat == 1) and g.r1 or g.r0
+    if not o or not right then return end
+
+    local cl = C.Clear or {}
+    local r = C.Render or {}
+    local step = (r.CellSize or 1.0) + (r.CellGap or 0.02)
+    local key = cl.BlastEffectPresetKey or cl.EffectPresetKey or "13_EffectPreset_100032"
+    local ref = (type(AssetRef) == "table") and AssetRef[key] or nil
+    if not ref then
+        if not self._blastFxRefWarned then
+            self._blastFxRefWarned = true
+            print("[Fx][Server/GS][WARN] 爆破特效资源未注册 AssetRef[" .. tostring(key) .. "]")
+        end
+        return
+    end
+    local off = cl.BlastEffectOffset or {}
+    local erot = cl.BlastEffectRot or { X = -90, Y = 0, Z = 0 }
+    local sc = cl.BlastEffectScale or { X = 7, Y = 2.5, Z = 1 }
+    local dur = cl.EffectDuration or 0.5
+    -- 盘面朝向：right=(fry,-frx) → forward=(-right.Y,right.X)，与 _popupRendererForSeat 一致
+    local forward = { X = -right.Y, Y = right.X, Z = 0 }
+    local boardYaw = math.deg(atan2compat(forward.Y, forward.X)) or 0
+    local made = 0
+    for _, bf in ipairs(blastFx) do
+        local col = tonumber(bf.col) or 1
+        local bottom = tonumber(bf.bottom) or ((C.Board or {}).Rows or 20)
+        -- 锚点=该列盘底 cellLocation(bottom,col)，再叠加配置偏移（均为米）
         local pos = {
-            X = cx + right.X * side,
-            Y = cy + right.Y * side,
-            Z = o.Z - (row - 1) * step + (off.Z or 0),
+            X = o.X + right.X * ((col - 1) * step) + (off.X or 0),
+            Y = o.Y + right.Y * ((col - 1) * step) + (off.Y or 0),
+            Z = o.Z - (bottom - 1) * step + (off.Z or 0),
         }
         local ok, id = pcall(function()
             return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), dur)
         end)
         if ok and id and id ~= 0 then
+            -- 竖版光束：Pitch/Roll 由 BlastEffectRot 给出，Yaw 叠 boardYaw 正对玩家
+            pcall(function()
+                if type(FRotator) == "table" and FRotator.MakeFromEuler then
+                    SceneEffectAPI.SetSceneEffectRotation(id, FRotator.MakeFromEuler(
+                        Game:ConstructFVectorByLuaTable({
+                            X = erot.X or 0, Y = erot.Y or 0, Z = boardYaw + (erot.Z or 0),
+                        })))
+                end
+            end)
             pcall(function()
                 SceneEffectAPI.SetSceneEffectScale(id, Game:ConstructFVectorByLuaTable({
-                    X = scale.X or 1, Y = scale.Y or 1, Z = scale.Z or 1,
+                    X = sc.X or 1, Y = sc.Y or 1, Z = sc.Z or 1,
                 }))
             end)
             made = made + 1
         end
     end
-    print("[Fx][Server/GS] 消行粒子特效 seat=" .. tostring(seat) ..
+    print("[Fx][Server/GS] 爆破竖版光束 seat=" .. tostring(seat) ..
         " (human=" .. tostring(self._humanSeat) .. "/opp=" .. tostring(self._oppSeat) .. ")" ..
-        " 行数=" .. tostring(#rows) .. " 成功=" .. tostring(made) ..
-        " pos0=(" .. tostring(cx) .. "," .. tostring(cy) .. "," .. tostring(o.Z) .. ")")
+        " 列数=" .. tostring(#blastFx) .. " 成功=" .. tostring(made) ..
+        " yaw=" .. tostring(boardYaw))
 end
 
 -- [消行飘字] 3D Actor UI（ServerOnly）：复用旧 TetrisScorePopup，按 seat 几何把 +XX / 连击评价
@@ -800,13 +944,28 @@ function ClassicGameState:Auth_Piece(seq, pieceType, rot, x, y)
         while guard < 8 and (b.lockPaused or b.clearing) do
             guard = guard + 1
             local scoreBefore = b.score or 0
-            if b.lockPaused then pcall(function() b:doClear() end) end
+            -- [爆破行预检] doClear 前满行仍在网格里，先查出含爆破块的行号；清行后就查不到了。
+            local blastRows = nil
+            if b.lockPaused then
+                local okPre, rowsPre = pcall(function() return b:getFullRows() end)
+                if okPre and rowsPre and #rowsPre > 0 then
+                    local okB, br = pcall(function() return b:getBlastRows(rowsPre) end)
+                    if okB and br and #br > 0 then blastRows = br end
+                end
+                pcall(function() b:doClear() end)
+            end
             -- [特效] 我方盘消行：doClear 后取被消行号播粒子特效（ServerOnly，服务端播全员可见）。
             local rows = b:consumeClearedRows()
+            -- [爆破特效] doClear 清整列时置的 pendingBlastFx，服务端播竖版光束（与消行特效同源同 seat）
+            local blastFx = b:consumeBlastFx()
             if rows and #rows > 0 then
                 -- [特效] 我方盘用真人实际 seat（可能 0 或 1），不写死，避免与对方盘特效互换
                 local mySeat = self._humanSeat or 0
-                pcall(function() self:PlayClearFxForSeat(mySeat, rows) end)
+                -- 爆炸行传 blastRows：这些行改用与竖版相同的 100032，不播普通 3617487677
+                pcall(function() self:PlayClearFxForSeat(mySeat, rows, blastRows) end)
+                if blastFx and #blastFx > 0 then
+                    pcall(function() self:PlayBlastFxForSeat(mySeat, blastFx) end)
+                end
                 -- [飘字] 3D Actor 弹 +XX / 连击评价（delta=本次消行得分增量）
                 local delta = (b.score or 0) - scoreBefore
                 pcall(function()

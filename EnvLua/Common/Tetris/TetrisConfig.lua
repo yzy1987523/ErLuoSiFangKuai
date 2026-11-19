@@ -18,6 +18,10 @@ TetrisConfig.Clear = {
     -- 客户端化后本地盘靠重力 tick 自驱动推进，EffectDuration=1 会让盘面冻结 1s+ 显得"卡住"，
     -- 故逻辑恢复用更短的 ResumeDelay；粒子特效仍按 EffectDuration 播放，视觉不受影响。
     ResumeDelay = 0.3,
+    -- 【特效提前起播】满行亮起(lockPaused)后先让服务端播消行/爆炸特效，等这么久再 doClear+坍塌。
+    -- 旧版 ClearRowWidget.PreClearDelay(0.25s，特效空白帧)在客户端化后丢失，导致特效落在大脑感知的坍塌之后。
+    -- 设 0.5 = 特效领先坍塌 0.5s（用户要求）。改这里同时影响真人盘(ClientGame)与 AI 盘(driver)。
+    PreClearDelay = 0.5,
     ClearDelay = 1,    -- 单位：秒（旧字段，保留兼容）。消除→下落→出块 的总窗口。
     LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
     -- 【正常消行】资源 + 尺寸 + 位置（与下方「爆炸消行」是两套独立配置，互不影响）。
@@ -37,12 +41,19 @@ TetrisConfig.Clear = {
     -- 与上方正常消行分开设置：改这里的 Scale / Offset 不会影响 3617487677，反之亦然。
     BlastRowEffectPresetKey = "13_EffectPreset_100032",
     BlastRowEffectScale = { X = 7.0, Y = 1.5, Z = 1.0 },  -- 换特效前的 EffectScale 原值（8f72054 之前）
-    -- 换特效前的 EffectPositionOffset 原值 {X=0,Y=-5.25,Z=0}：代码按旧算法把 X/Y 投影到盘面 right 后平移，
-    -- 即旧特效原本的落点；Z 为竖直微调。语义与 EffectSideOffsetM 不同，不要互换。
-    BlastRowEffectPositionOffset = { X = 0.0, Y = -5.25, Z = 0.0 },
-    -- 可选覆盖：填数字则改用与正常行相同的「沿 right 平移 N 米」标量定位（双盘一致）；
-    -- 留 nil = 严格保持上面的旧投影行为，也就是之前看到的位置。
-    BlastRowEffectSideOffsetM = nil,
+    -- 【2026-11-19 修正】原值 {X=0,Y=-5.25,Z=0} 走旧投影算法（along=off.X*right.X+off.Y*right.Y），
+    -- 但两个盘的 right 方向相反（seat0≈(0,-1)、seat1≈(0,+1)），投影后世界偏移都朝 -Y，
+    -- 玩家视角变成"一个偏左一个偏右"，且真人 seat 每局互换 → 横版爆炸特效位置每次都不一样。
+    -- 现改用下面的标量 SideOffsetM 定位（沿各盘自身 right 平移），X/Y 不再参与；仅 Z 作竖直微调。
+    BlastRowEffectPositionOffset = { X = 0.0, Y = 0.0, Z = 0.0 },
+    -- 【生效的定位方式】数字 = 沿盘面本地 right 平移 N 米（正=玩家右手侧，负=左手侧，0=盘心）。
+    -- 双盘各自沿自身 right，视觉一致。注意：资源 100032 的视觉中心与正常行 3617487677 不同，
+    -- 不能直接照搬正常行的 side=1（实跑偏右不少）；0 = 盘心，如需微调再按视觉左右改正负。
+    BlastRowEffectSideOffsetM = 0,
+    -- 【爆炸横条朝向】条长轴=资源本地 Y。横版必须 Yaw=boardYaw+180 才能贴盘面 right 铺满整行，
+    -- 否则条朝 right 反向铺出盘外（锚左端往左射）。true=+180（正确）；false=上一版反向行为（对比用）。
+    -- 代码读 cl.BlastRowYawFlip180，nil 时也按 true 处理。
+    BlastRowYawFlip180 = true,
     -- 两种横版特效共用 EffectDuration / 朝向 / 行中心；下方 BlastEffectPresetKey 的竖版光束
     --（按列锚定盘底、带 -90° 旋转）是另一套表现，会与爆炸行横版特效同时播放。
     -- 爆破道具竖版消除特效：道具爆破改为一整列消除，在该列「最下方块」处由下往上播放竖版光束。
@@ -210,7 +221,7 @@ TetrisConfig.Pieces = {
 TetrisConfig.Item = {
     Debug = false,                     -- 调试：打印 2D 图片解析 / 3D 组件生成与定位日志（上线前改 false）
     DebugFirstItem = true,            -- 【调试】true = 本局第一个方块强制为 FirstItemType（便于单独测试某一种道具效果）
-    FirstItemType = 12,                 -- 【调试】DebugFirstItem 开启时，首块强制的道具类型（与 PieceType.ITEM_* 对应，默认 9=爆破）
+    FirstItemType = 9,                 -- 【调试】DebugFirstItem 开启时，首块强制的道具类型（与 PieceType.ITEM_* 对应，默认 9=爆破）
     -- 道具概率（基于「落地方块数」，替代旧的概率/大袋方案）：
     ItemWarmup = 10,                  -- 前 N 个普通方块必为普通（道具不出现）
     ItemStartProb = 0.5,              -- 第 N+1 个起，道具起始概率（0.5 = 50%）
