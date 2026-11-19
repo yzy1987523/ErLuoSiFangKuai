@@ -4,7 +4,9 @@
 --   1. 不设置 board.game —— Board 残留的 UI/音效回调自然失效，表现只由 pending* 数据标记驱动。
 --   2. 跨端 requester 用 playerKey 数字，不持有对方 Game 对象。
 --   3. 所有 UI 表现通过 BuildUIState() 输出；渲染通过 renderer 接口；跨端通过 versus 接口。
---   4. 定时器统一走注入的 scheduler:After(seconds, fn)（引擎侧用 AddTimerOnce 递归实现）。
+--   4. 定时器统一走注入的 scheduler.After(seconds, fn)（点号调用；引擎侧用 AddTimerOnce 递归实现）。
+--      【坑】注入端 After(delay,fn) 是点号签名，若用冒号 `scheduler:After` 会把 scheduler 表当首参传入，
+--      delay 收到表、fn 收到数字 → AddTimerOnce 失败且被 pcall 吞掉 → 定时器（含提示图隐藏）永不触发。
 local Config = require("EnvLua.Common.Tetris.TetrisConfig")
 local TetrisAI = require("EnvLua.Common.Tetris.TetrisAI")
 local Interfaces = require("EnvLua.Client.Tetris.Interfaces")
@@ -24,7 +26,8 @@ function ClientGame:new(board, deps)
     o.board = board
     o.renderer = deps.renderer
     o.versus = deps.versus
-    o.scheduler = deps.scheduler or { After = function(_, fn) fn() end }
+    o.audio = deps.audio   -- [音效] AudioManager 实例（客户端可用），仅真人盘注入
+    o.scheduler = deps.scheduler or { After = function(delay, fn) fn() end }
     o.playerKey = deps.playerKey or 0
     o.isAI = deps.isAI == true
     o.quality = deps.quality or 1.0
@@ -38,6 +41,12 @@ function ClientGame:new(board, deps)
     o.s07Charged = false
     o.hints = {}
     o.lastSkill = nil
+    -- [表现] Combo 图边沿检测：每次真实消行 comboSeq+1、clearRows=本次行数，供 UI 显示/换图
+    o.comboSeq = 0
+    o.clearRows = 0
+    -- [表现] 扔垃圾提示：我方发出待落地的垃圾行数（>0 显示 Send 图，定时清零）
+    o.garbageSent = 0
+    o._garbageSentSeq = 0
 
     -- 状态机
     o.running = false
@@ -59,7 +68,11 @@ end
 
 function ClientGame:_hint(name, seconds)
     self.hints[name] = true
-    self.scheduler:After(seconds or 1.7, function() self.hints[name] = nil end)
+    local dur = seconds or 1.7
+    self.scheduler.After(dur, function()
+        self.hints[name] = nil
+        print("[Hint] 到期清除 " .. tostring(name) .. " (" .. tostring(dur) .. "s)")
+    end)
 end
 
 -- ===================== 技能（数据层效果，不写控件） =====================
@@ -94,6 +107,8 @@ function ClientGame:UseSkill(key)
 
     self.power = self.power - 1
     self.lastSkill = key
+    -- [音效] 技能释放音（对齐旧 TetrisGame:PlaySkillSound）
+    if self.audio and self.audio.PlaySkill then pcall(function() self.audio:PlaySkill() end) end
     local def = Config.Skills[key] or {}
 
     if key == "SK01" then
@@ -127,23 +142,53 @@ function ClientGame:OnVersusFeedback(kind, fromKey)
     if kind == "swapLanded" then self.cd.SK08 = nil end
 end
 
--- 接收对手施加的减益（由上层 Protocol 调用，纯数据写入 Board）
+-- 受术方本地的"施法方替身"：跨端无法传真实施法方对象，用 no-op stub 让 Board 的减益
+-- 状态机（spawn 应用 noRotate/swapLR、lock 解除）能推进。施法方 UI 由施法方本地 UseSkill 负责。
+-- Board 在 spawnPiece 诊断行会直接调 stub:GetPlayerState()（无 pcall），故这些方法必须齐全。
+function ClientGame:_makeRequesterStub()
+    return {
+        isAI = true,
+        s08Charged = false,
+        GetPlayerState = function() return nil end,
+        ShowRotationRestrictCasterUI = function() end,
+        ShowS08Indicator = function() end,
+        UpdateSkillUI = function() end,
+    }
+end
+
+-- 接收对手施加的减益（由 Battle:OnVersusEvent 调用，纯数据写入 Board）
 function ClientGame:ApplyVersusEffect(kind, n, fromKey)
     local b = self.board
     if kind == "noRotate" then
         b.noRotateNext = (b.noRotateNext or 0) + (n or 1)
-        b.pendingRotateLockRequesterKey = fromKey
+        b.pendingRotateLockRequester = self:_makeRequesterStub()
         self:_hint("NoRotateImg", 1.7)
     elseif kind == "swap" then
         b.swapRequested = true
-        b.pendingSwapRequesterKey = fromKey
+        b.pendingSwapRequester = self:_makeRequesterStub()
+        self._swapFromKey = fromKey or 0   -- 记录施法方，落地后回执 swapLanded 解其 CD
         self:_hint("FlipImg", 1.7)
     elseif kind == "garbage" then
         b:addGarbage(n or 0)
-        self:_hint("GarbageImg", 1.7)
+        -- 收垃圾提示改由状态驱动的图片系统（garbageRecv → _syncGarbageHints）负责，
+        -- 不再用一次性 GarbageImg 文本提示（会在垃圾升起前就 1.7s 消失）。
     elseif kind == "rockfall" then
         b:queueRockfall(n or 5)
+        self:_hint("StoneImg", 1.7)
     end
+end
+
+-- [对战] 轮询：受术方的 swap 减益被 Board 消费（当前块落地）后，回执施法方解除 SK08 CD。
+-- 由 Battle 的 gravityTick 每帧调用（ClientGame.tick 有多个 early-return，放这里可靠）。
+function ClientGame:pollVersusFeedback()
+    local b = self.board
+    local cur = (b.swapRequested == true)
+    if self._prevSwapRequested == true and cur == false and self._swapFromKey then
+        self:_emitVersus("swapLanded", 0)
+        print("[Versus][Client] swapLanded 回执 → fromKey=" .. tostring(self._swapFromKey))
+        self._swapFromKey = nil
+    end
+    self._prevSwapRequested = cur
 end
 
 -- ===================== 消行结算（强时序，清单 §3） =====================
@@ -154,6 +199,13 @@ function ClientGame:_startClearSequence(cleared)
     end
     self._clearBusy = true
     self._clearLastCount = cleared
+    -- [表现] 触发 Combo 图：序号递增（边沿）+ 记录本次消除行数（换图）
+    self.comboSeq = (self.comboSeq or 0) + 1
+    self.clearRows = cleared
+    -- [音效] 消行 + Combo 音（对齐旧 TetrisGame:PlayLineClearSound）
+    if self.audio and self.audio.PlayLineClear then
+        pcall(function() self.audio:PlayLineClear(cleared, self.board.combo or 0) end)
+    end
     self._clearTarget = CLEAR_CFG.ResumeDelay or 0.3
     self._clearElapsed = 0
     print("[ClearDbg] _startClearSequence 开始 cleared=" .. tostring(cleared) ..
@@ -183,7 +235,7 @@ function ClientGame:_startClearSequence(cleared)
 
     -- After 只作快速通道；回调内也 pcall 防止引擎吞错。tick 自驱动是可靠兜底。
     local okTimer, errTimer = pcall(function()
-        self.scheduler:After(self._clearTarget, function()
+        self.scheduler.After(self._clearTarget, function()
             local okF, errF = pcall(function() self:_finishClearSequence(cleared) end)
             if not okF then print("[ClearDbg][ERR] After回调内finish失败: " .. tostring(errF)) end
         end)
@@ -221,7 +273,20 @@ function ClientGame:_finishClearSequence(cleared)
 
         -- 7) 结算跨端攻击 + 技能收尾
         local outgoing = b:consumeOutgoingGarbage() or 0
-        if outgoing > 0 then self:_emitVersus("garbage", outgoing) end
+        if outgoing > 0 then
+            self:_emitVersus("garbage", outgoing)
+            -- [表现] 点亮"扔垃圾"提示：我方发出 N 行；对手盘垃圾升起时机客户端不可见，
+            -- 用固定时长降级（GarbageHint.SendDuration，默认 2.2s）后清零隐藏。
+            self._garbageSentSeq = (self._garbageSentSeq or 0) + 1
+            local seq = self._garbageSentSeq
+            self.garbageSent = outgoing
+            local gameRef = self
+            self.scheduler.After(Config.GarbageHint and Config.GarbageHint.SendDuration or 2.2, function()
+                -- 代际令牌：只有本次发送的定时器能清，避免连续发送相同行数时串扰
+                if gameRef._garbageSentSeq == seq then gameRef.garbageSent = 0 end
+            end)
+            print("[Hint] 扔垃圾 Send 提示 +" .. tostring(outgoing) .. " 行")
+        end
         self.lastOutgoing = outgoing
 
         if self.s06Charged then
@@ -234,8 +299,14 @@ function ClientGame:_finishClearSequence(cleared)
         local charge = b.pendingItemCharge or 0
         if charge > 0 then
             b.pendingItemCharge = 0
-            for _ = 1, charge do self:_addBar() end
+            -- [数值对齐] 服务端 ConsumeItemCharge：每个充能块直接 +1 power（受 MaxPower 限制），
+            -- 不走 _addBar（3 换 1）。否则充能道具效力被削弱到 1/3。
+            local maxPower = SKILL_CFG.MaxPower or 3
+            self.power = math.min(self.power + charge, maxPower)
             self:_hint("ChargeItemImg", 1.7)
+            if self.audio and self.audio.PlayItem then
+                pcall(function() self.audio:PlayItem("charge") end)
+            end
         end
     end)
     if not ok then print("[ClearDbg][ERR] _finishClearSequence 内部报错(已隔离): " .. tostring(err)) end
@@ -271,12 +342,12 @@ function ClientGame:_scheduleRockfall()
         end
         local still = self.board:stepStones()
         if still then
-            self.scheduler:After(interval, step)
+            self.scheduler.After(interval, step)
         else
             self._rockTimer = nil
         end
     end
-    self.scheduler:After(interval, step)
+    self.scheduler.After(interval, step)
 end
 
 -- ===================== 主循环 =====================
@@ -395,12 +466,17 @@ function ClientGame:BuildUIState()
     us.lines = b.lines or 0
     us.level = b.level or 1
     us.combo = b.combo or 0
+    us.comboSeq = self.comboSeq or 0
+    us.clearRows = self.clearRows or 0
     us.skillPower = self.power
     us.skillBars = self.bars
     us.skillCd = {}
     for k in pairs(self.cd) do us.skillCd[k] = true end
     us.hintImages = {}
     for k in pairs(self.hints) do us.hintImages[k] = true end
+    -- [垃圾提示] RECV=我盘待注入行数；SEND=我方已发出待落地行数
+    us.garbageRecv = b.pendingGarbage or 0
+    us.garbageSent = self.garbageSent or 0
     us.pendingSwap = b.swapLrRequesterKey ~= nil or b.pendingSwapNext == true
     us.pendingNoRotate = b.rotateLockRequesterKey ~= nil or b.noRotateNext > 0
     return us

@@ -1091,8 +1091,8 @@ TetrisConfig.NameUI = {
 -- 仅作"准备阶段空闲展示"：显示 Panel + BtnClose；不再使用分页说明图。
 -- OpenBtn 已移至 TetrisConfig.DetailHelp（点它打开详细帮助，归 TetrisDetailHelp 配置/接管）。
 TetrisConfig.HelpUI = {
-    Panel     = ci("1_CreativeInstance_23643900490162089"),  -- 空闲展示容器
-    BtnClose  = ci("1_CreativeInstance_23643898864466685"),  -- 关闭（隐藏本界面，回到「开始游戏」界面）
+    -- Panel     = ci("1_CreativeInstance_23643900490162089"),  -- 空闲展示容器
+    -- BtnClose  = ci("1_CreativeInstance_23643898864466685"),  -- 关闭（隐藏本界面，回到「开始游戏」界面）
 }
 
 -- ===================== 详细帮助界面（由准备阶段界面的 OpenBtn 打开） =====================

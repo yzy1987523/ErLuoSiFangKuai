@@ -25,17 +25,22 @@ Interfaces.RenderState = {
 ---@field lines number
 ---@field level number
 ---@field combo number
+---@field comboSeq number          -- 每次真实消行 +1，供 UI 做 Combo 图显示的边沿检测
+---@field clearRows number         -- 本次消除行数（1..5），供 ComboImgByRows 换图
+---@field energyBar number|nil     -- 能量进度条控件 InstanceID（可选；缺省用 Config.Skill.EnergyBar）
 ---@field skillPower number        -- 当前 power 数 0..3
 ---@field skillCd table<string, boolean>  -- 各技能冷却标记 {SK06=true,...}
 ---@field opponentScore number
 ---@field hintImages table<string, boolean> -- 道具提示图显隐 {BlastImg=true,...}
+---@field garbageRecv number        -- 我盘待注入垃圾行数（被攻击，>0 显示 Recv 图；升起归零时隐藏）
+---@field garbageSent number        -- 我方已发出、尚未在对手盘升起的垃圾行数（>0 显示 Send 图）
 ---@field lang number              -- 1=zh 2=en 3=ar
 ---@field pendingSwap boolean      -- SK08 受害者左右对调中（UI 轮询显示 3 图）
 ---@field pendingNoRotate boolean  -- SK01 受害者禁止转动中
 Interfaces.UIState = {
-    score = 0, lines = 0, level = 1, combo = 0,
+    score = 0, lines = 0, level = 1, combo = 0, comboSeq = 0, clearRows = 0,
     skillPower = 0, skillCd = {}, opponentScore = 0,
-    hintImages = {}, lang = 2,
+    hintImages = {}, garbageRecv = 0, garbageSent = 0, lang = 2,
     pendingSwap = false, pendingNoRotate = false,
 }
 
@@ -62,8 +67,8 @@ function Interfaces.NewRenderState() return {
     grid = {}, active = nil, ghost = nil, nextQueue = {}, holdType = nil, effects = {},
 } end
 function Interfaces.NewUIState() return {
-    score = 0, lines = 0, level = 1, combo = 0, skillPower = 0,
-    skillCd = {}, opponentScore = 0, hintImages = {}, lang = 2,
+    score = 0, lines = 0, level = 1, combo = 0, comboSeq = 0, clearRows = 0, skillPower = 0,
+    skillCd = {}, opponentScore = 0, hintImages = {}, garbageRecv = 0, garbageSent = 0, lang = 2,
     pendingSwap = false, pendingNoRotate = false,
 } end
 function Interfaces.NewVersusEvent(kind, n, fromKey, payload) return {

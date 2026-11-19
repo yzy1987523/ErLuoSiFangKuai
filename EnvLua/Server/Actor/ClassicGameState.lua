@@ -4,6 +4,10 @@ local ClassicGameState = {}
 
 local WoWClassicGameState = require("EnvLua.Core.WoWClassicGameState")
 local TetrisConfig = require("EnvLua.Common.Tetris.TetrisConfig")
+-- [结算] 触发引擎胜负/积分/队伍 Domain API 注入（均 ServerOnly，须在服务端脚本 require）
+pcall(require, "EnvLua.Core.LuaHint.GameOutcomeAPI")
+pcall(require, "EnvLua.Core.LuaHint.BattleDataAPI")
+pcall(require, "EnvLua.Core.LuaHint.PlayerAPI")
 local TetrisBackgroundWidget = require("EnvLua.Server.Tetris.TetrisBackgroundWidget")  -- 正确版：基于出生点装置生成远景背景挂件
 local TetrisScene3DUIServer = require("EnvLua.Server.Tetris.TetrisScene3DUIServer")
 
@@ -181,6 +185,7 @@ function ClassicGameState:OnReceiveBeginPlay()
         self:RegisterServerFunction("Auth_TopOut")           -- [P8] 客户端显式上报顶出，服务端据此权威判 over
         self:RegisterServerFunction("P7_ReportBigFrame")     -- [BigFrame3D] 客户端上报 hold/next/backlight，服务端灌 3D 大框
         self:RegisterServerFunction("P7_PlayerReady")        -- [P7] 双方就绪：客户端选完技能上报，服务端仲裁后广播 AllReady
+        self:RegisterServerFunction("P5_VersusEvent")        -- [对战] 技能/垃圾/减益跨端事件中转
     end)
     print("[P0][Server/GS] RegisterServerFunction = " .. tostring(okReg) .. " " .. tostring(errReg))
 
@@ -574,35 +579,96 @@ function ClassicGameState:P0_OnClientPing(msg)
     print("[P0][Server/GS] P0_OnClientPing 收到客户端调用: " .. tostring(msg))
 end
 
--- ===== P5：结算上报（胜数榜：赢 +1，输不扣）=====
+-- ===== P5：结算上报（胜数榜 + 引擎胜负/积分 + 权威判定）=====
 -- 一局结束客户端调一次；单人打 AI 也走这里（win=true 时 playerKey 是本地玩家）。
+-- 【权威判定】单人模式用服务端影子盘的 Auth_TopOut 标记覆盖客户端自报：真人被权威判顶出→必输，
+-- 防止客户端误判/虚报。双人模式影子盘只有一份（混双盘），权威标记不可靠，仍沿用客户端上报。
+-- 【引擎上报】GameOutcomeAPI.SetTeamRoundOutcome / BattleDataAPI.SetPlayerIntegral 均 ServerOnly，
+-- 只能在这里调；队伍 ID 取 PlayerAPI.GetPlayerTeamID，取不到回退玩家列表序号。
 function ClassicGameState:P5_ReportResult(win, playerKey)
-    print("[P5][Server/GS] ReportResult win=" .. tostring(win) .. " playerKey=" .. tostring(playerKey))
-    if type(RankAPI) ~= "table" then return end
+    print("[P5][Server/GS] ReportResult 自报win=" .. tostring(win) .. " playerKey=" .. tostring(playerKey))
     local okCfg, Config = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
     if not okCfg or not Config then return end
-    local rt = rankType(Config)
     local players = Game:GetAllPlayerStates()
     if not players or not players.Num then return end
+
+    -- 真人数（LuaArray 0 基）：单人(含 AI)才启用权威覆盖
+    local playerCount = players:Num()
+    local finalWin = (win == true)
+    if playerCount < 2 and self._authTopOutReported then
+        if finalWin then
+            print("[P5][Server/GS] 权威改判：客户端自报赢，但服务端权威顶出已确认 → 改判输")
+        end
+        finalWin = false
+    end
+
+    -- ===== 胜数榜（赢 +1，输不扣）=====
+    local rt = rankType(Config)
     for i = 0, players:Num() - 1 do
         local ps = players:Get(i)
         if ps and ps.GetPlayerKey and ps:GetPlayerKey() == playerKey then
-            if win then
-                local cur = 0
-                if RankAPI.GetPlayerScore then
-                    local okScore, v = pcall(function() return RankAPI.GetPlayerScore(ps, rt) end)
-                    if okScore and type(v) == "number" then cur = v end
+            if type(RankAPI) == "table" then
+                if finalWin then
+                    local cur = 0
+                    if RankAPI.GetPlayerScore then
+                        local okScore, v = pcall(function() return RankAPI.GetPlayerScore(ps, rt) end)
+                        if okScore and type(v) == "number" then cur = v end
+                    end
+                    local newVal = cur + 1
+                    pcall(function() RankAPI.SubmitScore(ps, rt, newVal) end)
+                    print("[P5][Server/GS] 玩家 " .. tostring(playerKey) .. " 胜数 " .. tostring(cur) .. " → " .. tostring(newVal))
+                else
+                    print("[P5][Server/GS] 玩家 " .. tostring(playerKey) .. " 输，不扣胜数")
                 end
-                local newVal = cur + 1
-                pcall(function() RankAPI.SubmitScore(ps, rt, newVal) end)
-                print("[P5][Server/GS] 玩家 " .. tostring(playerKey) .. " 胜数 " .. tostring(cur) .. " → " .. tostring(newVal))
-            else
-                print("[P5][Server/GS] 玩家 " .. tostring(playerKey) .. " 输，不扣胜数")
             end
             break
         end
     end
-    if RankAPI.RefreshRank then pcall(function() RankAPI.RefreshRank(rt) end) end
+    if type(RankAPI) == "table" and RankAPI.RefreshRank then pcall(function() RankAPI.RefreshRank(rt) end) end
+
+    -- ===== 引擎胜负/积分上报（ServerOnly，仅服务端）=====
+    local settle = Config.Settle or {}
+    if settle.ReportOutcome == false then return end
+    if type(GameOutcomeAPI) ~= "table" or type(GameOutcomeAPI.SetTeamRoundOutcome) ~= "function" then
+        print("[Outcome][Server/GS][WARN] GameOutcomeAPI 不可用，跳过引擎胜负上报")
+        return
+    end
+    local O = settle.OutcomeType or { Win = 1, Lose = 2, Draw = 3 }
+    for i = 0, players:Num() - 1 do
+        local ps = players:Get(i)
+        if ps then
+            -- 队伍 ID：真人队伍取 PlayerAPI 真实 teamID；取不到回退玩家列表序号（稳定唯一）
+            local teamID = nil
+            pcall(function()
+                if type(PlayerAPI) == "table" and type(PlayerAPI.GetPlayerTeamID) == "function" then
+                    teamID = PlayerAPI.GetPlayerTeamID(ps)
+                end
+            end)
+            if type(teamID) ~= "number" then teamID = i + 1 end
+            -- 结算发起方按权威结果定胜负；其余真人（双人对手）取反。单人只有发起方一个真人。
+            local key = 0
+            pcall(function() if ps.GetPlayerKey then key = ps:GetPlayerKey() or 0 end end)
+            -- 显式判断，避免 `(a) and finalWin or (not finalWin)` 在 finalWin=false 时被 or 分支翻转
+            local thisWin
+            if key == playerKey then
+                thisWin = finalWin
+            else
+                thisWin = not finalWin
+            end
+            local outcome = thisWin and O.Win or O.Lose
+            local okReport, errReport = pcall(function()
+                GameOutcomeAPI.SetTeamRoundOutcome(teamID, outcome, thisWin)
+            end)
+            print("[Outcome][Server/GS] 队伍#" .. tostring(teamID) .. " key=" .. tostring(key) ..
+                " outcome=" .. tostring(outcome) .. " endFighting=" .. tostring(thisWin) ..
+                " ok=" .. tostring(okReport) .. (okReport and "" or (" err=" .. tostring(errReport))))
+            -- 积分：推权威盘分数（单人准；双人影子盘混合，仅作参考）
+            if type(BattleDataAPI) == "table" and type(BattleDataAPI.SetPlayerIntegral) == "function" then
+                local score = (self._authBoard and self._authBoard.score) or 0
+                pcall(function() BattleDataAPI.SetPlayerIntegral(ps, score) end)
+            end
+        end
+    end
 end
 
 -- ===== P5：排行榜读取（GetTopN → S2C 回传）=====
@@ -648,6 +714,25 @@ function ClassicGameState:P5_ReportSnapshot(snap)
         self:CallClientFunctionMulticast("P5_OpponentSnapshot", snap)
     end)
     if not okSend then print("[P5][Server/GS] 快照中转失败: " .. tostring(err)) end
+end
+
+-- ===== 对战事件中转：技能减益/垃圾行/落石 C→S→C 广播 =====
+-- 客户端施法方把 (kind, n, fromKey, payload) 上报，服务端广播给所有客户端；
+-- 各客户端 OnVersusEvent 按 fromKey 过滤自己后，把效果写进本地镜像盘。
+-- 【单人兜底】单人打 AI 时没有真人接收方；减益直接作用于本地 AI 盘由客户端 AIDriver 决定，
+-- 这里仅做中转，不额外处理。payload 保留给未来的扩展（如 swapLanded 回执）。
+function ClassicGameState:P5_VersusEvent(kind, n, fromKey, payload)
+    if type(kind) ~= "string" then return end
+    local ok, err = pcall(function()
+        self:CallClientFunctionMulticast("P5_VersusEvent", kind, tonumber(n) or 0,
+            tonumber(fromKey) or 0, payload)
+    end)
+    if not ok then
+        print("[Versus][Server/GS] 中转失败: " .. tostring(err))
+        return
+    end
+    print("[Versus][Server/GS] 中转 kind=" .. tostring(kind) .. " n=" .. tostring(n) ..
+        " fromKey=" .. tostring(fromKey))
 end
 
 -- ===== P7：选完技能后隐藏 Mask 场景对象（对齐历史 TetrisSkillSelect:HideSceneObjectsOnce）=====

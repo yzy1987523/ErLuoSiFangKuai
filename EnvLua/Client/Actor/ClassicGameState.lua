@@ -20,6 +20,14 @@ function ClassicGameState:P5_OpponentSnapshot(snap)
     pcall(Battle.Current.OnOpponentSnapshot, Battle.Current, snap)
 end
 
+-- ===== 对战事件接收（服务端 P5_VersusEvent 中转广播）→ 转给 Battle 的 OnVersusEvent =====
+function ClassicGameState:P5_VersusEvent(kind, n, fromKey, payload)
+    local okBT, Battle = pcall(require, "EnvLua.Client.Tetris.TetrisClientBattle")
+    if okBT and Battle.Current and Battle.Current.OnVersusEvent then
+        pcall(Battle.Current.OnVersusEvent, Battle.Current, kind, n, fromKey, payload)
+    end
+end
+
 -- ===== P7：双方就绪广播（服务端仲裁双方/AI都准备好后下发，两端一起进 loading）=====
 function ClassicGameState:P7_AllReady(gen)
     print("[P7][Ready][Client/GS] AllReady 收到 gen=" .. tostring(gen))

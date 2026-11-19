@@ -264,6 +264,11 @@ function TetrisClient:_startBattle()
         -- 难度传给 AI（单人时 Battle 会用服务端 AI，难度影响 quality）
         self.battle.quality = self.aiQuality or 0.8
         self.battle.aiName = self.aiName or "AI"
+        -- [技能修复] 把选中的技能 key 传给 Battle → ClientGame:SetSkills + ClientInput（否则技能全部不可用）
+        self.battle.selectedSkill = self.selectedSkill
+        -- [音效修复] 把 AudioManager 传给 Battle → ClientGame（消行/Combo/技能/道具音效）
+        self.battle.audio = selfRef.audio
+        print("[Skill] TetrisClient 注入选中技能=" .. tostring(self.selectedSkill))
         self.battle:Start()
         -- [P7/BigFrame3D] 缓冲后再隐藏 loading + 启动重力：
         -- Start() 已立即上报 hold/next，等 BIGFRAME_WARMUP_SEC 让 RPC 往返把服务端 3D 大框灌好，

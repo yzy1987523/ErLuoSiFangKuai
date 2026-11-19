@@ -84,6 +84,12 @@ function ClientUI:new(host, ps, deps)
     o._hintHidden = false
     o._visible = {}       -- 控件显隐权威缓存：id -> bool（避免重复写）
     o._languageSelfKeys = {}  -- ps/key 双写（清单 §11 坑 9）
+    -- [表现层] 对战 HUD 瞬时提示同步状态
+    o._hintShown = {}         -- hint name -> true（当前已显示，供 diff 避免每帧写）
+    o._lastComboSeq = 0       -- 上次处理的消行序号（边沿检测）
+    o._comboHideTimer = nil   -- Combo 图隐藏定时器（连消刷新窗口）
+    o._lastEnergyPct = nil    -- 能量条上次写入值（避免每帧写进度条）
+    o._lastReady = nil        -- 技能就绪图上次状态
     -- 【诊断】登记准备界面控件，追踪每次显隐写入（确认"开始显示→后来隐藏"由哪处触发）
     local H = Config.HelpUI or {}
     if H.Panel then TRACE_IDS[H.Panel] = "HelpUI.Panel" end
@@ -145,6 +151,22 @@ function ClientUI:Image(id, key)
     if not r then return end
     writeWidget(id, function(target)
         CustomUIAPI.SetImageWidgetContent(self.ps, target, r)
+    end)
+end
+
+-- 按钮换图专用：按钮控件必须用 SetButtonNormalImage / SetButtonPressedImage；
+-- SetImageWidgetContent 是图片控件专用，对按钮静默失败（多语言切换按钮图不换的根因）。
+-- key 为资源 key 字符串（如 "23_ImagePreset_xxx"），内部转 AssetRef 句柄。
+function ClientUI:ButtonImage(id, key, pressed)
+    if not id or not key then return end
+    local r = ref(key)
+    if not r then return end
+    writeWidget(id, function(target)
+        if pressed then
+            CustomUIAPI.SetButtonPressedImage(self.ps, target, r)
+        else
+            CustomUIAPI.SetButtonNormalImage(self.ps, target, r)
+        end
     end)
 end
 
@@ -317,6 +339,9 @@ function ClientUI:InitializeAll()
     -- 开局控件仍在异步就绪，延迟补写一次标志隐藏（用户若已打开语言面板则跳过）
     self.host:AddTimerOnce(0.3, function()
         if self.screen ~= "lang" then self:_hideLangIndicators() end
+        -- 编辑器预置的多语言图全是中文，开局这次 SetLang 写入时控件可能尚未就绪而丢失；
+        -- 0.3s 后按当前语言重刷一次 Contents，保证常驻控件也切到默认语言。
+        self:_applyLangContents()
     end)
 end
 
@@ -416,6 +441,7 @@ function ClientUI:ShowStart()
             self:ShowForce(S.StartPanel)
             self:ShowForce(S.StartBtn)
             self:_showStartEntrancesForce()
+            self:_applyLangContents()   -- 面板带出的多语言按钮/图恢复编辑器中文，按当前语言重刷
             -- 引擎异步带出子控件时可能把 opacity 恢复，再压一次准备界面透明度防重复出现。
             self:Opacity(H.Panel, 0.0)
             self:WidgetOpacity(H.BtnClose, 0.0)
@@ -469,6 +495,10 @@ function ClientUI:ShowAIDifficulty()
         self:Show(A.BtnEasy, true)
         self:Show(A.BtnNormal, true)
         self:Show(A.BtnHard, true)
+        -- AI 难度按钮（Contents 第22~24项）是多语言按钮，父面板带出后按当前语言重刷
+        self.host:AddTimerOnce(0.25, function()
+            if self.screen == "difficulty" then self:_applyLangContents() end
+        end)
     end)
 end
 
@@ -555,6 +585,7 @@ function ClientUI:ShowSkillSelect()
             if self.screen ~= "skillSelect" then return end
             self:_initSkillPanelShown()
             self:_applySkillSlots()
+            self:_applyLangContents()   -- 技能面板带出的多语言按钮图按当前语言重刷
         end)
     end)
 end
@@ -621,10 +652,15 @@ function ClientUI:ShowLoading()
         self:_setHudVisible(true)   -- ① 先显示 GamePanel（对局 HUD 父容器）
         -- ② 再隐藏临时提示图：它们是 GamePanel 子控件，父容器显示会带出，必须在显示之后藏
         self:_hideTransientHints()
+        -- ③ GamePanel 带出的多语言图会被引擎恢复成编辑器预置的中文，必须按当前语言重刷一次
+        self:_applyLangContents()
         print("[P7][Ready][ClientUI] Loading 显隐清单已应用：显示 LoadingScreen/进度条/对局HUD；隐藏 技能面板/WaitHint/临时提示图")
-        -- ③ 父容器异步带出子控件，延迟补写一次确保干净
+        -- ④ 父容器异步带出子控件，延迟补写一次确保干净（隐藏 + 语言图重刷都要补）
         self.host:AddTimerOnce(0.3, function()
-            if self._loadingVisible then self:_hideTransientHints() end
+            if self._loadingVisible then
+                self:_hideTransientHints()
+                self:_applyLangContents()
+            end
         end)
         self:_setLoadingProgress(0)
         self._loadingVisible = true
@@ -757,7 +793,14 @@ function ClientUI:_applyLangContents()
     for _, item in ipairs(L.Contents or {}) do
         if item.txt and item.texts then self:Text(item.txt, item.texts[self.lang]) end
         if item.img and item.imgs then self:Image(item.img, item.imgs[self.lang]) end
-        if item.btn and item.btnNormal then self:Image(item.btn, item.btnNormal[self.lang]) end
+        if item.btn and item.btnNormal then
+            local normalKey = item.btnNormal[self.lang]
+            self:ButtonImage(item.btn, normalKey, false)
+            -- 按下图缺失时回退到当前语言的常态图（对齐服务端 TetrisLang.ApplyContents），
+            -- 否则按下态永远显示编辑器预置图、不随语言切换。
+            local pressedKey = (item.btnPressed and item.btnPressed[self.lang]) or normalKey
+            self:ButtonImage(item.btn, pressedKey, true)
+        end
     end
 end
 
@@ -834,7 +877,7 @@ function ClientUI:SetPlayerInfo(myName, oppName, myAvatar, oppAvatar)
         " / " .. tostring(oppName) .. " idx=" .. tostring(oppAvatar))
 end
 
--- ===== 对战 HUD（只收 UIState + 对手分数） =====
+-- ===== 对战 HUD（收 UIState + 对手分数，驱动所有即时表现）=====
 function ClientUI:UpdateHUD(state, opponentScore)
     if type(state) ~= "table" then return end
     local U = Config.UI or {}
@@ -842,14 +885,245 @@ function ClientUI:UpdateHUD(state, opponentScore)
     self:Text(U.LinesLabel, state.lines)
     self:Text(U.LevelLabel, state.level)
     if opponentScore ~= nil then self:Text(U.OpponentScoreLabel, opponentScore) end
-    -- 技能能量条倒置渲染：写值=(1-进度)×100（清单 §7）
-    local need = Config.Skill and Config.Skill.NeedBars or 3
-    local progress = ((state.skillBars or 0) / need)
+
+    self:_syncEnergyBar(state)
+    self:_syncReadyAndPower(state)
+    self:_syncCombo(state)
+    self:_syncTransientHints(state.hintImages)
+    self:_syncGarbageHints(state)
+end
+
+-- 能量条：倒置渲染，写值=(1-bars/need)×100；设置 Min/Max/Value，值变化才写（避免刷屏）。
+function ClientUI:_syncEnergyBar(state)
+    local S = Config.Skill or {}
+    local id = state.energyBar or S.EnergyBar
+    if not id then return end
+    local need = S.NeedBars or 3
+    local progress = (state.skillBars or 0) / need
+    if progress > 1 then progress = 1 end
     local inverted = (1 - progress) * 100
-    if state.energyBar then writeWidget(state.energyBar, function(target)
-        CustomUIAPI.SetProgressBarWidgetMaxValue(self.ps, target, 100)
-    end) end
-    self._invertedEnergy = inverted
+    -- Max 设一次；Value 每次都要写（引擎进度条值不缓存），但值相同则跳过减少 RPC
+    if self._energyBarId ~= id then
+        self._energyBarId = id
+        writeWidget(id, function(target)
+            CustomUIAPI.SetProgressBarWidgetMinValue(self.ps, target, 0)
+            CustomUIAPI.SetProgressBarWidgetMaxValue(self.ps, target, 100)
+        end)
+        self._lastEnergyPct = nil
+    end
+    if self._lastEnergyPct ~= inverted then
+        self._lastEnergyPct = inverted
+        writeWidget(id, function(target)
+            CustomUIAPI.SetProgressBarWidgetValue(self.ps, target, inverted)
+        end)
+    end
+end
+
+-- 技能就绪图 + Power 槽：有 power 且目标技能就绪时点亮 ReadyImg；按钮透明度按 power 调。
+function ClientUI:_syncReadyAndPower(state)
+    local S = Config.Skill or {}
+    local power = state.skillPower or 0
+    local ready = power > 0
+    if self._lastReady ~= ready then
+        self._lastReady = ready
+        if ready then self:ShowForce(S.ReadyImg) else self:HideForce(S.ReadyImg) end
+    end
+    -- Power 槽换图：按 power 数把对应槽换成满图/空图
+    local slots = S.PowerSlots or {}
+    for i, sid in ipairs(slots) do
+        local key = (i <= power) and S.PowerFullImg or S.PowerEmptyImg
+        if key then self:Image(sid, key) end
+    end
+end
+
+-- Combo 图：comboSeq 递增（真实消行）时按本次行数换图并显示，ComboImgDuration 秒后隐藏；连消刷新窗口。
+function ClientUI:_showComboImage(rows)
+    local U = Config.UI or {}
+    local id = U.ComboImg
+    if not id then return end
+    local byRows = U.ComboImgByRows or {}
+    local rowKey = byRows[rows] or byRows[5]
+    if rowKey then self:Image(id, rowKey) end
+    self:ShowForce(id)
+    if self._comboHideTimer then
+        pcall(function() self.host:RemoveTimer(self._comboHideTimer) end)
+        self._comboHideTimer = nil
+    end
+    local dur = U.ComboImgDuration or 1.7
+    self._comboHideTimer = self.host:AddTimerOnce(dur, function()
+        self:HideForce(id)
+        self._comboHideTimer = nil
+    end)
+end
+
+function ClientUI:_syncCombo(state)
+    local seq = state.comboSeq or 0
+    if seq > (self._lastComboSeq or 0) then
+        self._lastComboSeq = seq
+        self:_showComboImage(state.clearRows or 0)
+    end
+end
+
+-- 瞬时提示图：按 hintImages 集合 diff 显示/隐藏。显示=ShowForce(恢复 opacity)+换图，隐藏=HideForce。
+-- name → {控件 id 列表} 映射，覆盖 ClientGame 所有 _hint(name) 名称。
+function ClientUI:_syncTransientHints(hints)
+    hints = (type(hints) == "table") and hints or {}
+    local U = Config.UI or {}
+    local S = Config.Skill or {}
+    local skills = Config.Skills or {}
+    local SK01 = skills.SK01 or {}
+    local SK06 = skills.SK06 or {}
+    local SK07 = skills.SK07 or {}
+    local SK08 = skills.SK08 or {}
+    -- 名称 → 控件列表（有的名称对应两张图，如 Shift/Flip）
+    local MAP = {
+        BlastImg      = { U.BlastImg },
+        ChargeItemImg = { U.ChargeItemImg },
+        StoneImg      = { U.StoneImg },
+        ShiftImg      = { U.ShiftImg1, U.ShiftImg2 },
+        NoRotateImg   = { SK01.rotLockCasterImg, SK01.rotLockVictimImg },
+        FlipImg       = { SK08.indicator, SK08.flipVictimImgs[1], SK08.flipVictimImgs[2], SK08.flipVictimImgs[3] },
+        S07Indicator  = { SK07.cdIndicator },
+        AttackBuffImg = { SK06.attackBuffImg },
+    }
+    -- 先处理"当前有、上次无"（新触发）：显示
+    for name, ids in pairs(MAP) do
+        local want = hints[name] == true
+        if want and not self._hintShown[name] then
+            self._hintShown[name] = true
+            for _, id in ipairs(ids) do
+                if id then self:ShowForce(id) end
+            end
+            print("[ClientUI][Hint] 显示 " .. name .. " → " .. tostring(#ids) .. " 控件")
+        end
+    end
+    -- BigTip：单独遍历所有 BigTip_SKxx（任一为真时显示大图并换图）
+    local anyBigTip = nil
+    for name, _ in pairs(hints) do
+        if type(name) == "string" and name:sub(1, 8) == "BigTip_S" then anyBigTip = name break end
+    end
+    if anyBigTip and not self._hintShown.BigTip then
+        self._hintShown.BigTip = true
+        self:ShowForce(S.BigTipInstance)
+        self:_syncBigTipImage(hints)
+        print("[ClientUI][Hint] 显示 BigTip: " .. tostring(anyBigTip))
+    end
+    -- 再处理"上次有、当前无"（到期）：隐藏。BigTip 延后到单独判定（上面 anyBigTip）
+    for name, ids in pairs(MAP) do
+        if self._hintShown[name] and hints[name] ~= true then
+            self._hintShown[name] = nil
+            for _, id in ipairs(ids) do
+                if id then self:HideForce(id) end
+            end
+        end
+    end
+    if self._hintShown.BigTip and not anyBigTip then
+        self._hintShown.BigTip = nil
+        self:HideForce(S.BigTipInstance)
+    end
+end
+
+-- 技能中央大图换图：按当前提示的技能 key + 语言取图（无多语图时回退该技能 imageKey）。
+function ClientUI:_syncBigTipImage(hints)
+    local S = Config.Skill or {}
+    local id = S.BigTipInstance
+    if not id then return end
+    for name, _ in pairs(hints) do
+        if type(name) == "string" and name:sub(1, 8) == "BigTip_S" then
+            local key = name:sub(8)
+            local def = Config.Skills and Config.Skills[key]
+            local imgKey = nil
+            local multi = Config.SkillBigTipImages and Config.SkillBigTipImages[key]
+            if multi then imgKey = multi[self.lang] end
+            if not imgKey and def then imgKey = def.imageKey end
+            if imgKey then self:Image(id, imgKey) end
+            return
+        end
+    end
+end
+
+-- ===================== 垃圾行提示（状态驱动，对齐旧 TetrisGame:UpdateGarbageHints） =====================
+-- Recv（被攻击）：我盘 pendingGarbage>0 时显示当前语言 Recv 底图+数字图，垃圾升起归零时隐藏。
+-- Send（我攻击）：garbageSent>0 时显示当前语言 Send 底图+数字图，归零时隐藏。
+-- 12 组件 = 3语言×{Send,Recv}×{base,num}；底图已在场景按语言+类型设好，运行时只显隐 + 给 num 换图。
+function ClientUI:_garbageComp(typeKey, lang)
+    local G = Config.GarbageHint or {}
+    local comp = G.Components and G.Components[lang] and G.Components[lang][typeKey]
+    return comp, G
+end
+
+-- 隐藏某类型全部 3 语言的 base+num（语言切换/归零时用）
+function ClientUI:_hideAllGarbage(typeKey)
+    for l = 1, 3 do
+        local comp = self:_garbageComp(typeKey, l)
+        if comp then
+            self:HideForce(comp.base)
+            self:HideForce(comp.num)
+        end
+    end
+end
+
+-- 点亮某类型当前语言组件 + 设置数字图（行数 1~8）
+function ClientUI:_flashGarbage(typeKey, count)
+    local lang = self.lang or 2
+    local comp, G = self:_garbageComp(typeKey, lang)
+    if not comp then return end
+    -- 先隐藏其它语言，避免残留
+    for l = 1, 3 do
+        if l ~= lang then
+            local other = self:_garbageComp(typeKey, l)
+            if other then self:HideForce(other.base); self:HideForce(other.num) end
+        end
+    end
+    -- 数字图换图（语言无关共用）
+    local n = math.max(1, math.min(count or 1, 8))
+    local numKey = G.NumImages and G.NumImages[n]
+    if numKey and comp.num then self:Image(comp.num, numKey) end
+    self:ShowForce(comp.base)
+    self:ShowForce(comp.num)
+end
+
+function ClientUI:_syncGarbageHints(state)
+    local G = Config.GarbageHint or {}
+    if G.Enabled == false then return end
+    local recv = state.garbageRecv or 0
+    local sent = state.garbageSent or 0
+
+    -- RECV：状态翻转时点亮/隐藏；数量变化时只换数字图
+    if recv > 0 then
+        if not self._recvShowing then
+            self:_flashGarbage("Recv", recv)
+            self._recvShowing = true
+            print("[Hint] 收垃圾 Recv 提示 +" .. tostring(recv) .. " 行")
+        elseif self._recvCount ~= recv then
+            local comp, cfg = self:_garbageComp("Recv", self.lang or 2)
+            local n = math.max(1, math.min(recv, 8))
+            local numKey = cfg.NumImages and cfg.NumImages[n]
+            if numKey and comp and comp.num then self:Image(comp.num, numKey) end
+        end
+    elseif self._recvShowing then
+        self:_hideAllGarbage("Recv")
+        self._recvShowing = false
+        print("[Hint] 收垃圾 Recv 提示隐藏（垃圾已升起）")
+    end
+    self._recvCount = recv
+
+    -- SEND：状态翻转时点亮/隐藏；数量变化只换数字图
+    if sent > 0 then
+        if not self._sendShowing then
+            self:_flashGarbage("Send", sent)
+            self._sendShowing = true
+        elseif self._sendCount ~= sent then
+            local comp, cfg = self:_garbageComp("Send", self.lang or 2)
+            local n = math.max(1, math.min(sent, 8))
+            local numKey = cfg.NumImages and cfg.NumImages[n]
+            if numKey and comp and comp.num then self:Image(comp.num, numKey) end
+        end
+    elseif self._sendShowing then
+        self:_hideAllGarbage("Send")
+        self._sendShowing = false
+    end
+    self._sendCount = sent
 end
 
 -- ===== 结算（显示双方分数+胜者；ExitBtn 语义=重置） =====

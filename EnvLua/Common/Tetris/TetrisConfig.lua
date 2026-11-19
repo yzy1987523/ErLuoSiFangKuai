@@ -816,6 +816,9 @@ TetrisConfig.ItemHintImages = {
 -- nil 时 FlashGarbageHint/HideGarbageHint/UpdateGarbageHints 自动跳过，不报错。
 TetrisConfig.GarbageHint = {
     Enabled = true,
+    -- 客户端降级：我方发出垃圾后 SEND 提示的固定显示时长（秒）。旧版靠对手盘垃圾升起归零隐藏，
+    -- 客户端拿不到对手盘 pendingGarbage，故用定时降级。
+    SendDuration = 2.2,
     Components = {
         [1] = {  -- zh
             Send = { base = ci("1_CreativeInstance_23643902307206943"), num = ci("1_CreativeInstance_23643900084761451") },

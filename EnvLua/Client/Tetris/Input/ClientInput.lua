@@ -18,10 +18,12 @@ local EV_RELEASE = 120002
 
 ---@param host table 注册事件/定时器的宿主（WoWObject，通常为 ClientGameMain）
 ---@param sink table 动作接收方（ClientGame，实现 ApplyAction(action)）
-function ClientInput:new(host, sink)
+---@param skillKey string|nil 当前选中的技能 key（单技能设计）；skill 动作按此值释放
+function ClientInput:new(host, sink, skillKey)
     local o = setmetatable({}, self)
     o.host = host
     o.sink = sink
+    o.skillKey = skillKey
     o.enabled = false
 
     local inputCfg = Config.Input or {}
@@ -61,7 +63,10 @@ function ClientInput:_onClicked(instanceID)
     elseif a == "roll" then self:_dispatch("rotate", 1)
     elseif a == "down" then self:_dispatch("hardDrop")
     elseif a == "hold" then self:_dispatch("hold")
-    elseif a == "skill" then self:_dispatch("skill") end
+    elseif a == "skill" then
+        if self.skillKey then self:_dispatch("skill", self.skillKey)
+        else print("[ClientInput] 技能按钮点击但未注入 skillKey，忽略") end
+    end
 end
 
 -- 长按开始：左右进入 DAS→ARR 连发；下键进入软降连发

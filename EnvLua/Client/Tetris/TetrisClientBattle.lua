@@ -35,6 +35,10 @@ function TetrisClientBattle:new(host)
     o.onPlayerInfo = nil
     o.quality = 0.8
     o.aiName = "AI"
+    -- [技能] 由 TetrisClient 在开局前注入已选技能 key（单技能设计），传给 ClientGame 与 ClientInput
+    o.selectedSkill = nil
+    -- [音效] 由 TetrisClient 注入的 AudioManager 实例，传给 ClientGame
+    o.audio = nil
     -- [P7] 盘面基底 + 下落门控：必须「基底已到」且「loading 已隐藏」才开始下落
     o._boardReady = false
     o._loadingHidden = false
@@ -94,6 +98,22 @@ function TetrisClientBattle:OnAuthAck(seq, score, lines, over)
                 " 本地=" .. tostring(localScore) .. "/" .. tostring(localLines) ..
                 " 服务端=" .. tostring(score) .. "/" .. tostring(lines))
         end
+    end
+end
+
+-- [对战] 收到服务端中转的 versus 事件（技能减益/垃圾/落石）：过滤自己 → 转给逻辑层写镜像盘
+function TetrisClientBattle:OnVersusEvent(kind, n, fromKey, payload)
+    local from = tonumber(fromKey) or 0
+    -- multicast 会回传发送者本人：自己发的事件不作用于自己
+    if from ~= 0 and from == self.selfKey then return end
+    if not self.localGame then return end
+    print("[Versus][Client] 收到 kind=" .. tostring(kind) .. " n=" .. tostring(n) ..
+        " from=" .. tostring(from) .. " selfKey=" .. tostring(self.selfKey))
+    if kind == "swapLanded" then
+        -- 回执：我施加的 SK08 已在对手盘落地 → 解我方 CD
+        pcall(function() self.localGame:OnVersusFeedback(kind, from) end)
+    else
+        pcall(function() self.localGame:ApplyVersusEffect(kind, n, from) end)
     end
 end
 
@@ -176,13 +196,34 @@ function TetrisClientBattle:Start()
     self.localRenderer = ClientRenderer:new(originLocal, right)
     self.oppRenderer = ClientRenderer:new(originOpp, right)
 
+    -- [对战] 先取真实玩家 key：versus 事件按 fromKey 过滤自己，必须用真实 key 而非占位 1
+    pcall(function()
+        local ps = Game:GetPlayerStateByPlayerKey(nil)
+        if ps and ps.GetPlayerKey then self.selfKey = ps:GetPlayerKey() or 0 end
+    end)
+
     local board = Board:new()
     self.localGame = ClientGame:new(board, {
         renderer = self.localRenderer,
-        versus = { Send = function() end },  -- P4-1 单人不需要对战事件
+        -- [对战] versus.Send 用冒号调用，首参是 versus 表本身；上报到服务端中转广播
+        versus = { Send = function(_, kind, n, fromKey, payload)
+            pcall(function()
+                local gs = Game:GetGameState()
+                if gs then gs:CallServerFunction("P5_VersusEvent", kind, n, fromKey, payload) end
+            end)
+            print("[Versus][Client] 上报 kind=" .. tostring(kind) .. " n=" .. tostring(n) ..
+                " from=" .. tostring(fromKey))
+        end },
         scheduler = { After = function(delay, fn) self.host:AddTimerOnce(delay, fn) end },
-        playerKey = 1,
+        playerKey = self.selfKey,
+        audio = self.audio,
     })
+    -- [技能修复] 把开局前注入的已选技能传给逻辑层，否则 selectedSkills 恒空 → UseSkill 永远 notSelected
+    if self.selectedSkill then
+        pcall(function() self.localGame:SetSkills({ self.selectedSkill }) end)
+    end
+    print("[Skill] 已选技能注入: " .. tostring(self.selectedSkill) ..
+        " → selectedSkills=" .. tostring(#(self.localGame.selectedSkills or {})))
     -- [P7] 不再立即 Start：等「盘面基底已到 + loading 已隐藏」才在 _tryBeginFall 里启动（原 self.localGame:Start() 已迁出）
     print("[P4] 本地盘 ClientGame 已构建（等待盘面基底）, 重力间隔=" .. tostring(board:getGravityInterval()))
 
@@ -222,7 +263,7 @@ function TetrisClientBattle:Start()
             return v
         end,
     })
-    self.input = ClientInput:new(self.host, inputSink)
+    self.input = ClientInput:new(self.host, inputSink, self.selectedSkill)
     self.input:Enable()
     print("[P4] ClientInput 已启用，可点击左右/旋转/下落按钮操作本地盘")
 
@@ -245,36 +286,14 @@ function TetrisClientBattle:Start()
         if gs then gs:CallServerFunction("P7_RequestPlayerInfo") end
     end)
 
-    -- [P5-5b] 判断模式：玩家数>=2 双人，否则单人打 AI
-    local playerCount = 0
+    -- [P5-5b/权威人数] 模式判断推迟到盘面基底就绪后，用服务端下发的 seat(playerKey) 判定。
+    -- 本地 GetAllPlayerStates 只作兜底（可能只返回 relevant 玩家→误判单人），见 _setupMode。
+    local fallbackCount = 0
     pcall(function()
         local ps = Game:GetAllPlayerStates()
-        if ps and ps.Num then playerCount = ps:Num() end
+        if ps and ps.Num then fallbackCount = ps:Num() end
     end)
-    self.isVersus = playerCount >= 2
-    print("[P5-5b] 玩家数=" .. tostring(playerCount) .. " 模式=" .. (self.isVersus and "双人" or "单人AI"))
-
-    if self.isVersus then
-        -- 双人：定期上报本地盘快照给服务端中转（带 senderKey）
-        local battleRef = self
-        local function reportSnapshot()
-            if not battleRef.running or not battleRef.localGame then return end
-            local snap = Snapshot.Capture(battleRef.localGame.board, { tag = "versus", senderKey = battleRef.selfKey })
-            pcall(function()
-                local gs = Game:GetGameState()
-                if gs then gs:CallServerFunction("P5_ReportSnapshot", snap) end
-            end)
-            battleRef.host:AddTimerOnce(0.3, reportSnapshot)
-        end
-        self.host:AddTimerOnce(0.3, reportSnapshot)
-    else
-        -- 单人：请求服务端启动 AI。服务端不再有开局自动兜底，AI 仅由这里（真正进入 Battle 后）触发，
-        -- 避免玩家还在开始界面时 AI 独自跑完整局；服务端 P5_RequestAI 内部幂等（已运行则跳过）。
-        pcall(function()
-            local gs = Game:GetGameState()
-            if gs then gs:CallServerFunction("P5_RequestAI", self.quality or 0.8) end
-        end)
-    end
+    self._fallbackPlayerCount = fallbackCount
 
     -- [P7] 盘面基底：优先取开局广播缓存，否则请求服务端重发；5s 超时用占位基底保证不卡死
     local pending = TetrisClientBattle.PendingBoardTransform
@@ -292,9 +311,41 @@ function TetrisClientBattle:Start()
         if not battleRef._boardReady and battleRef.running then
             print("[P7][Battle][WARN] 盘面基底 5s 未到，使用占位基底继续")
             battleRef._boardReady = true
+            battleRef:_setupMode(nil)   -- 无权威 seat 数据，回退本地人数
             battleRef:_tryBeginFall()
         end
     end)
+end
+
+-- [P5-5b/权威人数] 用服务端下发的 seat.playerKey（非0=该 seat 有真人）判定单/双人，启动对应流程。
+-- 幂等：_modeStarted 保证 AI/快照上报只启动一次。realCount 为 nil 时回退本地 GetAllPlayerStates 值。
+function TetrisClientBattle:_setupMode(realCount)
+    if self._modeStarted or not self.running then return end
+    local count = realCount
+    if count == nil then count = self._fallbackPlayerCount or 0 end
+    self.isVersus = count >= 2
+    self._modeStarted = true
+    print("[P5-5b] 模式确定(权威人数=" .. tostring(count) .. ") → " .. (self.isVersus and "双人" or "单人AI"))
+    if self.isVersus then
+        -- 双人：定期上报本地盘快照给服务端中转（带 senderKey）
+        local battleRef = self
+        local function reportSnapshot()
+            if not battleRef.running or not battleRef.localGame then return end
+            local snap = Snapshot.Capture(battleRef.localGame.board, { tag = "versus", senderKey = battleRef.selfKey })
+            pcall(function()
+                local gs = Game:GetGameState()
+                if gs then gs:CallServerFunction("P5_ReportSnapshot", snap) end
+            end)
+            battleRef.host:AddTimerOnce(0.3, reportSnapshot)
+        end
+        self.host:AddTimerOnce(0.3, reportSnapshot)
+    else
+        -- 单人：请求服务端启动 AI（仅进入 Battle 后触发，服务端 P5_RequestAI 幂等）
+        pcall(function()
+            local gs = Game:GetGameState()
+            if gs then gs:CallServerFunction("P5_RequestAI", self.quality or 0.8) end
+        end)
+    end
 end
 
 -- [P7] 应用服务端下发的盘面基底（seats 为两个 seat 表，按 playerKey 匹配自己/对手）。
@@ -326,6 +377,14 @@ function TetrisClientBattle:OnBoardTransform(seats)
     end
     self._boardSeats = seats
     self._boardReady = true
+    -- [权威人数] 两个 seat 中 playerKey 非 0 的个数 = 服务端权威真人数（单人另一 seat 为 0）
+    local realCount = 0
+    for _, s in ipairs(seats) do
+        if type(s) == "table" and type(s.playerKey) == "number" and s.playerKey ~= 0 then
+            realCount = realCount + 1
+        end
+    end
+    self:_setupMode(realCount)
     print("[P7][Battle] 盘面基底已应用 我方 origin=(" .. tostring(mine.origin.X) .. "," ..
         tostring(mine.origin.Y) .. "," .. tostring(mine.origin.Z) .. ") 对手 origin=(" ..
         tostring(other.origin.X) .. "," .. tostring(other.origin.Y) .. "," .. tostring(other.origin.Z) .. ")")
@@ -369,10 +428,26 @@ function TetrisClientBattle:_tryBeginFall()
     self.localGame:Start()
     print("[P4] BeginFall：loading已隐藏+盘面基底已就绪，本地盘开始下落")
     local selfRef = self
+    -- [初始消行] 对齐旧 TetrisGame:ProcessInitialClears：开局预填满行立即无分消除（不计分/不污染combo）
+    local IC = Config.InitialLayout or {}
+    if IC.Enabled and IC.AutoClearOnStart then
+        self.host:AddTimerOnce(0.3, function()
+            if not selfRef.running or not selfRef.localGame then return end
+            local b = selfRef.localGame.board
+            if not b or b:isOver() then return end
+            local n = b:clearLines(false)
+            if n and n > 0 then
+                pcall(function() selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState()) end)
+                print("[Init] 开局预填消行 " .. tostring(n) .. " 行（不计分）")
+            end
+        end)
+    end
     local function gravityTick()
         if not selfRef.running or not selfRef.localGame then return end
         local okTick, errTick = pcall(function()
             selfRef.localGame:tick()
+            -- [对战] 轮询 swap 落地回执（解施法方 SK08 CD）
+            selfRef.localGame:pollVersusFeedback()
             selfRef.localRenderer:Update(selfRef.localGame:BuildRenderState())
             -- [BigFrame3D] 上报 hold/next/backlight 给服务端灌 3D 大框（变更检测，避免每帧发 RPC）
             selfRef:_reportBigFrame()
