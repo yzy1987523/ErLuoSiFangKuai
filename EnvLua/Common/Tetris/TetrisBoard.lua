@@ -1069,12 +1069,16 @@ function TetrisBoard:stepStones()
             s.row = nr
         end
     end
-    if self:hasFullRows() then
-        self:beginRockfallClear()
-        return false
-    end
+    -- [修复] 满行检测推迟到「所有石头都落定后」才判定：
+    -- 旧逻辑每下落一格就 hasFullRows()，导致某列石头刚停在顶行凑满一行时就立刻消行，
+    -- 其它仍在下落途中的石头被隔空清掉（用户看到"石头刚到顶行就消、没落到底"）。
+    -- 改为 #stones==0（全部落到堆积物上方）才统一结算：满行则消行，否则结束落石。
     if #self.stones == 0 then
-        self:onRockfallFallingDone()
+        if self:hasFullRows() then
+            self:beginRockfallClear()
+        else
+            self:onRockfallFallingDone()
+        end
         return false
     end
     return true

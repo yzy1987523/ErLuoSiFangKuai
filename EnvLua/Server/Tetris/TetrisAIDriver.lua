@@ -99,16 +99,24 @@ function TetrisAIDriver:_advanceClear(b)
                 print("[ClearDbg][AI] clearing 展示坍塌 left=" .. tostring(self._clearWait))
                 return
             end
-            -- [垃圾桥接] 对齐客户端 ClientGame:_finishClearSequence 的强时序：
-            -- 坍塌 → 垃圾升起 → 出块 → 消费 outgoing 上报给真人。旧 AI 只调 finishClear，
-            -- 漏了 applyGarbage（消行同时带 incoming 垃圾时不升起）与 outgoing 上报（AI 永不攻击）。
-            pcall(function() b:applyClearCollapse() end)
-            pcall(function() b:applyGarbage() end)
-            local ok, err = pcall(function() b:finishClear() end)
-            if not ok then print("[ClearDbg][AI][ERR] finishClear 报错: " .. tostring(err)) end
-            self:_flushOutgoingToHuman(b)
-            self._clearPhase = nil
-            print("[ClearDbg][AI] clearing 出块完成 active=" .. tostring(b:getActive() ~= nil))
+            -- [统一动画框架] 分阶段坍塌展示走完后，按消行来源分支收尾：
+            if self._clearIsRockfall then
+                -- 落石消行：不计分/不道具/不垃圾/不攻击，afterRockfallClear 决定继续落石或结束出块。
+                -- 坍塌（applyClearCollapse）已在 showRows→showCollapse 转换时执行，这里不重复。
+                pcall(function() b:afterRockfallClear() end)
+                self._clearIsRockfall = false
+                self._clearPhase = nil
+                print("[Rockfall][AI] 落石消行收尾完成 fallingStone=" .. tostring(b.fallingStone))
+            else
+                -- 普通消行：坍塌 → 垃圾升起 → 出块 → 消费 outgoing 上报给真人。
+                pcall(function() b:applyClearCollapse() end)
+                pcall(function() b:applyGarbage() end)
+                local ok, err = pcall(function() b:finishClear() end)
+                if not ok then print("[ClearDbg][AI][ERR] finishClear 报错: " .. tostring(err)) end
+                self:_flushOutgoingToHuman(b)
+                self._clearPhase = nil
+                print("[ClearDbg][AI] clearing 出块完成 active=" .. tostring(b:getActive() ~= nil))
+            end
             return
         else
             -- 兜底：clearing 挂起但无阶段记录 → 直接收尾，防止卡死
@@ -153,26 +161,37 @@ function TetrisAIDriver:_step()
     -- [节奏] 按 FallingStoneInterval（默认0.25s）累计时间才下落一格，与真人盘 ClientGame:_scheduleRockfall 一致，
     -- 不再每 0.1s 步长走一格（之前落石一闪而过看不到过程）。
     if b.fallingStone then
-        local stoneInterval = (TetrisConfig.Timing and TetrisConfig.Timing.FallingStoneInterval) or 0.25
-        self._stoneElapsed = (self._stoneElapsed or 0) + self.interval
-        if self._stoneElapsed >= stoneInterval then
-            self._stoneElapsed = self._stoneElapsed - stoneInterval
-            local more = false
-            pcall(function() more = b:stepStones() end)
-            -- 落石成行时 Board:beginRockfallClear 会回调 host.BeginRockfallClearSequence（若定义）；
-            -- AI driver 用简化同步收尾：清除(不计分)→坍塌，下一 tick 继续。
-            if b.clearing then
-                pcall(function()
-                    b:clearLines(false)
-                    b:applyClearCollapse()
-                    b:afterRockfallClear()
-                end)
+        -- [统一动画框架] 落石消行一旦进入 clearing，就交给 _advanceClear 走与普通消行相同的
+        -- showRows(0.6s)→坍塌→showCollapse(0.3s) 分阶段，不再同步瞬间收尾。
+        -- beginRockfallClear 兜底已 clearLines(false) 清满行+设 _clearFullRows/pendingClearedRows，动画数据齐备。
+        if b.clearing then
+            if self._clearPhase == nil then
+                -- 首次进入：取被消行号播特效 + 启动分阶段（与普通消行完全一致的前摇）
+                local rows = nil
+                pcall(function() rows = b:consumeClearedRows() end)
+                if rows and #rows > 0 and self.host and type(self.host.PlayClearFxForSeat) == "function" then
+                    local oppSeat = self.host._oppSeat or 1
+                    pcall(function() self.host:PlayClearFxForSeat(oppSeat, rows) end)
+                    print("[Rockfall][AI] 落石消行播特效 行数=" .. tostring(#rows))
+                end
+                self._clearIsRockfall = true
+                self._clearPhase = "showRows"
+                self._clearWait = 6
+                self:_broadcastSnapshot()
             end
-            self:_broadcastSnapshot()   -- 落石每下落一格发快照，客户端能看到逐格下落
+            -- 交回主状态机驱动分阶段（下面不 return，继续走 _advanceClear）
+        else
+            local stoneInterval = (TetrisConfig.Timing and TetrisConfig.Timing.FallingStoneInterval) or 0.25
+            self._stoneElapsed = (self._stoneElapsed or 0) + self.interval
+            if self._stoneElapsed >= stoneInterval then
+                self._stoneElapsed = self._stoneElapsed - stoneInterval
+                pcall(function() b:stepStones() end)
+                self:_broadcastSnapshot()   -- 落石每下落一格发快照，客户端能看到逐格下落
+            end
+            self.stepCount = self.stepCount + 1
+            self:_schedule()
+            return
         end
-        self.stepCount = self.stepCount + 1
-        self:_schedule()
-        return
     end
 
     self:_advanceClear(b)
