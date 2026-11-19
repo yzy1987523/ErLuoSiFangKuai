@@ -62,17 +62,28 @@ TetrisConfig.GarbageEffect = {
     Enabled = true,
     -- 拖尾粒子；须在 WOW Editor 注册 + update preset 后 AssetRef 才有该键，未注册时打印一次警告并跳过。
     PresetKey = "13_EffectPreset_1193030723",
+    -- [Actor版特效·2026-11-19] 用 EffectActor 替代 SceneEffect 两段式：粒子组件 effect_throw_1 已在编辑器设 AutoActivate，
+    -- Actor 一生成粒子自动播；服务端 CreateActor（会复制到客户端，全员可见）+ 逐帧传送实现真正连续飞行。
+    -- UseActorEffect=true 走 Actor 版；资源缺失或 CreateActor 失败时自动回退旧 SceneEffect 两段式。
+    -- SpawnSide="Client"=每个客户端本地生成（GarbageFxClient，双端各自可见）；"Server"=服务端统一播（全员一份）。
+    SpawnSide = "Client",
+    UseActorEffect = false,                        -- 客户端模式：服务端不再播，彻底避免双份叠加
+    ActorPresetKey = "46_ActorPreset_778521937",  -- EffectActor_Throw（已注册 AssetRef）
+    ActorScale = { X = 1, Y = 1, Z = 1 },          -- CreateActor 生成缩放（1.0=预设原始大小，拖尾尺寸在编辑器调组件）
+    ActorRotationBiasDeg = 0,                      -- 在"朝向飞行方向 yaw"基础上叠加的偏移，微调拖尾朝向
     AttachToActor = true,                             -- true = 特效附着隐形载体，由载体传送实现真位移
     CarrierActorPresetKey = "46_ActorPreset_1585104836",  -- 隐形根 EmptyActor（已注册，无可见几何）
     PoolSize = 2,                                     -- 载体预热数量；双方共用一份池
-    Duration = 1.0,                                    -- 特效总时长（秒），需 >= TravelDuration
-    TravelDuration = 0.6,                              -- 起点 → 终点的飞行时长（秒）
+    Duration = 1.6,                                    -- 特效总时长（秒），需 >= TravelDuration（含飞行到位后停留）
+    TravelDuration = 1.2,                              -- 起点 → 终点的飞行时长（秒）：0.6→1.2 放慢，约 13m/s
     TravelStep = 0.03,                                 -- 补间间隔（秒），越小轨迹越平滑
     Scale = { X = 3, Y = 3, Z = 3 },                  -- SetSceneEffectScale 绝对倍数（1.0 = 原始大小）
     SideOffsetM = 0,                                   -- 起点：最左列中心再沿 -right 外移 N 米
     DistanceFrontM = -0.5,                              -- 起点：沿 boardForward 的前置距离（米）
     HeightOffsetM = 0,                                 -- 起点：世界 +Z 微调（米）
-    TargetHeightOffsetM = 0,                           -- 终点：对手盘心再沿世界 +Z 微调（米）
+    TargetHeightOffsetM = 0,                           -- 终点：对手盘底行再沿世界 +Z 微调（米）
+    TargetRow = nil,                                   -- 终点行（1基，顶=1）；nil = 最下一行(Board.Rows)
+    TargetCol = 1,                                     -- 终点边缘所在的列（1基）：1=最左列边缘，Cols=最右列边缘
     HideLocM = { X = 0, Y = 0, Z = -200 },             -- 载体归还后的停放位置（米），无可见几何
 }
 

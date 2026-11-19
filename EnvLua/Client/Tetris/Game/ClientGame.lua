@@ -215,8 +215,12 @@ function ClientGame:_startClearSequence(cleared)
     -- 旧版这里任一步抛错会连带中断 scheduler:After 注册 + gravityTick 递归调度 → 表现为"消行卡住后一动不动"。
     -- [当前版本] 3D 消行框/爆破竖列框已去掉（用户要求）；仍消费标记避免数据残留。
     -- 消行表现靠服务端粒子特效（PlayClearFxForSeat）+ Combo图/分数提示。
+    -- [垃圾特效] 先取走本次消除行号并留存，供稍后发 garbage 时作 payload 带出（起点按真实消行位置）
     local okFx, errFx = pcall(function()
-        self.board:consumeClearedRows()
+        local rows = self.board:consumeClearedRows()
+        if rows and #rows > 0 then
+            self._lastClearRows = rows
+        end
         self.board:consumeBlastFx()
     end)
     if not okFx then print("[ClearDbg][ERR] 消行标记清理报错(已隔离): " .. tostring(errFx)) end
@@ -267,7 +271,8 @@ function ClientGame:_finishClearSequence(cleared)
         -- 7) 结算跨端攻击 + 技能收尾
         local outgoing = b:consumeOutgoingGarbage() or 0
         if outgoing > 0 then
-            self:_emitVersus("garbage", outgoing)
+            -- [垃圾特效] payload 带真实消行行号（对手据此定位拖尾起点）
+            self:_emitVersus("garbage", outgoing, self._lastClearRows)
             -- [表现] 点亮"扔垃圾"提示：我方发出 N 行；对手盘垃圾升起时机客户端不可见，
             -- 用固定时长降级（GarbageHint.SendDuration，默认 2.2s）后清零隐藏。
             self._garbageSentSeq = (self._garbageSentSeq or 0) + 1

@@ -167,31 +167,111 @@ function ClassicGameState:PlayScorePopupForSeat(seat, rows, delta, combo)
         " combo=" .. tostring(combo) .. " 显示=" .. tostring(res))
 end
 
--- [特效] 扔垃圾拖尾特效（ServerOnly 粒子）：起点=fromSeat 盘最左列/消行中行，终点=对手盘心。
--- 受 SceneEffectAPI 无有效位移接口所限（旧版 SetSceneEffectPosition 实跑原地不动），
--- 这里用「起点粒子 + 延迟在目标盘播到达粒子」两段式近似飞行，避免引入隐形载体 Actor 的复杂度。
+-- [Actor版特效辅助] 米 -> 厘米 FVector（Class API K2_TeleportTo 用厘米）
+local function fxCmVec(loc)
+    return Game:ConstructFVectorByLuaTable({
+        X = (loc.X or 0) * 100, Y = (loc.Y or 0) * 100, Z = (loc.Z or 0) * 100,
+    })
+end
+
+-- [Actor版特效辅助] yaw(度) -> FRotator，沿用项目 MakeFromEuler(Z=yaw) 约定；失败返回 nil。
+local function fxRotYaw(yawDeg)
+    local ok, rot = pcall(function()
+        if type(FRotator) == "table" and FRotator.MakeFromEuler then
+            return FRotator.MakeFromEuler(Game:ConstructFVectorByLuaTable({ X = 0, Y = 0, Z = yawDeg or 0 }))
+        end
+        return nil
+    end)
+    if ok and rot then return rot end
+    return nil
+end
+
+-- [Actor版特效] 扔垃圾拖尾（EffectActor_Throw）：
+-- 服务端 CreateActor → 该 Actor 的粒子组件 effect_throw_1 已设 AutoActivate，生成即播；
+-- 逐帧 K2_TeleportTo 传送 Actor 本体实现连续飞行（服务端创建会复制到客户端，全员可见）；
+-- 终点停住，Duration 后 DestroyActor。任一关键 API 不可用则 return false 让调用方回退旧粒子。
+local function playGarbageFxActor(self, actorRef, gc, fromPos, targetPos, fromSeat, targetSeat, rows)
+    if not actorRef then return false end
+    if type(CreativeGameAPI) ~= "table" or not CreativeGameAPI.CreateActor
+        or not CreativeGameAPI.DestroyActor then return false end
+
+    local aScale = gc.ActorScale or { X = 1, Y = 1, Z = 1 }
+    local scaleVec = Game:ConstructFVectorByLuaTable({
+        X = aScale.X or 1, Y = aScale.Y or 1, Z = aScale.Z or 1,
+    })
+    local bias = (type(gc.ActorRotationBiasDeg) == "number") and gc.ActorRotationBiasDeg or 0
+    local spawnRot = fxRotYaw(bias) or fxRotYaw(0)   -- 编辑器已定朝向，默认零旋转+可调 bias
+    local okA, actor = pcall(function()
+        return CreativeGameAPI.CreateActor(actorRef, Game:ConstructFVectorByLuaTable(fromPos), spawnRot, scaleVec, nil)
+    end)
+    if not okA or not actor then
+        if not self._gfxActorFailWarned then
+            self._gfxActorFailWarned = true
+            print("[Fx][Server/GS][WARN] 垃圾特效 Actor CreateActor 失败，回退 SceneEffect: " .. tostring(actor))
+        end
+        return false
+    end
+
+    -- K2_TeleportTo 的 DestRotation 不能为 nil：优先取 Actor 自身真实旋转。
+    local moveRot = spawnRot
+    local okR, realRot = pcall(function()
+        if type(actor.K2_GetActorRotation) == "function" then return actor:K2_GetActorRotation() end
+        return nil
+    end)
+    if okR and realRot then moveRot = realRot end
+
+    local travel = (type(gc.TravelDuration) == "number") and gc.TravelDuration or 0.6
+    local dur = (type(gc.Duration) == "number") and gc.Duration or 1.0
+    local step = (type(gc.TravelStep) == "number" and gc.TravelStep > 0) and gc.TravelStep or 0.03
+    if dur < travel then dur = travel end
+    local destroyed = false
+    local function destroyFx()
+        if destroyed then return end
+        destroyed = true
+        pcall(function() CreativeGameAPI.DestroyActor(actor) end)
+    end
+
+    if targetPos and travel > 0 and moveRot then
+        local elapsed = 0
+        local function move()
+            if destroyed then return end
+            elapsed = elapsed + step
+            local t = elapsed / travel
+            if t > 1 then t = 1 end
+            local p = {
+                X = fromPos.X + (targetPos.X - fromPos.X) * t,
+                Y = fromPos.Y + (targetPos.Y - fromPos.Y) * t,
+                Z = fromPos.Z + (targetPos.Z - fromPos.Z) * t,
+            }
+            pcall(function() actor:K2_TeleportTo(fxCmVec(p), moveRot) end)
+            if t < 1 then self:AddTimerOnce(step, move) end
+        end
+        self:AddTimerOnce(step, move)
+    end
+    self:AddTimerOnce(dur, destroyFx)
+    print("[Fx][Server/GS] 扔垃圾 Actor 特效已生成 fromSeat=" .. tostring(fromSeat) ..
+        " → targetSeat=" .. tostring(targetSeat) .. " 行数=" .. tostring(#(rows or {}))
+        .. " travel=" .. tostring(travel) .. " dur=" .. tostring(dur) .. " moveRot=" .. tostring(moveRot ~= nil))
+    return true
+end
+
+-- [特效] 扔垃圾拖尾特效：起点=fromSeat 盘最左列/消行中行，终点=对手盘心。
+-- 默认走 Actor 版（EffectActor_Throw，粒子 AutoActivate 自动播 + 连续飞行）；
+-- 回退走旧 SceneEffect 两段式（起点粒子 + 延迟在目标盘播到达粒子）。
 -- @param fromSeat number 投掷方几何槽位 0/1
 -- @param rows table|nil 本次消行行号（决定起点竖直位置，nil 取盘中行）
 function ClassicGameState:PlayGarbageFx(fromSeat, rows)
-    if type(SceneEffectAPI) ~= "table" or not SceneEffectAPI.CreateSceneEffect then return end
     local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
     if not okCfg or type(C) ~= "table" then return end
     local gc = C.GarbageEffect or {}
     if gc.Enabled == false then return end
+    -- [客户端模式] SpawnSide="Client"：拖尾由各客户端 GarbageFxClient 本地生成，服务端完全不播，避免双份叠加。
+    if gc.SpawnSide == "Client" then return end
     local g = self._boardGeom
     if not g then
         if not self._gfxGeomWarned then
             self._gfxGeomWarned = true
             print("[Fx][Server/GS] 垃圾特效跳过：盘面几何未就绪")
-        end
-        return
-    end
-    local key = gc.PresetKey or "13_EffectPreset_1193030723"
-    local ref = (type(AssetRef) == "table" and AssetRef[key]) or nil
-    if not ref then
-        if not self._gfxRefWarned then
-            self._gfxRefWarned = true
-            print("[Fx][Server/GS][WARN] 垃圾特效资源未注册 AssetRef[" .. tostring(key) .. "]")
         end
         return
     end
@@ -229,11 +309,35 @@ function ClassicGameState:PlayGarbageFx(fromSeat, rows)
         Y = to.Y + toRight.Y * halfW,
         Z = to.Z + (type(gc.TargetHeightOffsetM) == "number" and gc.TargetHeightOffsetM or 0),
     }
+
+    -- === 主路径：EffectActor（AutoActivate 粒子 + 连续飞行）===
+    if gc.UseActorEffect ~= false then
+        local actorKey = gc.ActorPresetKey or "46_ActorPreset_778521937"
+        local actorRef = (type(AssetRef) == "table" and AssetRef[actorKey]) or nil
+        if actorRef then
+            if playGarbageFxActor(self, actorRef, gc, fromPos, targetPos, fromSeat, targetSeat, rows) then
+                return
+            end
+        elseif not self._gfxActorRefWarned then
+            self._gfxActorRefWarned = true
+            print("[Fx][Server/GS][WARN] 垃圾特效 Actor 资源未注册 AssetRef[" .. tostring(actorKey) .. "]，回退 SceneEffect")
+        end
+    end
+
+    -- === 回退路径：旧 SceneEffect 两段式 ===
+    if type(SceneEffectAPI) ~= "table" or not SceneEffectAPI.CreateSceneEffect then return end
+    local key = gc.PresetKey or "13_EffectPreset_1193030723"
+    local ref = (type(AssetRef) == "table" and AssetRef[key]) or nil
+    if not ref then
+        if not self._gfxRefWarned then
+            self._gfxRefWarned = true
+            print("[Fx][Server/GS][WARN] 垃圾特效 SceneEffect 资源未注册 AssetRef[" .. tostring(key) .. "]")
+        end
+        return
+    end
     local scale = gc.Scale or { X = 3, Y = 3, Z = 3 }
     local travel = (type(gc.TravelDuration) == "number") and gc.TravelDuration or 0.6
     local dur = (type(gc.Duration) == "number") and gc.Duration or 1.0
-
-    -- 起点粒子
     local function spawnAt(pos)
         local ok, id = pcall(function()
             return SceneEffectAPI.CreateSceneEffect(ref, Game:ConstructFVectorByLuaTable(pos), dur)
@@ -247,9 +351,8 @@ function ClassicGameState:PlayGarbageFx(fromSeat, rows)
         end
     end
     pcall(function() spawnAt(fromPos) end)
-    -- 延迟在目标盘播"到达"粒子，形成投掷方向感
     self:AddTimerOnce(travel, function() pcall(function() spawnAt(targetPos) end) end)
-    print("[Fx][Server/GS] 扔垃圾拖尾 fromSeat=" .. tostring(fromSeat) ..
+    print("[Fx][Server/GS] 扔垃圾拖尾(SceneEffect回退) fromSeat=" .. tostring(fromSeat) ..
         " → targetSeat=" .. tostring(targetSeat) .. " 行数=" .. tostring(#(rows or {})))
 end
 

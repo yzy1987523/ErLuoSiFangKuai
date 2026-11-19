@@ -8,6 +8,7 @@ local ClientInput = require("EnvLua.Client.Tetris.Input.ClientInput")
 local ClientRenderer = require("EnvLua.Client.Tetris.Renderer.ClientRenderer")
 local Snapshot = require("EnvLua.Common.Tetris.TetrisSnapshot")
 local Config = require("EnvLua.Common.Tetris.TetrisConfig")
+local GarbageFxClient = require("EnvLua.Client.Tetris.GarbageFxClient")
 
 local TetrisClientBattle = {}
 TetrisClientBattle.__index = TetrisClientBattle
@@ -111,6 +112,12 @@ function TetrisClientBattle:OnVersusEvent(kind, n, fromKey, payload)
     if not self.localGame then return end
     print("[Versus][Client] 收到 kind=" .. tostring(kind) .. " n=" .. tostring(n) ..
         " from=" .. tostring(from) .. " selfKey=" .. tostring(self.selfKey))
+    -- [垃圾特效·客户端版] 收到垃圾：拖尾从对手盘 → 我方盘（起点用 payload 里的真实消行行号）
+    if kind == "garbage" then
+        pcall(function()
+            GarbageFxClient.Play(self.host, self.oppRenderer, self.localRenderer, payload)
+        end)
+    end
     if kind == "swapLanded" then
         -- 回执：我施加的 SK08 已在对手盘落地 → 解我方 CD
         pcall(function() self.localGame:OnVersusFeedback(kind, from) end)
@@ -229,6 +236,13 @@ function TetrisClientBattle:Start()
                 local gs = Game:GetGameState()
                 if gs then gs:CallServerFunction("P5_VersusEvent", kind, n, fromKey, payload) end
             end)
+            -- [垃圾特效·客户端版] 我方扔垃圾：拖尾从我方盘 → 对手盘（起点用本方真实消行行号）
+            if kind == "garbage" then
+                local rows = self.localGame and self.localGame._lastClearRows or nil
+                pcall(function()
+                    GarbageFxClient.Play(self.host, self.localRenderer, self.oppRenderer, rows)
+                end)
+            end
             print("[Versus][Client] 上报 kind=" .. tostring(kind) .. " n=" .. tostring(n) ..
                 " from=" .. tostring(fromKey))
         end },

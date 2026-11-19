@@ -86,6 +86,9 @@ function TetrisAIDriver:_advanceClear(b)
         if cleared > 0 then
             local rows = b:consumeClearedRows()
             self._fxRows = (rows and #rows > 0) and rows or nil
+            -- [垃圾特效] 单独留存消行行号：_fxRows 会随快照被清空，垃圾事件在稍后的收尾才发，
+            -- 需要独立字段保证 payload 拿到真实行号。
+            self._garbageRows = self._fxRows
             if self._fxRows and self.host then
                 -- [特效] AI 盘用缓存的对手 seat（可能 0 或 1），与我方真人 seat 相反，避免特效左右互换
                 local oppSeat = self.host._oppSeat or 1
@@ -312,9 +315,11 @@ function TetrisAIDriver:_flushOutgoingToHuman(b)
     if not gs then return end
     -- fromKey=0：客户端过滤规则 `from ~= 0 and from == selfKey` 不会拦 AI 事件
     if outgoing > 0 then
+        -- [垃圾特效] payload 带 AI 本次消行行号，客户端据此定位拖尾起点（服务端 PlayGarbageFx 已由 SpawnSide=Client 关闭）
         pcall(function()
-            gs:CallClientFunctionMulticast("P5_VersusEvent", "garbage", outgoing, 0, nil)
+            gs:CallClientFunctionMulticast("P5_VersusEvent", "garbage", outgoing, 0, self._garbageRows)
         end)
+        self._garbageRows = nil
         -- [特效] AI 盘扔垃圾：用 AI seat 播拖尾特效（起点 AI 盘、终点真人盘）。
         if self.host and type(self.host.PlayGarbageFx) == "function" then
             local aiSeat = self.host._oppSeat or 1
