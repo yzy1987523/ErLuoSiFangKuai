@@ -458,7 +458,11 @@ function ClassicGameState:StartAI()
             pcall(function() self._p3Driver:Stop() end)  -- 停旧定时器/推进
             self._p3Driver = nil
         end
-        self._p3Driver = Driver:new(self, { quality = self._aiQuality or 0.8, tag = "AI-P3", interval = 0.1, snapshotEvery = 1 })
+        self._p3Driver = Driver:new(self, {
+            quality = self._aiQuality or 0.8,
+            skillKey = self._aiSkillKey,          -- AI 用与玩家相同的技能
+            tag = "AI-P3", interval = 0.1, snapshotEvery = 1,
+        })
         self._p3Driver:Start()
         return self._p3Driver
     end)
@@ -912,7 +916,7 @@ function ClassicGameState:P5_RequestLeaderboard()
 end
 
 -- ===== P5-5b：单人请求启动 AI =====
-function ClassicGameState:P5_RequestAI(quality)
+function ClassicGameState:P5_RequestAI(quality, skillKey)
     local playerCount = 0
     pcall(function()
         local ps = Game:GetAllPlayerStates()
@@ -925,8 +929,10 @@ function ClassicGameState:P5_RequestAI(quality)
         self._bgImageKey = "Human"
         print("[P5][Server/GS] P5_RequestAI 忽略：当前是双人模式(" .. tostring(playerCount) .. "人)")
     else
-        print("[P5][Server/GS] P5_RequestAI 单人模式，启动 AI quality=" .. tostring(q) .. " bgKey=" .. tostring(self._bgImageKey))
+        print("[P5][Server/GS] P5_RequestAI 单人模式，启动 AI quality=" .. tostring(q) ..
+            " skillKey=" .. tostring(skillKey) .. " bgKey=" .. tostring(self._bgImageKey))
         self._aiQuality = q
+        self._aiSkillKey = skillKey  -- AI 用与玩家相同的技能
         self:StartAI()
     end
     -- 难度键就绪后刷新背景灌图（几何可能早于本请求就绪，Ensure 内部幂等）

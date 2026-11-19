@@ -359,9 +359,10 @@ function TetrisClientBattle:_setupMode(realCount)
         self.host:AddTimerOnce(0.3, reportSnapshot)
     else
         -- 单人：请求服务端启动 AI（仅进入 Battle 后触发，服务端 P5_RequestAI 幂等）
+        -- 同时把玩家所选技能 key 传给 AI，AI 用与玩家相同的技能
         pcall(function()
             local gs = Game:GetGameState()
-            if gs then gs:CallServerFunction("P5_RequestAI", self.quality or 0.8) end
+            if gs then gs:CallServerFunction("P5_RequestAI", self.quality or 0.8, self.selectedSkill) end
         end)
     end
 end

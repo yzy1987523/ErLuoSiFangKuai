@@ -16,8 +16,9 @@ local function cloneGrid(board)
     return g
 end
 
--- 评估一个盘面：分数越高越好
-local function evaluate(g, rows, cols)
+-- 评估一个盘面：分数越高越好（Dellacherie 风格特征：消行/落地高度/空洞/凹凸）
+-- maxHeight 为落子后盘面最高点（行号越小越高），用于计算落地高度惩罚。
+local function evaluate(g, rows, cols, maxHeight)
     local heights = {}
     local holes = 0
     for c = 1, cols do
@@ -44,12 +45,16 @@ local function evaluate(g, rows, cols)
         end
         if full then lines = lines + 1 end
     end
-    -- 权重：消行奖励最大，空洞惩罚最重
-    return lines * 100 - holes * 60 - bump * 3 - agg * 2
+    -- [AI 改进] 落地高度：块堆得越高越差（y 越小越高）。用最高点代替误伤平铺的 agg 线性惩罚，
+    -- 让 AI 愿意保留规整空行做消行，而不是为避免增高把方块摊得到处都是。
+    local landing = rows - (maxHeight or rows) + 1   -- 越高 landing 越大
+    -- 权重：消行奖励最大，空洞惩罚最重，落地高度/凹凸次之
+    return lines * 120 - holes * 70 - landing * 4 - bump * 2 - agg * 0.5
 end
 
--- 计算当前下落方块的最优落点。返回 {rot=旋转态, x=列} 或 nil（无合法落点=即将顶出）。
--- quality(0~1, 可选)：落子质量。1=始终最优；<1 时以 (1-quality) 概率改用随机合法落点（AI 变弱，对应难度选择）。
+-- 计算当前下落方块的最优落点。返回 {rot=旋转态, x=列, y=落点行} 或 nil（无合法落点=即将顶出）。
+-- quality 参数保留以兼容调用方（TetrisAIDriver 按难度传入），但不再影响落点：所有难度一律取最优。
+-- 难度差异改由 TetrisAIDriver 的 tier 控制（下落速度 + 技能释放时机），落点质量三档一致。
 function TetrisAI.bestMove(board, quality)
     local cols = board.cols
     local rows = board.rows
@@ -59,7 +64,6 @@ function TetrisAI.bestMove(board, quality)
 
     local best = nil
     local bestScore = -1e9
-    local candidates = {}   -- 全部合法落点，供低质量时随机退化（弱 AI）
     for rot = 1, 4 do
         local cells = board:getPieceCells(type, rot)
         for x = 1, cols do
@@ -70,30 +74,27 @@ function TetrisAI.bestMove(board, quality)
                 while board:canPlace({ type = type }, x, y + 1, rot) do y = y + 1 end
                 -- 模拟落子后的盘面
                 local g = cloneGrid(board)
+                local maxHeight = rows  -- 落子后最高点（行号最小者）
                 for _, cc in ipairs(cells) do
                     local gr = y + cc.r - 1
                     local gc = x + cc.c - 1
                     if gr >= 1 and gr <= rows and gc >= 1 and gc <= cols then
                         g[gr][gc] = type
+                        if gr < maxHeight then maxHeight = gr end
                     end
                 end
-                local sc = evaluate(g, rows, cols)
-                candidates[#candidates + 1] = { rot = rot, x = x }
+                local sc = evaluate(g, rows, cols, maxHeight)
                 if sc > bestScore then
                     bestScore = sc
-                    best = { rot = rot, x = x }
+                    best = { rot = rot, x = x, y = y }
                 end
             end
         end
     end
     if not best then return nil end
 
-    -- 难度退化：quality<1 且随机命中时，从全部合法落点里随机选一个（较弱）
-    if quality and quality < 1 and #candidates > 0 then
-        if math.random() > quality then
-            return candidates[math.random(#candidates)]
-        end
-    end
+    -- [落点策略] 所有难度一律取最优落点：quality 只影响下落速度/技能时机，不再随机退化落点。
+    -- 因此三个难度的 AI 落点质量一致，差异体现在节奏与技能释放（见 TetrisAIDriver 的 tier 逻辑）。
     return best
 end
 

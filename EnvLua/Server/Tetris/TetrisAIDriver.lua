@@ -9,6 +9,16 @@ local TetrisConfig = require("EnvLua.Common.Tetris.TetrisConfig")
 local TetrisAIDriver = {}
 TetrisAIDriver.__index = TetrisAIDriver
 
+-- 难度档位：按 quality 阈值划分（与 GameState 背景键 <=0.6/<=0.9 一致）
+--   easy   (<=0.6)：不主动加速，按 Board 原重力间隔慢速逐格下落；技能等 5 回合
+--   normal (<=0.9)：主动软降（每 interval 一格）；技能等 3 回合
+--   hard   (>0.9) ：调整落点后直接硬降；满能量立即放技能
+local function tierOf(quality)
+    if quality <= 0.6 then return "easy" end
+    if quality <= 0.9 then return "normal" end
+    return "hard"
+end
+
 function TetrisAIDriver:new(host, opts)
     opts = opts or {}
     local o = setmetatable({}, self)
@@ -27,6 +37,14 @@ function TetrisAIDriver:new(host, opts)
     -- [节奏对齐] 下落/落石用时间累计控制，与真人盘一致（不随 interval 步长）
     o._fallElapsed = 0    -- 普通方块重力累计（达 getGravityInterval 下落一格）
     o._stoneElapsed = 0   -- 落石累计（达 FallingStoneInterval 下落一格）
+    -- [难度控制] 档位 + 技能释放等待回合数
+    o.tier = tierOf(o.quality)
+    o.skillDelayTurns = (o.tier == "easy" and 5) or (o.tier == "normal" and 3) or 0
+    -- [技能] AI 用与玩家相同的技能；能量/回合状态（与真人规则一致：消行得 bar，满 NeedBars 换 power）
+    o.skillKey = opts.skillKey or nil
+    o._bars = 0
+    o._power = 0
+    o._turnsSinceCast = 0  -- 距上次释放技能已过的落块回合（用于「等待 X 回合」）
     return o
 end
 
@@ -62,6 +80,7 @@ function TetrisAIDriver:_advanceClear(b)
         local cleared = 0
         local ok, err = pcall(function() cleared = b:doClear() end)
         if not ok then print("[ClearDbg][AI][ERR] doClear 报错: " .. tostring(err)) end
+        if cleared > 0 then self:_addEnergy(cleared) end  -- [技能] 消行积累能量（与真人规则一致）
         -- [特效] 对方/AI 盘消行：取被消行号，经 host(GameState) 在 seat1 播粒子特效（SceneEffectAPI ServerOnly），
         -- 并暂存行号随快照下发，让客户端 oppRenderer 也能画 3D 消行框。
         if cleared > 0 then
@@ -160,6 +179,26 @@ function TetrisAIDriver:_planPiece(b)
         if not b:move(dx) then break end
         guard = guard + 1
     end
+    -- [落点校准] 旋转(SRS踢墙)/平移可能把块停在错误位置（顶部被占、noRotate 减益、踢墙偏移），
+    -- 导致后续下落/硬降落在差位置（表现为「有时直接落下」）。校验未到位则直接把活动块设到
+    -- bestMove 评估的精确落点（plan.x/plan.y/plan.rot），保证执行与评估一致。
+    if b.active and (b.active.x ~= plan.x or b.active.rot ~= plan.rot) then
+        if plan.y then
+            local ok, pos = pcall(function()
+                b.active.x = plan.x
+                b.active.y = plan.y
+                b.active.rot = plan.rot
+                b.active.noRotate = nil
+                b:markGhostDirty()
+                return true
+            end)
+            if ok and pos then
+                print("[P3][AIDriver] 落点校准→直接定位 x=" .. tostring(plan.x) ..
+                    " y=" .. tostring(plan.y) .. " rot=" .. tostring(plan.rot))
+                -- 直接定位到底：本块已就位，下一 _step 会走 lockPiece（softDrop 失败）或 hardDrop
+            end
+        end
+    end
 end
 
 function TetrisAIDriver:_step()
@@ -216,18 +255,32 @@ function TetrisAIDriver:_step()
             -- 新块：规划一次（旋转+平移到位），本步暂不下落
             self:_planPiece(b)
             self._fallElapsed = 0
+            -- [回合] 每个新方块判定一次是否释放技能（回合累计在 _maybeCastSkill 内、有能量后才计）
+            self:_maybeCastSkill(b)
         else
-            -- [节奏对齐真人] 已规划的块：按 Board 重力间隔累计时间，达一格才 softDrop，
-            -- 与真人盘 getGravityInterval()（当前0.8s）一致，不再每 0.1s 落一格。
-            local gInterval = 0.8
-            pcall(function() gInterval = b:getGravityInterval() or 0.8 end)
-            self._fallElapsed = (self._fallElapsed or 0) + self.interval
-            if self._fallElapsed >= gInterval then
-                self._fallElapsed = self._fallElapsed - gInterval
+            -- [难度控制] 三档下落方式：
+            --   hard   ：落点已在 _planPiece 调整到位，直接硬降落定（本步即锁）
+            --   normal ：主动软降——每步下落一格，比原重力快
+            --   easy   ：不主动加速，按 Board 原重力间隔（0.8s）逐格软降
+            if self.tier == "hard" then
+                pcall(function() b:hardDrop() end)
+            elseif self.tier == "normal" then
                 local dropped = false
                 pcall(function() dropped = b:softDrop() end)
                 if not dropped and not b.isGameOver then
                     pcall(function() b:lockPiece() end)
+                end
+            else
+                local gInterval = 0.8
+                pcall(function() gInterval = b:getGravityInterval() or 0.8 end)
+                self._fallElapsed = (self._fallElapsed or 0) + self.interval
+                if self._fallElapsed >= gInterval then
+                    self._fallElapsed = self._fallElapsed - gInterval
+                    local dropped = false
+                    pcall(function() dropped = b:softDrop() end)
+                    if not dropped and not b.isGameOver then
+                        pcall(function() b:lockPiece() end)
+                    end
                 end
             end
         end
@@ -294,6 +347,71 @@ function TetrisAIDriver:_broadcastSnapshot()
     end)
     if not ok then
         print("[P3][AIDriver] 广播快照失败: " .. tostring(err))
+    end
+end
+
+-- [技能] 消行积累能量：每消 1 行得 1 bar，满 NeedBars 换 1 power（与真人 TetrisGame:onLinesCleared 一致）
+function TetrisAIDriver:_addEnergy(cleared)
+    local cfg = TetrisConfig.Skill or {}
+    local need = cfg.NeedBars or 3
+    local maxPower = cfg.MaxPower or 3
+    for _ = 1, cleared do
+        if (self._power or 0) >= maxPower then break end
+        self._bars = (self._bars or 0) + 1
+        if self._bars >= need then
+            self._bars = 0
+            self._power = math.min((self._power or 0) + 1, maxPower)
+        end
+    end
+end
+
+-- [技能] 每产出一块（一个回合）判定一次是否释放：
+--   需已选技能 + 有 power；简单/普通按 skillDelayTurns 等回合，困难(0)立即放。
+--   释放后回合计数归零（重新计数）。
+function TetrisAIDriver:_maybeCastSkill(b)
+    if not self.skillKey then return end
+    if (self._power or 0) <= 0 then return end  -- 没能量：不计时、不放
+    if b.isGameOver or b.clearing or b.lockPaused then return end
+    -- 有能量起，每产出一个新方块算一回合；达到 wait 回合才释放（困难 wait=0 → 立即）
+    self._turnsSinceCast = (self._turnsSinceCast or 0) + 1
+    local need = self.skillDelayTurns or 0
+    if self._turnsSinceCast < need then
+        print("[Skill][AI] 等待释放 turns=" .. tostring(self._turnsSinceCast) .. "/" .. tostring(need))
+        return
+    end
+    self:_castSkill(b, self.skillKey)
+    self._power = (self._power or 0) - 1
+    self._turnsSinceCast = 0  -- 释放后重新计数
+end
+
+-- [技能] 施放：self-buff 直接改 AI 盘；debuff 经 GameState 广播给真人客户端（from=0 不过滤）。
+-- 效果对齐 TetrisGame:OnBtnSkill；UI 提示走现有 versus/快照链，不在本纯数据层绘制。
+function TetrisAIDriver:_castSkill(b, key)
+    print("[Skill][AI] 释放技能 key=" .. tostring(key) .. " tier=" .. tostring(self.tier))
+    local gs = Game:GetGameState()
+    local function broadcast(kind, n)
+        if not gs then return end
+        pcall(function() gs:CallClientFunctionMulticast("P5_VersusEvent", kind, n or 1, 0, nil) end)
+    end
+    if key == "SK01" then
+        -- 敌方减益：真人下一块无法旋转
+        broadcast("noRotate", 1)
+    elseif key == "SK08" then
+        -- 敌方减益：真人方向左右对调
+        broadcast("swap", 1)
+    elseif key == "SK02" then
+        -- 己方增益：清 AI 盘最下方 N 行
+        local def = TetrisConfig.Skills and TetrisConfig.Skills.SK02
+        local n = (def and def.clearRows) or 2
+        pcall(function() b:clearBottomRows(n) end)
+    elseif key == "SK06" then
+        -- 己方增益：下次消行攻击 +1
+        b.attackBonusNext = (b.attackBonusNext or 0) + 1
+    elseif key == "SK07" then
+        -- 己方增益：下次消行额外多消一行（简化为立即清 AI 盘最下方 1 行）
+        pcall(function() b:clearBottomRows(1, true) end)
+    else
+        print("[Skill][AI] 未知技能 key=" .. tostring(key))
     end
 end
 
