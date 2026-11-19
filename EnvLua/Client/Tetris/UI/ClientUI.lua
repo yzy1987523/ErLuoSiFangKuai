@@ -239,7 +239,10 @@ function ClientUI:_hideTransientHints()
         { U.ComboImg, "UI.ComboImg(连击提示图)" },
         { Config.Skill and Config.Skill.ReadyImg, "Skill.ReadyImg(技能就绪图)" },
         { Config.HintText, "HintText(通用飘字)" },
-        { Config.Skill and Config.Skill.BigTipInstance, "Skill.BigTipInstance(技能中央大图)" },
+        { Config.Skill and Config.Skill.BigTipInstance, "Skill.BigTipInstance(旧技能大图)" },
+        { Config.Skill and Config.Skill.SkillTipPanel, "Skill.SkillTipPanel(技能提示面板)" },
+        { Config.Skill and Config.Skill.SkillTipName, "Skill.SkillTipName(技能提示-技能名)" },
+        { Config.Skill and Config.Skill.SkillTipType, "Skill.SkillTipType(技能提示-类型)" },
         { Config.Skills and Config.Skills.SK06 and Config.Skills.SK06.attackBuffImg, "SK06.attackBuffImg" },
         { Config.Skills and Config.Skills.SK01 and Config.Skills.SK01.rotLockCasterImg, "SK01.rotLockCasterImg" },
         { Config.Skills and Config.Skills.SK01 and Config.Skills.SK01.rotLockVictimImg, "SK01.rotLockVictimImg" },
@@ -1018,9 +1021,19 @@ function ClientUI:_syncTransientHints(hints)
     end
     if anyBigTip and not self._hintShown.BigTip then
         self._hintShown.BigTip = true
-        self:ShowForce(S.BigTipInstance)
-        self:_syncBigTipImage(hints)
-        print("[ClientUI][Hint] 显示 BigTip: " .. tostring(anyBigTip))
+        self._skillTipKey = anyBigTip:sub(8)  -- 记下技能 key，供延迟回调重填（避免闭包 captures 已变的 hints）
+        self:_syncSkillTipText(hints)   -- 按技能 key + 当前语言填「技能名/类型」文本
+        self:ShowForce(S.SkillTipPanel) -- [技能提示] 用新图文提示取代旧 BigTip 大图
+        -- 父面板显示会异步带出子控件：延迟补写一次确保子文本可见（记忆中的父面板坑）
+        local selfRef = self
+        self.host:AddTimerOnce(0.25, function()
+            if selfRef._hintShown.BigTip then
+                selfRef:_fillSkillTipText(selfRef._skillTipKey)  -- 重填文本，防父面板带出子控件时重置
+                selfRef:ShowForce(S.SkillTipName)
+                selfRef:ShowForce(S.SkillTipType)
+            end
+        end)
+        print("[ClientUI][Hint] 显示技能图文提示: " .. tostring(anyBigTip))
     end
     -- 再处理"上次有、当前无"（到期）：隐藏。BigTip 延后到单独判定（上面 anyBigTip）
     for name, ids in pairs(MAP) do
@@ -1033,27 +1046,34 @@ function ClientUI:_syncTransientHints(hints)
     end
     if self._hintShown.BigTip and not anyBigTip then
         self._hintShown.BigTip = nil
-        self:HideForce(S.BigTipInstance)
+        self:HideForce(S.SkillTipPanel)   -- [技能提示] 隐藏新图文提示（含子文本）
+        self:HideForce(S.SkillTipName)
+        self:HideForce(S.SkillTipType)
+        self:HideForce(S.BigTipInstance)  -- 旧大图也一并藏（兼容：确保它不再残留）
     end
 end
 
--- 技能中央大图换图：按当前提示的技能 key + 语言取图（无多语图时回退该技能 imageKey）。
-function ClientUI:_syncBigTipImage(hints)
-    local S = Config.Skill or {}
-    local id = S.BigTipInstance
-    if not id then return end
+-- [技能提示] 按当前提示的技能 key + 语言，填「技能名/技能类型」两个文本控件。
+-- 取代旧的按语言换整张图的 BigTip；文本表见 TetrisConfig.SkillTipTexts。
+function ClientUI:_syncSkillTipText(hints)
     for name, _ in pairs(hints) do
         if type(name) == "string" and name:sub(1, 8) == "BigTip_S" then
-            local key = name:sub(8)
-            local def = Config.Skills and Config.Skills[key]
-            local imgKey = nil
-            local multi = Config.SkillBigTipImages and Config.SkillBigTipImages[key]
-            if multi then imgKey = multi[self.lang] end
-            if not imgKey and def then imgKey = def.imageKey end
-            if imgKey then self:Image(id, imgKey) end
+            self:_fillSkillTipText(name:sub(8))
             return
         end
     end
+end
+
+-- 按技能 key + 当前语言，写「技能名/技能类型」两个文本控件。
+function ClientUI:_fillSkillTipText(key)
+    local S = Config.Skill or {}
+    local t = Config.SkillTipTexts and Config.SkillTipTexts[key]
+    if not t then return end
+    local lang = self.lang or 1
+    self:Text(S.SkillTipName, t.name[lang] or t.name[2] or t.name[1])
+    self:Text(S.SkillTipType, t.type[lang] or t.type[2] or t.type[1])
+    print("[ClientUI][Hint] 技能提示文本 key=" .. tostring(key) .. " lang=" .. tostring(lang) ..
+        " name=" .. tostring(t.name[lang]) .. " type=" .. tostring(t.type[lang]))
 end
 
 -- ===================== 垃圾行提示（状态驱动，对齐旧 TetrisGame:UpdateGarbageHints） =====================

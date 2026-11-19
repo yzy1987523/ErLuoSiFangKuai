@@ -962,7 +962,11 @@ TetrisConfig.Skill = {
     -- 【占位】在编辑器 UI Editor 放好该图片控件后，把下面的 FILL_ 占位键换成其 InstanceUUID；
     -- 未放置时 ci() 返回 nil，显隐逻辑自动跳过，不影响对局。
     ReadyImg = ci("1_CreativeInstance_23643901728269420"),
-    BigTipInstance = ci("1_CreativeInstance_23643900834440806"),  -- SK07「额外消行」中央大图提示组件（CreativeInstance 控件 UUID）
+    BigTipInstance = ci("1_CreativeInstance_23643900834440806"),  -- 旧技能中央大图（已被下方图文提示取代，保留字段兼容）
+    -- [技能提示] 新图文提示：图片面板 + 下挂两个文本（技能名 / 技能类型），仅自己施法时弹。
+    SkillTipPanel = ci("1_CreativeInstance_23643898943370889"),   -- 提示图片面板（含背景图）
+    SkillTipName  = ci("1_CreativeInstance_23643901007489963"),   -- 文本1：技能名
+    SkillTipType  = ci("1_CreativeInstance_23643899299796102"),   -- 文本2：技能类型（敌方减益/己方增益）
 
     -- 3 个 bar 图片（按当前 bar 数显隐：bar0=第1格, bar1=第2格, bar2=第3格/满）
     --   编辑器里这 3 张图已是「亮起的 bar」样式，代码只切换显隐，不换图。
@@ -1128,6 +1132,21 @@ TetrisConfig.SkillSelectTexts = {
     SK06 = { [2] = "Boost the Next Garbage Attack",        [3] = "عزّز هجوم العوائق التالي" },
     SK07 = { [2] = "Clear One Extra Row",                  [3] = "امحُ صفًا إضافيًا" },
     SK08 = { [2] = "Reverse Opponent's Movement Controls", [3] = "اعكس اتجاهات تحكم الخصم" },
+}
+
+-- [技能提示] 施法弹窗图文：技能名 + 技能类型，按 key → 语言索引(1=zh,2=en,3=ar) 取。
+-- 仅自己施法时弹（ClientGame:UseSkill → hint "BigTip_<key>" → ClientUI 显示本组控件）。
+TetrisConfig.SkillTipTexts = {
+    SK01 = { name = { [1]="禁止转动技能发动", [2]="Rotation Lock Activated",   [3]="تم تفعيل قفل الدوران" },
+             type = { [1]="敌方减益",         [2]="Opponent Debuff",           [3]="تأثير سلبي على الخصم" } },
+    SK02 = { name = { [1]="连锁清除技能发动", [2]="Chain Clear Activated",     [3]="تم تفعيل المحو المتسلسل" },
+             type = { [1]="己方增益",         [2]="Self Buff",                 [3]="تعزيز ذاتي" } },
+    SK06 = { name = { [1]="攻势技能发动",     [2]="Onslaught Activated",       [3]="تم تفعيل الهجوم الكاسح" },
+             type = { [1]="己方增益",         [2]="Self Buff",                 [3]="تعزيز ذاتي" } },
+    SK07 = { name = { [1]="赠送技能发动",     [2]="Bonus Clear Activated",     [3]="تم تفعيل المحو الإضافي" },
+             type = { [1]="己方增益",         [2]="Self Buff",                 [3]="تعزيز ذاتي" } },
+    SK08 = { name = { [1]="左右对调技能发动", [2]="Reverse Controls Activated",[3]="تم تفعيل عكس التحكم" },
+             type = { [1]="敌方减益",         [2]="Opponent Debuff",           [3]="تأثير سلبي على الخصم" } },
 }
 
 -- ===================== 名字组件（对局 HUD：我方 / 对方 名字显示） =====================
