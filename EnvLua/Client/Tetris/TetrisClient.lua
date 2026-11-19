@@ -69,6 +69,40 @@ function TetrisClient:_requestSettings(tries)
     end
 end
 
+-- [BGM] 幂等起播：OnStart 时本地玩家可能尚未生成导致 StartBGM 跳过，这里重试取 ps 并补播。
+-- 已在播（bgmUUID 有效）则直接返回，不重切，避免每次调用都停旧播新。
+function TetrisClient:_ensureBGM(tries)
+    if not self.audio then return end
+    if self.audio.bgmUUID then return end  -- 已在播，幂等跳过
+    -- 只有在 audio.ps 为空时才重新取；绝不覆盖已有的有效 ps（否则所有音效/BGM 的播放目标会失效）
+    if not self.audio.ps then
+        local ps = nil
+        if type(Game) == "table" and Game.GetPlayerStateByPlayerKey then
+            local ok, p = pcall(function() return Game:GetPlayerStateByPlayerKey(nil) end)
+            if ok and p then ps = p end
+        end
+        if not ps then
+            if tries > 0 then
+                self.host:AddTimerOnce(0.5, function() self:_ensureBGM(tries - 1) end)
+            else
+                print("[Audio][WARN] _ensureBGM 重试耗尽仍取不到本地玩家，BGM 未播放")
+            end
+            return
+        end
+        self.audio.ps = ps
+        if (not self.selfKey or self.selfKey == 0) and ps.GetPlayerKey then
+            self.selfKey = ps:GetPlayerKey() or 0
+        end
+    end
+    -- StartBGM 可能因 AssetRef 尚未注入而失败；失败则继续重试，直到成功起播（幂等：已在播则上面已返回）
+    local ok = self.audio:StartBGM()
+    if not ok and tries > 0 then
+        self.host:AddTimerOnce(0.5, function() self:_ensureBGM(tries - 1) end)
+    elseif not ok then
+        print("[Audio][WARN] _ensureBGM 重试耗尽，BGM 仍未起播")
+    end
+end
+
 -- 语言/音量变更后写存档（服务端 CustomSaveAPI 落盘）
 function TetrisClient:_saveSettings()
     if not self.audio or not self.ui then return end
@@ -147,9 +181,9 @@ function TetrisClient:Init()
     -- [P9] 开局读档：尽早向服务端请求语言/音量设置，回传后由 OnSettingsLoaded 应用（带重试）
     self:_requestSettings(12)
 
-    -- 音效（真人盘才建）
-    self.audio = AudioManager:new(ps)
-    self.audio:StartBGM()
+    -- 音效（真人盘才建）；传 host 供 BGM 循环定时器使用
+    -- [BGM] 不在此起播：BGM 仅在 ClientUI:ShowStart() 时经 onStartScreen 回调触发
+    self.audio = AudioManager:new(ps, self.host)
 
     -- UI（流程 + HUD）
     local selfRef = self
@@ -169,6 +203,10 @@ function TetrisClient:Init()
         getVolumes = function()
             if not selfRef.audio then return { bgm = 0.6, sfx = 0.6 } end
             return { bgm = selfRef.audio.bgmVolume or 0.6, sfx = selfRef.audio.sfxVolume or 0.6 }
+        end,
+        -- [BGM] 进入开始界面时由 UI 回调起播（覆盖 H.BtnClose/Init 等所有入口）
+        onStartScreen = function()
+            selfRef:_ensureBGM(16)
         end,
     })
 
@@ -233,7 +271,9 @@ function TetrisClient:_registerFlowButtons()
         self._flowButtons[#self._flowButtons + 1] = id
     end
 
-    bind(H.BtnClose, function() self.ui:OnPrepareClosed() end)
+    bind(H.BtnClose, function()
+        self.ui:OnPrepareClosed()   -- 进入开始界面（BGM 由 ShowStart 内部的 onStartScreen 回调起播）
+    end)
     bind(D.OpenBtn, function() self.ui:ShowDetailHelp() end)
     bind(D.BtnClose, function() self.ui:CloseDetailHelp() end)
     bind(S.StartBtn, function() self:_onStartGame() end)
@@ -241,6 +281,11 @@ function TetrisClient:_registerFlowButtons()
     bind(A.BtnNormal, function() self:_onDifficulty("Normal") end)
     bind(A.BtnHard, function() self:_onDifficulty("Hard") end)
     bind(SD.OpenBtn, function()
+        self:_snapshotSound()
+        self.ui:ShowSoundPanel()
+    end)
+    -- [声音] 游戏界面内的声音入口按钮：同样打开声音面板（原来只配了显隐，忘了绑点击）
+    bind(SD.GameOpenBtn, function()
         self:_snapshotSound()
         self.ui:ShowSoundPanel()
     end)

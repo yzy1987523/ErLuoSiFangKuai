@@ -426,6 +426,8 @@ function ClientUI:ShowStart()
     local H = Config.HelpUI or {}
     print("[DIAG][HelpUI] ShowStart 调用 screen=" .. tostring(self.screen) ..
         " Panel=" .. tostring(H.Panel) .. " BtnClose=" .. tostring(H.BtnClose))
+    -- [BGM] 只要进入开始界面就确认 BGM 在播（覆盖 OnPrepareClosed/Init 等所有入口，幂等不重切）
+    if self.deps.onStartScreen then self.deps.onStartScreen() end
     -- 关闭准备界面：面板用 HideForce+图片透明度；按钮 ONLY 用控件整体透明度（不碰 visible，便于验证透明度是否生效）。
     self:HideForce(H.Panel)
     self:Opacity(H.Panel, 0.0)
@@ -811,6 +813,7 @@ function ClientUI:AdjustVolume(kind, delta)
 end
 
 function ClientUI:ShowSoundPanel()
+    self._soundPrevScreen = self.screen  -- 记录来源（开始界面/对局），关闭时恢复
     self:_goto("sound", function()
         for _, id in ipairs(self:_soundPanelIDs()) do self:Show(id, true) end
         self:RefreshSoundText()
@@ -823,6 +826,11 @@ end
 
 function ClientUI:HideSoundPanel()
     for _, id in ipairs(self:_soundPanelIDs()) do self:Show(id, false) end
+    -- 恢复打开前的界面（从对局中打开时尤其重要，避免 screen 卡在 sound）
+    if self.screen == "sound" and self._soundPrevScreen then
+        self.screen = self._soundPrevScreen
+    end
+    self._soundPrevScreen = nil
 end
 
 -- ===== 排行榜（RankAPI ServerOnly；经 deps.requestLeaderboard 走 P6 RPC） =====
