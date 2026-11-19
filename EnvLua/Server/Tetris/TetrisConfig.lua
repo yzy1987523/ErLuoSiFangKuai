@@ -1467,7 +1467,7 @@ TetrisConfig.Settle = {
 
 -- ===================== 排行榜（胜利次数榜） =====================
 -- 使用引擎排行榜 Domain API（RankAPI，全局可直接调用）：以 CustomRank[RankType] 作为「胜利次数」榜。
---   · 结算时统一上传胜负结果：胜者 +1、败者 -1（见 TetrisMatch:SubmitMatchResults → SubmitScore）。
+--   · 结算时统一上传：胜者 +1、败者 +0（不扣分，仅记名）；无胜者时全员 +0 记名（见 TetrisMatch:SubmitMatchResults → SubmitScore）。
 --   · 显示时 GetTopN 取前十名，按名次填入 NameText[i] / WinText[i]（见 TetrisMatch:ShowLeaderboard）。
 -- 下方 UUID 均为「占位符」，请替换为编辑器里对应控件的真实 InstanceUUID（CreativeInstance 表的 key）。
 TetrisConfig.Leaderboard = {

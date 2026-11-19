@@ -1212,19 +1212,17 @@ function TetrisMatch:SubmitScore(ps, delta)
     end
 end
 
--- 结算时统一上传胜负结果：胜者 +1、败者 -1（测试阶段无论胜负都上传；失败 -1）。
--- 仅上传有真人 PlayerState 的盘面（AI 盘无 PlayerState，跳过）。
+-- 结算时统一上传：胜者 +1，其余真人玩家 +0（不扣分，仅为让排行榜记录玩家名）。
+-- 无明确胜者时，所有真人玩家仍以 +0 上传一次记名。仅上传有真人 PlayerState 的盘面（AI 盘跳过）。
 function TetrisMatch:SubmitMatchResults()
     if type(RankAPI) ~= "table" then return end
-    if not self.winner then
-        if TetrisConfig.Debug and TetrisConfig.Debug.PrintLeaderboard then
-            print("[Tetris][Leaderboard] 无明确胜者，跳过结算上传")
-        end
-        return
+    local hasWinner = (self.winner ~= nil)
+    if not hasWinner and TetrisConfig.Debug and TetrisConfig.Debug.PrintLeaderboard then
+        print("[Tetris][Leaderboard] 无明确胜者，仅上传记名（不加分）")
     end
     for _, g in ipairs(self.list) do
         if g.playerState then
-            local delta = (g == self.winner) and 1 or -1
+            local delta = (hasWinner and g == self.winner) and 1 or 0
             self:SubmitScore(g.playerState, delta)
         end
     end
