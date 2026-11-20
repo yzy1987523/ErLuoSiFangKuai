@@ -9,6 +9,7 @@ local ClientRenderer = require("EnvLua.Client.Tetris.Renderer.ClientRenderer")
 local Snapshot = require("EnvLua.Common.Tetris.TetrisSnapshot")
 local Config = require("EnvLua.Common.Tetris.TetrisConfig")
 local GarbageFxClient = require("EnvLua.Client.Tetris.GarbageFxClient")
+local ClearFxClient = require("EnvLua.Client.Tetris.ClearFxClient")
 
 local TetrisClientBattle = {}
 TetrisClientBattle.__index = TetrisClientBattle
@@ -126,6 +127,31 @@ function TetrisClientBattle:OnVersusEvent(kind, n, fromKey, payload)
     end
 end
 
+-- [特效客户端化 2026-11-20] 服务端权威消行后经 P7_ClearFx 广播到此：按 seat 选盘 renderer，本地播粒子。
+-- 四个参数扁平跨端：seat(0/1)、rows(行号表)、blastRows(爆炸行号表)、blastCols(爆炸竖版列号表)。
+function TetrisClientBattle:OnClearFx(seat, rows, blastRows, blastCols)
+    local fxSeat = tonumber(seat)
+    local rend = (fxSeat == self._fxSeatMine) and self.localRenderer
+        or ((fxSeat == self._fxSeatOther) and self.oppRenderer or nil)
+    if not rend then
+        if not self._clearFxSeatWarned then
+            self._clearFxSeatWarned = true
+            print("[Fx][Client][WARN] P7_ClearFx seat 未匹配 mine=" .. tostring(self._fxSeatMine)
+                .. " other=" .. tostring(self._fxSeatOther) .. " got=" .. tostring(fxSeat))
+        end
+        return
+    end
+    pcall(function() ClearFxClient.PlayRow(rend, rows, blastRows, self.host) end)
+    -- blastCols（扁平列号）→ PlayColumn 期望的 { {col,bottom,top}, ... }；bottom 由 renderer 按 ROWS 推。
+    if type(blastCols) == "table" and #blastCols > 0 then
+        local blastFx = {}
+        for _, col in ipairs(blastCols) do
+            blastFx[#blastFx + 1] = { col = col, bottom = (Config.Board or {}).Rows or 20 }
+        end
+        pcall(function() ClearFxClient.PlayColumn(rend, blastFx, self.host) end)
+    end
+end
+
 -- 一局只结算一次：上报胜负到服务端（胜数榜赢+1输不扣）。
 function TetrisClientBattle:_settle(win, reason)
     if self._settled then return end
@@ -234,6 +260,20 @@ function TetrisClientBattle:Start()
     }
     self.localGame = ClientGame:new(board, {
         renderer = self.localRenderer,
+        -- [特效客户端化] 真人盘消行当帧本地播（方块消失瞬间=特效起播），绕开服务端 RPC 往返延迟。
+        onClearFx = function(rows, blastRows, blastFx)
+            print("[ClearFxClient] onClearFx 触发 rows=" .. tostring(rows and #rows or 0)
+                .. " blastRows=" .. tostring(blastRows and #blastRows or 0)
+                .. " blastFx=" .. tostring(blastFx and #blastFx or 0))
+            if not self.localRenderer then
+                print("[ClearFxClient][WARN] onClearFx 无 localRenderer，跳过")
+                return
+            end
+            pcall(function() ClearFxClient.PlayRow(self.localRenderer, rows, blastRows, self.host) end)
+            if type(blastFx) == "table" and #blastFx > 0 then
+                pcall(function() ClearFxClient.PlayColumn(self.localRenderer, blastFx, self.host) end)
+            end
+        end,
         -- [对战] versus.Send 用冒号调用，首参是 versus 表本身；上报到服务端中转广播
         versus = { Send = function(_, kind, n, fromKey, payload)
             pcall(function()
@@ -389,18 +429,23 @@ end
 function TetrisClientBattle:OnBoardTransform(seats)
     if type(seats) ~= "table" or #seats < 2 then return end
     local mine, other = nil, nil
-    for _, s in ipairs(seats) do
+    local mineIdx, otherIdx = nil, nil
+    for i, s in ipairs(seats) do
         if type(s) == "table" and s.origin and s.right then
             if s.playerKey == self.selfKey and s.playerKey ~= 0 then
-                mine = s
+                mine, mineIdx = s, i
             elseif not other then
-                other = s
+                other, otherIdx = s, i
             end
         end
     end
     -- 单人时若 selfKey 未匹配（如 selfKey=0 或读取晚于广播），退化为 seat0=自己、seat1=AI/对手
-    if not mine then mine, other = seats[1], seats[2] end
+    if not mine then mine, mineIdx = seats[1], 1 end
+    if not other then other, otherIdx = seats[2], 2 end
     if not mine or not other then return end
+    -- [特效客户端化] 记录几何 seat(0/1，=索引-1) 到我方/对手的映射，供 clearFx 事件选 renderer
+    self._fxSeatMine = (mineIdx or 1) - 1
+    self._fxSeatOther = (otherIdx or 2) - 1
     -- [BG] 客户端背景挂件生成开关在 ClientRenderer.EnsureBackgroundWidget 内读 Config.BackgroundWidget.SpawnMode；
     -- 当前 "Server" 由服务端生成，这里调用会直接 return（保留调用，后期改 "Client" 即生效）
     if self.localRenderer then

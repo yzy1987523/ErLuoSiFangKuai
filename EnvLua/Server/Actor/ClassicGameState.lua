@@ -265,6 +265,41 @@ function ClassicGameState:PlayBlastFxForSeat(seat, blastFx)
         " yaw=" .. tostring(boardYaw))
 end
 
+-- [特效客户端化 2026-11-20] 消行/爆炸特效改由各客户端本地播（CreativeGameAPI.CreateActor 粒子 Actor，
+-- 与 GarbageFxClient 同款）。服务端只做权威判定 + 广播事件；SceneEffectAPI 是 ServerOnly 故不再用于表现。
+-- 专用广播 P7_ClearFx(seat, rows, blastRows, blastFx)——4 个扁平参数，避免嵌套 table 跨端风险。
+-- @param seat number 几何槽位 0/1（调用方传运行时 _humanSeat/_oppSeat，不写死）
+-- @param rows table 被消行号
+-- @param blastRows table|nil 含爆破块的行号
+-- @param blastFx table|nil 竖版光束列数据（扁平列号表，见下方说明）
+function ClassicGameState:BroadcastClearFx(seat, rows, blastRows, blastFx)
+    local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
+    if okCfg and type(C) == "table" and C.Clear and C.Clear.FxSpawnSide == "Server" then
+        -- 回退开关：Server 模式走老 SceneEffectAPI，这里不广播
+        return
+    end
+    -- blastFx 是 { {col,bottom,top}, ... }（含嵌套子表），先拍平成扁平列号表 {col1,col2,...}；
+    -- bottom 客户端可从 Board.Rows 推，无需跨端传嵌套表（竖版光束只按 col 定位）。
+    local flatCols = nil
+    if type(blastFx) == "table" and #blastFx > 0 then
+        flatCols = {}
+        for _, bf in ipairs(blastFx) do
+            if type(bf) == "table" then
+                flatCols[#flatCols + 1] = tonumber(bf.col) or 1
+            else
+                flatCols[#flatCols + 1] = tonumber(bf) or 1
+            end
+        end
+    end
+    pcall(function()
+        self:CallClientFunctionMulticast("P7_ClearFx", seat, rows, blastRows, flatCols)
+    end)
+    print("[Fx][Server/GS] 广播 P7_ClearFx seat=" .. tostring(seat) ..
+        " rows=" .. tostring(rows and #rows or 0) ..
+        " blastRows=" .. tostring(blastRows and #blastRows or 0) ..
+        " blastCols=" .. tostring(flatCols and #flatCols or 0))
+end
+
 -- [消行飘字] 3D Actor UI（ServerOnly）：复用旧 TetrisScorePopup，按 seat 几何把 +XX / 连击评价
 -- 弹在"被消行右侧"。renderer 表只需 TetrisScorePopup 用到的几个字段（origin/right/forward/center/yaw）。
 -- @param seat number 几何槽位 0/1；@param rows 消行行号；@param delta 本次得分增量；@param combo 连击数
@@ -961,10 +996,19 @@ function ClassicGameState:Auth_Piece(seq, pieceType, rot, x, y)
             if rows and #rows > 0 then
                 -- [特效] 我方盘用真人实际 seat（可能 0 或 1），不写死，避免与对方盘特效互换
                 local mySeat = self._humanSeat or 0
-                -- 爆炸行传 blastRows：这些行改用与竖版相同的 100032，不播普通 3617487677
-                pcall(function() self:PlayClearFxForSeat(mySeat, rows, blastRows) end)
-                if blastFx and #blastFx > 0 then
-                    pcall(function() self:PlayBlastFxForSeat(mySeat, blastFx) end)
+                local okCfg2, C2 = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
+                local fxClientMode = not (okCfg2 and type(C2) == "table" and C2.Clear
+                    and C2.Clear.FxSpawnSide == "Server")
+                if fxClientMode then
+                    -- [特效客户端化·2026-11-20] 真人盘已由客户端在 doClear 当帧本地播（onClearFx），
+                    -- 这里【不再广播】，否则 RPC 往返 ~0.5s 后又播一份 → "方块消失 0.5s 后才出特效"且双份。
+                    -- 仅 AI 盘（TetrisAIDriver）仍走 BroadcastClearFx，因 AI 数据只在服务端。
+                else
+                    -- [回退] Server 模式保留老 SceneEffectAPI
+                    pcall(function() self:PlayClearFxForSeat(mySeat, rows, blastRows) end)
+                    if blastFx and #blastFx > 0 then
+                        pcall(function() self:PlayBlastFxForSeat(mySeat, blastFx) end)
+                    end
                 end
                 -- [飘字] 3D Actor 弹 +XX / 连击评价（delta=本次消行得分增量）
                 local delta = (b.score or 0) - scoreBefore

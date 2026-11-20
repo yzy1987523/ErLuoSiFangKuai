@@ -249,9 +249,23 @@ function TetrisClient:_showPrepareCloseBtn(tag)
         return
     end
     local H = Config.HelpUI or {}
-    print("[DIAG][HelpUI] _showPrepareCloseBtn(" .. tostring(tag) .. ") → WidgetOpacity(1) ONLY screen=" .. tostring(sc))
+    print("[DIAG][HelpUI] _showPrepareCloseBtn(" .. tostring(tag) ..
+        ") → 显示准备界面 Panel + BtnClose screen=" .. tostring(sc))
+    -- 显示准备界面本体：ShowForce 绕过 HideInitUI/ShowStart 的幂等缓存并恢复图片透明度，
+    -- 与关闭按钮成对出现（此前只点亮按钮、Panel 仍隐藏，导致"按钮在但准备界面没出来"）。
+    self.ui:ShowForce(H.Panel)
+    self.ui:Opacity(H.Panel, 1.0)
     -- 按钮显隐 ONLY 用整体透明度：0→1 点亮，不碰 SetWidgetVisible。
     self.ui:WidgetOpacity(H.BtnClose, 1.0)
+    -- 父面板显示会异步带出子控件并覆盖刚下发的显隐/透明度；延迟补写一次（同 ShowStart 防残留套路）。
+    self.host:AddTimerOnce(0.25, function()
+        if not self.ui then return end
+        local sc2 = self.ui.screen
+        if sc2 ~= "none" and sc2 ~= "prepare" then return end
+        self.ui:ShowForce(H.Panel)
+        self.ui:Opacity(H.Panel, 1.0)
+        self.ui:WidgetOpacity(H.BtnClose, 1.0)
+    end)
 end
 
 -- 流程按钮（准备/开始/难度/技能/帮助/语言/声音/排行榜/结算）

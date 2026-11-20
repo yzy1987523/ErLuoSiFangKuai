@@ -99,14 +99,25 @@ function TetrisAIDriver:_advanceClear(b)
             if self._fxRows and self.host then
                 -- [特效] AI 盘用缓存的对手 seat（可能 0 或 1），与我方真人 seat 相反，避免特效左右互换
                 local oppSeat = self.host._oppSeat or 1
-                if type(self.host.PlayClearFxForSeat) == "function" then
-                    -- 爆炸行传 blastRows：这些行改用与竖版相同的 100032，不播普通 3617487677
-                    pcall(function() self.host:PlayClearFxForSeat(oppSeat, self._fxRows, blastRows) end)
-                end
-                -- [爆破特效] AI 盘爆破消列：服务端播竖版光束（与消行特效同源同 seat）
                 local blastFx = b:consumeBlastFx()
-                if blastFx and #blastFx > 0 and type(self.host.PlayBlastFxForSeat) == "function" then
-                    pcall(function() self.host:PlayBlastFxForSeat(oppSeat, blastFx) end)
+                local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
+                local fxClientMode = not (okCfg and type(C) == "table" and C.Clear
+                    and C.Clear.FxSpawnSide == "Server")
+                if fxClientMode then
+                    -- [客户端化] 广播事件，各客户端本地播横条+竖版光束
+                    if type(self.host.BroadcastClearFx) == "function" then
+                        pcall(function()
+                            self.host:BroadcastClearFx(oppSeat, self._fxRows, blastRows, blastFx)
+                        end)
+                    end
+                else
+                    -- [回退] Server 模式保留老 SceneEffectAPI
+                    if type(self.host.PlayClearFxForSeat) == "function" then
+                        pcall(function() self.host:PlayClearFxForSeat(oppSeat, self._fxRows, blastRows) end)
+                    end
+                    if blastFx and #blastFx > 0 and type(self.host.PlayBlastFxForSeat) == "function" then
+                        pcall(function() self.host:PlayBlastFxForSeat(oppSeat, blastFx) end)
+                    end
                 end
                 -- [飘字] AI 盘也弹 +XX / 连击评价（3D Actor，全员可见）
                 if type(self.host.PlayScorePopupForSeat) == "function" then
@@ -121,17 +132,21 @@ function TetrisAIDriver:_advanceClear(b)
             " clearing=" .. tostring(b.clearing))
         if cleared > 0 and b.clearing then
             self._clearPhase = "showRows"
-            if blastRows and #blastRows > 0 then
-                -- [爆炸消行] 特效同帧照常起播、完整播完(EffectDuration≈1s)后，再额外等 0.8s 才坍塌。
-                -- 等待 = EffectDuration + BlastAfterFxDelay，按 driver 步长换算为 showRows 步数。
-                local cl = TetrisConfig.Clear or {}
-                local effDur = (type(cl.EffectDuration) == "number") and cl.EffectDuration or 1.0
-                local afterFx = (type(cl.BlastAfterFxDelay) == "number") and cl.BlastAfterFxDelay or 0.4
-                local blastWait = effDur + afterFx
-                self._clearWait = math.max(1, math.floor(blastWait / (self.interval or 0.1) + 0.5))
-            else
-                self._clearWait = 6   -- 普通消行 6 步 × 0.1s ≈ 0.6s 展示满行消失
+            -- [特效客户端化·2026-11-20 时序对齐] showRows 等待 = 特效实际时长（播完即坍塌）。
+            -- 普通=EffectDuration(0.5s)、爆炸=BlastEffectDuration(1.0s)，与客户端 ClearFxClient 销毁定时器同源。
+            local cl = TetrisConfig.Clear or {}
+            local isBlast = (blastRows and #blastRows > 0)
+            local fxDur = isBlast
+                and (type(cl.BlastEffectDuration) == "number" and cl.BlastEffectDuration or 1.0)
+                or (type(cl.EffectDuration) == "number" and cl.EffectDuration or 0.5)
+            local collapseWait = fxDur
+            if isBlast then
+                local lead = (type(cl.BlastCollapseLead) == "number") and cl.BlastCollapseLead or 0
+                collapseWait = math.max(0.1, fxDur - lead)
             end
+            self._clearWait = math.max(1, math.floor(collapseWait / (self.interval or 0.1) + 0.5))
+            print("[ClearDbg][AI] showRows 等待=" .. tostring(self._clearWait) .. "步 特效=" .. tostring(fxDur)
+                .. "s 坍塌等待=" .. tostring(collapseWait) .. "s")
         end
         return
     end
@@ -244,9 +259,20 @@ function TetrisAIDriver:_step()
                 -- 首次进入：取被消行号播特效 + 启动分阶段（与普通消行完全一致的前摇）
                 local rows = nil
                 pcall(function() rows = b:consumeClearedRows() end)
-                if rows and #rows > 0 and self.host and type(self.host.PlayClearFxForSeat) == "function" then
+                if rows and #rows > 0 and self.host then
                     local oppSeat = self.host._oppSeat or 1
-                    pcall(function() self.host:PlayClearFxForSeat(oppSeat, rows) end)
+                    local okCfg, C = pcall(require, "EnvLua.Common.Tetris.TetrisConfig")
+                    local fxClientMode = not (okCfg and type(C) == "table" and C.Clear
+                        and C.Clear.FxSpawnSide == "Server")
+                    if fxClientMode then
+                        -- [客户端化] 广播事件，各客户端本地播横条（落石消行不带爆破/竖版）
+                        if type(self.host.BroadcastClearFx) == "function" then
+                            pcall(function() self.host:BroadcastClearFx(oppSeat, rows, nil, nil) end)
+                        end
+                    elseif type(self.host.PlayClearFxForSeat) == "function" then
+                        -- [回退] Server 模式保留老 SceneEffectAPI
+                        pcall(function() self.host:PlayClearFxForSeat(oppSeat, rows) end)
+                    end
                     print("[Rockfall][AI] 落石消行播特效 行数=" .. tostring(#rows))
                 end
                 self._clearIsRockfall = true

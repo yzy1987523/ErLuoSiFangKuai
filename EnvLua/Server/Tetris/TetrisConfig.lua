@@ -13,18 +13,20 @@ TetrisConfig.Board = {
 -- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
 -- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
 TetrisConfig.Clear = {
-    EffectDuration = 1,   -- 单位：秒。被消除格上播放的特效持续时间；也是「特效播完→方块下落」的延迟（见 ScheduleClearResume）。
-    -- 【特效提前起播】满行亮起(lockPaused)后先播特效，等这么久再 doClear+坍塌 = 特效领先坍塌 0.5s（与 Common 配置保持一致）。
+    -- ===== [特效客户端化·2026-11-20 时序模型] 与 Common 同步 =====
+    -- 正确流程：方块消失瞬间=特效起播；特效播完=立刻坍塌。特效时长即坍塌等待，三处共用。
+    EffectDuration = 0.5,       -- 普通消行特效时长（秒）
+    BlastEffectDuration = 1.0,  -- 爆炸横条/竖版光束特效时长（秒）
+    BlastCollapseLead = 0.2,    -- 爆炸坍塌提前补偿（秒），与 Common 同步
+    -- 【已弃用】PreClearDelay/BlastAfterFxDelay 仅为兼容旧回退分支保留。
     PreClearDelay = 0.5,
-    -- 【爆炸消行·特效播完后的额外等待】秒。爆炸(blast)消行的特效不延后起播，
-    -- 等 EffectDuration(1s) 完整播完后，再额外等这么久才坍塌（用户要求 0.4s）。
-    -- 普通消行仍走 ResumeDelay+PreClearDelay，不受影响。
-    -- 真人盘 ClientGame 读 Common 配置；服务端特效播放在此份配置保持同值，便于统一调整。
     BlastAfterFxDelay = 0.4,
     ClearDelay = 1,    -- 单位：秒。消除→下落→出块 的总窗口；必须 ≥ EffectDuration，差值 = 下落后方块展示时间（让"落下"可见）。
     LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
     -- 【正常消行】资源 + 尺寸 + 位置（与下方「爆炸消行」是两套独立配置，互不影响）。
     EffectPresetKey = "13_EffectPreset_3617487677",  -- 正常消行（横版、按行）特效资源 Key（AssetRef，需在 VSCode 插件注册并执行 update preset）。
+    EffectRowYawAdd = 180,  -- 客户端普通消行条朝向加成（度），与 Common 同步；条朝反/看不见时改 0
+    EffectRowAnchorMode = "end",  -- 普通消行条锚点：end=盘端点(默认) / center=盘心(旧回退)，与 Common 同步
     -- 特效尺寸（缩放倍数）。FVector，各分量默认 1.0 = 原始大小；
     -- 例 {X=2,Y=2,Z=2} 放大到 2 倍，{X=0.5,Y=0.5,Z=0.5} 缩小一半。
     -- 由 SceneEffectAPI.SetSceneEffectScale 在创建后应用（CreateSceneEffect 无缩放参数）。
@@ -58,6 +60,13 @@ TetrisConfig.Clear = {
     BlastEffectScale = { X = 7, Y = 2.5, Z = 1.0 },  -- 竖版缩放（绝对倍数，1.0=原始大小）：X=水平宽度，Y=竖直长度，Z=深度厚度；按需微调，代码不限制尺寸。
     BlastEffectRot = { X = -90.0, Y = 0.0, Z = 0.0 },    -- 将横版特效立为竖版的额外旋转(Pitch=-90 朝上)；yaw 自动叠 boardYaw 正对玩家
     BlastEffectOffset = { X = 0.0, Y = 0.0, Z = 0.0 },    -- 位置微调（米）
+
+    -- ===== [特效客户端化 2026-11-20] 与 Common 配置同步 =====
+    -- 特效函数实际读 Common 配置；此处保留同值便于切换/回退（FxSpawnSide="Server" 走老 SceneEffectAPI）。
+    FxSpawnSide = "Client",
+    FxActorPresetKey = "46_ActorPreset_1064057379",              -- 普通消行横条 ActorPreset
+    BlastRowFxActorPresetKey = "46_ActorPreset_719361273",       -- 爆炸横条 ActorPreset
+    BlastColumnFxActorPresetKey = "46_ActorPreset_719361273",    -- 竖版光束：爆炸资源旋转生成，同 key
 }
 
 -- ===================== 给对手扔垃圾时的拖尾飞行特效 =====================
@@ -123,7 +132,7 @@ TetrisConfig.InitialLayout = {
          --[19] = "1.......11",
         -- 多行同消（四连消）示例：
         --   [20] = "1111111.11", [19] = "111.111111", [18] = "111.111111", [17] = "1111111.11",
-              [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.1.",
+              [20] = "1111111.11", [19] = "1111111.11", [18] = "1111111.11", [17] = "1111111.11",
     },
 }
 

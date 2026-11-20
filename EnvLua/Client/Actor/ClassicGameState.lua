@@ -140,6 +140,15 @@ function ClassicGameState:P7_BoardTransform(p0, o0x, o0y, o0z, r0x, r0y, r0z,
     end
 end
 
+-- ===== [特效客户端化] P7_ClearFx：服务端权威消行后广播，转给 Battle 本地播粒子 =====
+-- 参数扁平：seat(0/1), rows, blastRows, blastCols（列号表）。基类方法按 seat 选盘 renderer。
+function ClassicGameState:P7_ClearFx(seat, rows, blastRows, blastCols)
+    local okBT, Battle = pcall(require, "EnvLua.Client.Tetris.TetrisClientBattle")
+    if okBT and Battle.Current and Battle.Current.OnClearFx then
+        pcall(Battle.Current.OnClearFx, Battle.Current, seat, rows, blastRows, blastCols)
+    end
+end
+
 -- ===== P8：服务端权威 ack（每块重放后的权威 score/lines/over），转给 Battle 对账 =====
 function ClassicGameState:Auth_Ack(seq, score, lines, over)
     local okBT, Battle = pcall(require, "EnvLua.Client.Tetris.TetrisClientBattle")

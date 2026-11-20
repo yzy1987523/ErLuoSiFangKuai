@@ -13,20 +13,18 @@ TetrisConfig.Board = {
 -- 即将消除的行：其方块在锁定的当帧直接归还对象池（立即消失）；
 -- 其余需要下落的块延迟 ClearDelay 秒后，再按现存 parent-shift 方式整体下移。
 TetrisConfig.Clear = {
-    EffectDuration = 1,   -- 单位：秒。被消除格上播放的【粒子特效】持续时间（SceneEffectAPI 服务端播放，世界空间独立）。
-    -- 【消行逻辑恢复等待】秒。消除→坍塌→出块 的流程等待时长，与粒子特效时长解耦：
-    -- 客户端化后本地盘靠重力 tick 自驱动推进，EffectDuration=1 会让盘面冻结 1s+ 显得"卡住"，
-    -- 故逻辑恢复用更短的 ResumeDelay；粒子特效仍按 EffectDuration 播放，视觉不受影响。
+    -- ===== [特效客户端化·2026-11-20 时序模型] =====
+    -- 正确流程：方块消失瞬间 = 特效起播；特效完整播完 = 立刻坍塌（两盘一致）。
+    -- 特效时长即坍塌等待时长，ClientGame / TetrisAIDriver / ClearFxClient 三处共用，严格对齐。
+    EffectDuration = 0.5,       -- 普通消行特效时长（秒）
+    BlastEffectDuration = 1.0,  -- 爆炸横条 / 竖版光束特效时长（秒）
+    -- 【爆炸坍塌提前补偿】秒。实跑 After 定时器触发比设定晚约 0.2s，坍塌视觉偏慢；
+    -- 爆炸坍塌等待 = BlastEffectDuration - BlastCollapseLead，使坍塌与特效结束对齐。默认 0.2，按需调。
+    BlastCollapseLead = 0.12,
+    -- 【已弃用】ResumeDelay / PreClearDelay / BlastAfterFxDelay：特效改客户端当帧播后，
+    -- 坍塌等待直接=特效时长，不再叠加 RPC 补偿/提前量/播完再等。保留字段仅为兼容旧回退分支。
     ResumeDelay = 0.3,
-    -- 【特效提前起播】满行亮起(lockPaused)后先让服务端播消行/爆炸特效，等这么久再 doClear+坍塌。
-    -- 旧版 ClearRowWidget.PreClearDelay(0.25s，特效空白帧)在客户端化后丢失，导致特效落在大脑感知的坍塌之后。
-    -- 设 0.5 = 特效领先坍塌 0.5s（用户要求）。改这里同时影响真人盘(ClientGame)与 AI 盘(driver)。
     PreClearDelay = 0.5,
-    -- 【爆炸消行·特效播完后的额外等待】秒。爆炸(blast)消行的特效不延后起播，
-    -- 等 EffectDuration(1s) 完整播完后，再额外等这么久才坍塌（用户要求 0.4s）。
-    -- 普通消行仍走 ResumeDelay+PreClearDelay，不受影响。
-    -- 真人盘坍塌等待 = ResumeDelay(RPC补偿) + EffectDuration + BlastAfterFxDelay；
-    -- AI 盘 showRows 等待 = (EffectDuration + BlastAfterFxDelay) / 步长。
     BlastAfterFxDelay = 0.4,
     ClearDelay = 1,    -- 单位：秒（旧字段，保留兼容）。消除→下落→出块 的总窗口。
     LockFlashDelay = 0,   -- 单位：秒。方块锁定后、满行被消除前的"落地停顿"：让玩家看到方块落定、满行亮起的一瞬，再触发消除。
@@ -37,9 +35,16 @@ TetrisConfig.Clear = {
     -- 由 SceneEffectAPI.SetSceneEffectScale 在创建后应用（CreateSceneEffect 无缩放参数）。
     -- x：高度，y：长度
     EffectScale = { X = 7.2, Y = 7.2, Z = 7.2 },
+    -- 【客户端普通消行条朝向加成，度】新 ActorPreset(1877399573) 需设 yaw=boardYaw+本值才正对相机。
+    -- 默认 180（与爆炸横条 BlastRowYawFlip180 一致：两条都是横条铺满整行、大概率同源需同样翻转）；
+    -- 若实跑条朝反/看不见，改 0；尺寸不对再调上面 EffectScale。
+    EffectRowYawAdd = 180,
+    -- 【客户端普通消行条锚点】"end"=锚 col=1 盘面端点（默认，端点轴心条必须这样，否则整条偏出盘看不见）；
+    -- "center"=旧盘心锚点（旧 SceneEffect 3617487677 的中心轴心行为，回退对比用）。
+    EffectRowAnchorMode = "end",
     -- 水平偏移（米）：沿盘面本地右向量 right，正 = 玩家右手侧，负 = 左手侧，0 = 盘面水平中心。
     -- 标量直接乘 right，效果与盘面偏航无关；双盘各自沿自身 right 平移，保持一致。
-    EffectSideOffsetM = 1,
+    EffectSideOffsetM = 6,
     -- 位置的竖直微调（单位：米）：仅 Z 生效，正值沿世界 +Z 抬高、负值下移；X/Y 已废弃不读取。
     EffectPositionOffset = { X = 0.0, Y = 0.0, Z = 0.0 },
 
@@ -55,7 +60,7 @@ TetrisConfig.Clear = {
     -- 【生效的定位方式】数字 = 沿盘面本地 right 平移 N 米（正=玩家右手侧，负=左手侧，0=盘心）。
     -- 双盘各自沿自身 right，视觉一致。注意：资源 100032 的视觉中心与正常行 3617487677 不同，
     -- 不能直接照搬正常行的 side=1（实跑偏右不少）；0 = 盘心，如需微调再按视觉左右改正负。
-    BlastRowEffectSideOffsetM = 0,
+    BlastRowEffectSideOffsetM = -1,
     -- 【爆炸横条朝向】条长轴=资源本地 Y。横版必须 Yaw=boardYaw+180 才能贴盘面 right 铺满整行，
     -- 否则条朝 right 反向铺出盘外（锚左端往左射）。true=+180（正确）；false=上一版反向行为（对比用）。
     -- 代码读 cl.BlastRowYawFlip180，nil 时也按 true 处理。
@@ -67,6 +72,22 @@ TetrisConfig.Clear = {
     BlastEffectScale = { X = 7, Y = 2.5, Z = 1.0 },  -- 竖版缩放（绝对倍数，1.0=原始大小）：X=水平宽度，Y=竖直长度，Z=深度厚度；按需微调，代码不限制尺寸。
     BlastEffectRot = { X = -90.0, Y = 0.0, Z = 0.0 },    -- 将横版特效立为竖版的额外旋转(Pitch=-90 朝上)；yaw 自动叠 boardYaw 正对玩家
     BlastEffectOffset = { X = 0.0, Y = 0.0, Z = 0.0 },    -- 位置微调（米）
+
+    -- ===== [特效客户端化 2026-11-20] 消行/爆炸特效改客户端本地播 =====
+    -- SceneEffectAPI 是 ServerOnly，客户端播不了；改走 CreativeGameAPI.CreateActor 生成
+    -- "粒子组件已设 AutoActivate 的 ActorPreset"（与 GarbageEffect 同款，见 GarbageFxClient）。
+    -- clearFx 事件由服务端权威消行时广播（P5_VersusEvent），各客户端各自生成 Actor，双方各自可见。
+    FxSpawnSide = "Client",  -- "Client"=客户端本地播（当前）；"Server"=回退老 SceneEffectAPI（对比用）
+    -- ActorPresetKey（用户已给；须在 WOW Editor 注册 + update preset，AssetRef 才有键，否则 ClearFxClient 打一次 WARN 跳过）：
+    --   普通消行横条 = 46_ActorPreset_1877399573；爆炸横条 = 46_ActorPreset_719361273。
+    --   竖版光束 = 爆炸资源旋转生成（Pitch=-90 立起 + boardYaw），故与爆炸横条同 key，用 BlastEffectRot/Scale 区分。
+    FxActorPresetKey = "46_ActorPreset_1064057379",              -- 普通消行横条 ActorPreset
+    BlastRowFxActorPresetKey = "46_ActorPreset_719361273",       -- 爆炸横条 ActorPreset
+    BlastColumnFxActorPresetKey = "46_ActorPreset_719361273",    -- 竖版光束：爆炸资源旋转生成，同 key
+
+    -- ===== [临时诊断开关·已关闭] 曾用于验证资源能否渲染，测完已改回 nil =====
+    -- 设为数字=普通消行特效强制放到盘心正前方 N 米；nil=正常盘面定位。爆炸横条/竖版光束始终不受影响。
+    FxDebugSpawnInFrontM = nil,
 }
 
 -- ===================== 给对手扔垃圾时的拖尾飞行特效 =====================

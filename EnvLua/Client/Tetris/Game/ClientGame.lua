@@ -27,6 +27,9 @@ function ClientGame:new(board, deps)
     o.renderer = deps.renderer
     o.versus = deps.versus
     o.audio = deps.audio   -- [音效] AudioManager 实例（客户端可用），仅真人盘注入
+    -- [特效客户端化] 本地消行特效回调 onClearFx(rows, blastRows, blastFx)，由 Battle 注入指向 ClearFxClient。
+    -- ClientGame 仍不直接调引擎 API，只在此抛出表现事件（方块消失瞬间触发）。
+    o.onClearFx = deps.onClearFx
     o.scheduler = deps.scheduler or { After = function(delay, fn) fn() end }
     o.playerKey = deps.playerKey or 0
     o.isAI = deps.isAI == true
@@ -192,7 +195,7 @@ function ClientGame:pollVersusFeedback()
 end
 
 -- ===================== 消行结算（强时序，清单 §3） =====================
-function ClientGame:_startClearSequence(cleared)
+function ClientGame:_startClearSequence(cleared, blastRows)
     if self._clearBusy then
         print("[ClearDbg] _startClearSequence 被_clearBusy挡住 cleared=" .. tostring(cleared))
         return
@@ -206,27 +209,26 @@ function ClientGame:_startClearSequence(cleared)
     if self.audio and self.audio.PlayLineClear then
         pcall(function() self.audio:PlayLineClear(cleared, self.board.combo or 0) end)
     end
-    -- [爆炸标记] 先取走爆破标记，判断本次是否爆炸消行（决定是否延长坍塌前的特效展示窗口）
+    -- [爆炸标记] 先取走爆破标记，判断本次是否爆炸消行
     local isBlastClear = false
     local okBlast, blastFx = pcall(function() return self.board:consumeBlastFx() end)
     if okBlast and blastFx and #blastFx > 0 then isBlastClear = true end
-    -- [特效起播时机不变] 特效走影子盘 Auth_Piece RPC，当帧 doClear 即播（RPC 往返约 0.3s）。
-    -- 普通消行：坍塌等待 = ResumeDelay + PreClearDelay(0.5s)，与既有表现一致。
-    -- 爆炸消行：特效照常立刻播、完整播完(EffectDuration≈1s)后，再额外等 BlastAfterFxDelay(0.4s) 才坍塌。
-    --   真人盘坍塌等待 = resume(RPC补偿) + EffectDuration(特效播完) + BlastAfterFxDelay(播完后再等)。
-    -- 坍塌仍由本序列的 After+tick 自驱动执行（不在定时器里 doClear，保留坍塌过程）。
-    local resume = CLEAR_CFG.ResumeDelay or 0.3
-    local pre = (type(CLEAR_CFG.PreClearDelay) == "number") and CLEAR_CFG.PreClearDelay or 0.5
-    local wait = resume + pre
+    -- [特效客户端化·2026-11-20 时序重构] 特效在方块消失当帧本地播（原先绕 Auth_Piece RPC 往返 ~0.5s 才播）。
+    -- 坍塌等待 = 特效实际时长（普通 0.5s / 爆炸 1.0s），播完即坍塌，不再叠加 ResumeDelay/PreClearDelay/AfterFxDelay。
+    -- fxDur 与 ClearFxClient 的销毁定时器共用同一配置，保证"特效结束=坍塌"严格对齐。
+    local fxDur = isBlastClear
+        and (type(CLEAR_CFG.BlastEffectDuration) == "number" and CLEAR_CFG.BlastEffectDuration or 1.0)
+        or (type(CLEAR_CFG.EffectDuration) == "number" and CLEAR_CFG.EffectDuration or 0.5)
+    self._clearTarget = fxDur
     if isBlastClear then
-        local effDur = (type(CLEAR_CFG.EffectDuration) == "number") and CLEAR_CFG.EffectDuration or 1.0
-        local afterFx = (type(CLEAR_CFG.BlastAfterFxDelay) == "number") and CLEAR_CFG.BlastAfterFxDelay or 0.4
-        wait = resume + effDur + afterFx
+        -- 实跑 After 定时器约晚 0.2s 触发，坍塌视觉偏慢 → 爆炸等待减补偿，与特效结束对齐。
+        local lead = (type(CLEAR_CFG.BlastCollapseLead) == "number") and CLEAR_CFG.BlastCollapseLead or 0
+        self._clearTarget = math.max(0.1, fxDur - lead)
     end
-    self._clearTarget = wait
     self._clearElapsed = 0
     print("[ClearDbg] _startClearSequence 开始 cleared=" .. tostring(cleared) ..
-        " 爆炸=" .. tostring(isBlastClear) .. " 定时=" .. tostring(self._clearTarget) .. "s")
+        " 爆炸=" .. tostring(isBlastClear) .. " 特效时长=" .. tostring(fxDur) ..
+        "s 坍塌等待=" .. tostring(self._clearTarget) .. "s")
 
     -- [修复] 每一步独立 pcall 断点：任何一步抛错只记日志，绝不阻断后续 After 注册与 tick 自驱动。
     -- 旧版这里任一步抛错会连带中断 scheduler:After 注册 + gravityTick 递归调度 → 表现为"消行卡住后一动不动"。
@@ -237,6 +239,11 @@ function ClientGame:_startClearSequence(cleared)
         local rows = self.board:consumeClearedRows()
         if rows and #rows > 0 then
             self._lastClearRows = rows
+            -- [特效客户端化] 方块消失当帧本地播特效（rows 此刻已消费=方块已消失，与画面同步）。
+            -- 先前特效走影子盘 RPC 往返 ~0.5s 才播 → 表现为"方块消失后 0.5s 才出特效"，现改为同帧。
+            if type(self.onClearFx) == "function" then
+                self.onClearFx(rows, blastRows, (not okBlast) and nil or blastFx)
+            end
         end
     end)
     if not okFx then print("[ClearDbg][ERR] 消行标记清理报错(已隔离): " .. tostring(errFx)) end
@@ -449,15 +456,22 @@ function ClientGame:tick()
         return false
     end
     if b.lockPaused then
-        -- 锁定停顿结束：执行消行 + 开特效时序（坍塌链保持 tick 主循环驱动，不在定时器里 doClear）
+        -- 锁定停顿结束：doClear 前预检爆炸行号（清行后网格已空查不到），供本地特效按行分流。
+        local blastRows = nil
+        local okPre, fullRows = pcall(function() return b:getFullRows() end)
+        if okPre and fullRows and #fullRows > 0 then
+            local okBR, br = pcall(function() return b:getBlastRows(fullRows) end)
+            if okBR and br and #br > 0 then blastRows = br end
+        end
+        -- 执行消行（方块消失）+ 开特效时序（坍塌链保持 tick 主循环驱动，不在定时器里 doClear）
         local cleared = b:doClear()
         print("[ClearDbg] tick lockPaused→doClear cleared=" .. tostring(cleared) ..
             " clearing=" .. tostring(b.clearing) .. " clearBusy=" .. tostring(self._clearBusy) ..
-            " fullRows=" .. tostring(b._clearFullRows ~= nil))
+            " blastRows=" .. tostring(blastRows and #blastRows or 0))
         if cleared > 0 then
             -- 消 N 行 = N 个 bar（清单 §7：消 1 行得 1 bar）
             for _ = 1, cleared do self:_addBar() end
-            self:_startClearSequence(cleared)
+            self:_startClearSequence(cleared, blastRows)
         end
         return true
     end
